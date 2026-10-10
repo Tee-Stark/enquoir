@@ -99,3 +99,170 @@
 - The `Rail` and `Clock` ports' exact shapes will depend on what the
   policy engine and workflow need from them; deferring their design
   until that phase, as agreed.
+
+## Phase 2: Airwallex adapter and the durable workflow - code complete, sandbox verification pending
+
+Interrupted mid-phase: probing the real sandbox, `make sandbox-setup`,
+and `make demo` were all paused (at the user's request) because
+`AWX_CLIENT_ID`/`AWX_API_KEY` were empty in `.env`, with instructions to
+move on to Phase 3 regardless. Everything that doesn't need live
+credentials is built and verified; the phase was never formally closed
+(no `docs/rail-notes.md`, no `phase-2` tag) and Phase 3 picks up from
+here.
+
+### What exists
+
+- **`internal/app.Rail`, `Simulator`, `Clock`** ports. `Rail` is the
+  only thing that moves money, keyed by the intent's key as the request
+  ID; `Simulator` is a separate interface so sandbox-only state changes
+  can never leak in through something that only depends on `Rail`.
+- **`internal/adapters/airwallex`**: `Client` (implements `Rail`) and
+  `Simulator` (implements `Simulator`), two separate types with their
+  own transport and token cache each. Token caching/refresh,
+  minor-to-major conversion, request-ID pass-through, status mapping
+  (`SENT` not final, `CANCELLED` carrying `failure_type`/
+  `failure_reason`), 429 backoff, and `duplicate_request_id` resolving
+  via lookup instead of surfacing as an error - all test-first against
+  a local `httptest` server, shaped by AGENTS.md's documented facts
+  (not yet the real sandbox's).
+- **`cmd/probe`**: throwaway tooling to call the real sandbox and print
+  what comes back. Written, never run.
+- **`make sandbox-setup`** (`cmd/sandboxsetup`): idempotent funded USD
+  Global Account + one US/USD/LOCAL test beneficiary, via
+  `Simulator.EnsureBeneficiary` (not part of the `Simulator` port - a
+  concrete-only method, since beneficiary bootstrapping is one-time
+  infrastructure, not something the running system ever does itself).
+- **`internal/workflow`**: `PaymentWorkflow` and `Activities`. The
+  intent's key is the workflow ID. Every state move goes through
+  `domain.State.Transition` before its event is recorded. A worker
+  crash with nothing to classify gets the same recovery as a
+  classified ambiguous outcome (see the fix below).
+- **`cmd/worker`**, **`cmd/demo`**: the real worker, and a self-contained
+  demo that runs its own in-process worker, submits one intent, drives
+  it to `PAID` through the simulator, and prints the result.
+
+### What I verified
+
+- All seven of the workflow's core behaviours, test-first with
+  Temporal's test suite, a fake `Rail`, and in-memory repositories.
+- An eighth, added after a design review while building Phase 3's
+  chaos kill points (see the fix below): an unclassified `CreateTransfer`
+  failure recovers exactly like a classified ambiguous one.
+- Starting the same intent twice attaches to the running workflow -
+  against the real Temporal dev server, since the lightweight test
+  suite doesn't model the server's own workflow-ID deduplication.
+- The Airwallex adapter's behaviour, as listed above, against `httptest`.
+- `make test` stays offline-clean throughout.
+
+### A bug found and fixed along the way
+
+`domain.Money`'s fields are unexported by design - every instance must
+pass through `NewMoney`'s checks - but that also hid them from the
+default JSON marshaller. Temporal's data converter serialises every
+workflow/activity payload as JSON, so `Intent.Amount` was silently
+zeroing out crossing that boundary: an over-the-maximum intent was
+still reaching the rail, because the policy check saw `0`, not the real
+amount. Fixed with a custom `MarshalJSON`/`UnmarshalJSON` on `Money`
+that still goes through `NewMoney`, so a zeroed or invalid value can't
+round-trip silently either.
+
+### What I did not verify
+
+- Everything that needs `AWX_CLIENT_ID`/`AWX_API_KEY`: the probe's
+  findings against the real sandbox, `make sandbox-setup`, and
+  `make demo` end to end. `docs/rail-notes.md` does not exist yet.
+- Whether the real sandbox's behaviour actually matches the
+  `httptest`-based assumptions the adapter's tests encode (field
+  names, the exact shape of a `duplicate_request_id` response, what
+  status a freshly created transfer actually starts in).
+
+## Phase 3: HTTP API and the no-double-pay proof - code complete, chaos run against the real sandbox pending
+
+Same blocker as Phase 2: `AWX_CLIENT_ID`/`AWX_API_KEY` are still empty
+in `.env` as of this phase, so `make chaos` (this phase's actual
+done-criterion) has not been run. Everything else is built and
+verified on its own terms.
+
+### What exists
+
+- **`internal/app.SubmitIntent`/`GetIntent`** use cases, and
+  **`PaymentStarter`** port (starts or attaches to the durable workflow).
+  `SubmitIntent` reports the intent's currently-recorded state (read
+  from the event log, not guessed), so attaching to a run already far
+  along reports its real progress, not a stale `PROPOSED`.
+- **`internal/adapters/httpapi`**: `POST /v1/intents`, `GET
+  /v1/intents/{key}`, `GET /healthz`, on chi. Handlers stay thin: parse,
+  call the use case, respond. `TemporalPaymentStarter` implements
+  `PaymentStarter` against a real `client.Client`.
+- **`cmd/api`**, wired to the real Postgres and Temporal.
+- **`internal/chaos`**: `ENQUOIR_CHAOS_KILL_AT`, four points
+  (`before_log`, `after_log_before_call`, `during_call`,
+  `after_call_before_commit`) around the `IN_FLIGHT`-then-`CreateTransfer`
+  sequence. Deliberately outside the clean architecture - a kill switch
+  with no port, since its only job is `os.Exit`.
+- **`cmd/chaos`**: the kill test orchestrator - submits one intent three
+  times, runs a real `go run ./cmd/worker` subprocess armed to die at
+  one point, restarts a clean one, drives the transfer to `PAID`, and
+  checks recovery.
+- **A duplicate-storm test** (`internal/workflow`, `test-integration`):
+  20 concurrent submissions of the same intent key against the real
+  Temporal server (fake `Rail` - the property under test is the
+  server's dedup under real concurrency, not the sandbox).
+- **README.md**: setup, usage, architecture, and an honest verified/
+  not-verified list.
+
+### What I verified
+
+- Designing the chaos kill points surfaced a real gap, fixed before
+  building `cmd/chaos`: with every activity capped at one attempt, a
+  bare worker crash during `CreateTransfer` (no classified error, just
+  a timeout) made the workflow fail outright instead of ever reaching
+  the ambiguous-outcome recovery already built for a classified
+  `ErrAmbiguous`. Raised the retry budget to 3 (safe, since
+  `Rail.CreateTransfer` is idempotent on the intent's key) and changed
+  `handleCreateError` so only an explicitly classified rejection skips
+  to `FAILED` - everything else, classified ambiguous or not, goes
+  through the same `UNKNOWN`-then-lookup path. Proved it with a test
+  where the fake `Rail` returns a plain unclassified error: Temporal
+  retries it 3 times, then the workflow's own recovery takes over, and
+  the intent still resolves cleanly to `APPLIED`.
+- The HTTP API, test-first with `httptest` against the real router and
+  real use cases (fakes for `EventLog`/`PaymentStarter`): a valid
+  submission, the same intent twice returning the same key, five
+  flavours of invalid input, state-and-history retrieval, not-found,
+  and `/healthz`.
+- `cmd/api` live against the real Postgres/Temporal stack (no sandbox
+  needed): POST, GET, re-POST, cleaned up with a terminate.
+- `internal/chaos`'s kill switch: a no-op when unset or pointed at a
+  different point; a real `os.Exit(1)` when it matches, confirmed via a
+  subprocess re-exec of the test binary - the only way to observe that
+  from inside `go test`.
+- The load-bearing assumption behind `cmd/chaos`'s whole design: that
+  `go run` forwards a child process's `os.Exit(1)` as its own exit
+  code. Confirmed directly with a throwaway program before trusting it.
+- The duplicate-storm test, for real, against the live Temporal server:
+  20 concurrent calls, one run ID, one `CreateTransfer` call, resolves
+  to `APPLIED`.
+- `make up` from a clean volume (`docker compose down -v && make up`)
+  and `make test` offline, both re-confirmed at the end of this phase.
+
+### What I did not verify
+
+- `make chaos` against the real sandbox - this phase's stated
+  done-criterion. Blocked on `AWX_CLIENT_ID`/`AWX_API_KEY`; no results
+  table exists yet because the run that produces one hasn't happened.
+- By extension, whether the four kill points' real-world timing
+  (especially `during_call`'s 50ms race against the actual HTTP call)
+  behaves as intended against real network latency rather than the
+  reasoning that designed it.
+- Phase 2's unresolved items above still stand: the probe, rail notes,
+  `sandbox-setup`, and `demo`, all against the real sandbox.
+
+### Next step
+
+Once real sandbox credentials are available: `make sandbox-setup`,
+`make demo`, then `make chaos`, cheapest first - each one exercises
+more of the stack than the last. `make chaos`'s results table belongs
+in this file once it exists, and this phase's tag should wait for it:
+the stated done-criterion is `make chaos` actually passing, not just
+built.
