@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -188,6 +189,37 @@ func TestPaymentWorkflow_AmbiguousCreateConfirmedAbsentRetriesSameRequestID(t *t
 
 	require.Equal(t, 2, rail.calls())
 	require.Equal(t, requestIDs[0], requestIDs[1], "the retry must reuse the exact same request ID")
+	require.Equal(t, []string{"PROPOSED", "AUTHORIZED", "IN_FLIGHT", "UNKNOWN", "IN_FLIGHT", "APPLIED"}, te.eventTypes(t, intent.Key))
+}
+
+// An unclassified failure - a plain error, not one carrying our
+// Rejected/Ambiguous tag - is exactly what a bare worker crash looks
+// like to the workflow: an outcome it genuinely cannot tell apart from
+// an ambiguous one. Temporal's own retry policy gets first crack at it
+// (safe, since Rail.CreateTransfer is idempotent); once that budget is
+// exhausted, the workflow's own UNKNOWN-then-lookup recovery takes
+// over instead of failing the run.
+func TestPaymentWorkflow_UnclassifiedCreateFailureRecoversAsAmbiguous(t *testing.T) {
+	intent := testIntent(t, 10050)
+	rail := &fakeRail{
+		createFunc: func(ctx context.Context, intent domain.Intent, callNum int) (app.Transfer, error) {
+			return app.Transfer{}, errors.New("worker died mid-call")
+		},
+		findFunc: func(ctx context.Context, requestID string) (app.Transfer, bool, error) {
+			return app.Transfer{ID: "tr_existing", Status: app.TransferPaid}, true, nil
+		},
+	}
+	te := newEnv(t, rail)
+
+	te.env.ExecuteWorkflow(PaymentWorkflow, PaymentInput{Intent: intent, MaxAmountMinorUnits: highMax})
+
+	require.True(t, te.env.IsWorkflowCompleted())
+	require.NoError(t, te.env.GetWorkflowError())
+
+	var result PaymentResult
+	require.NoError(t, te.env.GetWorkflowResult(&result))
+	require.Equal(t, domain.APPLIED, result.State)
+	require.Equal(t, 3, rail.calls(), "Temporal's own retry policy should exhaust its budget before the workflow's own recovery takes over")
 	require.Equal(t, []string{"PROPOSED", "AUTHORIZED", "IN_FLIGHT", "UNKNOWN", "IN_FLIGHT", "APPLIED"}, te.eventTypes(t, intent.Key))
 }
 

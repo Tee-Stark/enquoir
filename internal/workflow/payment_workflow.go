@@ -36,11 +36,17 @@ const pollInterval = 2 * time.Second
 
 var activityOptions = workflow.ActivityOptions{
 	StartToCloseTimeout: 30 * time.Second,
-	// The workflow decides whether and how to retry a Rail call -
-	// never Temporal's default retry policy. Retrying CreateTransfer
-	// blind, behind the workflow's back, is exactly what "No blind
-	// retries" forbids.
-	RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1},
+	// A modest automatic retry budget covers a worker that dies with
+	// no chance to report anything back - Temporal just redispatches
+	// the activity once another worker is available. That is safe
+	// specifically because Rail.CreateTransfer is idempotent on the
+	// intent's key: a retried create either succeeds fresh or resolves
+	// to the transfer the first attempt already made. Once our own
+	// code has classified an outcome (Rejected/Ambiguous, tagged
+	// NonRetryable below), Temporal stops retrying and the workflow
+	// decides what happens next instead - that half is what "No blind
+	// retries" is actually about.
+	RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 3},
 }
 
 // PaymentWorkflow takes one Intent from PROPOSED to APPLIED, FAILED or
@@ -94,45 +100,42 @@ func authorize(ctx workflow.Context, state *domain.State, intent domain.Intent) 
 }
 
 // handleCreateError resolves a failed CreateTransfer call into the
-// right next state. A clear rejection ends the intent at FAILED. An
-// ambiguous outcome moves to UNKNOWN and looks the transfer up by
-// request ID before anything else happens - confirmed absent, it is
-// safe to retry with the same request ID; found, the rail already has
-// it and no second create is ever sent.
+// right next state. Only an explicit, classified rejection ends the
+// intent at FAILED. Everything else - a classified ambiguous outcome,
+// but just as much a bare activity failure with no classification at
+// all, such as a worker that died mid-call and never got to report
+// anything - is treated the same way: move to UNKNOWN and look the
+// transfer up by request ID before anything else happens. Confirmed
+// absent, it is safe to retry with the same request ID; found, the
+// rail already has it and no second create is ever sent. Unclassified
+// failures must resolve exactly like a classified ambiguous one,
+// because that is exactly what they are: an outcome this code cannot
+// tell apart from one.
 func handleCreateError(ctx workflow.Context, state *domain.State, intent domain.Intent, err error) (PaymentResult, error) {
 	var appErr *temporal.ApplicationError
-	if !errors.As(err, &appErr) {
-		return PaymentResult{}, err
-	}
-
-	switch appErr.Type() {
-	case errTypeRejected:
+	if errors.As(err, &appErr) && appErr.Type() == errTypeRejected {
 		if err := moveTo(ctx, state, intent.Key, domain.FAILED, appErr.Error()); err != nil {
 			return PaymentResult{}, err
 		}
 		return PaymentResult{State: domain.FAILED, FailureReason: appErr.Error()}, nil
+	}
 
-	case errTypeAmbiguous:
-		if err := moveTo(ctx, state, intent.Key, domain.UNKNOWN, appErr.Error()); err != nil {
-			return PaymentResult{}, err
-		}
-
-		var found FindTransferResult
-		if err := execActivity(ctx, activities().FindTransferByRequestID, string(intent.Key)).Get(ctx, &found); err != nil {
-			return PaymentResult{}, err
-		}
-		if !found.Found {
-			return authorize(ctx, state, intent)
-		}
-
-		if err := moveTo(ctx, state, intent.Key, domain.IN_FLIGHT, "resolved via lookup after an ambiguous create"); err != nil {
-			return PaymentResult{}, err
-		}
-		return pollUntilTerminal(ctx, state, intent, found.Transfer)
-
-	default:
+	if err := moveTo(ctx, state, intent.Key, domain.UNKNOWN, err.Error()); err != nil {
 		return PaymentResult{}, err
 	}
+
+	var found FindTransferResult
+	if err := execActivity(ctx, activities().FindTransferByRequestID, string(intent.Key)).Get(ctx, &found); err != nil {
+		return PaymentResult{}, err
+	}
+	if !found.Found {
+		return authorize(ctx, state, intent)
+	}
+
+	if err := moveTo(ctx, state, intent.Key, domain.IN_FLIGHT, "resolved via lookup after an ambiguous create"); err != nil {
+		return PaymentResult{}, err
+	}
+	return pollUntilTerminal(ctx, state, intent, found.Transfer)
 }
 
 // pollUntilTerminal must be entered with state already IN_FLIGHT. It
