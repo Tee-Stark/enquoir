@@ -1,4 +1,4 @@
-.PHONY: up down test test-integration lint probe
+.PHONY: up down test test-integration lint probe sandbox-setup
 
 up:
 	docker compose -f deploy/docker-compose.yml --env-file .env up -d --wait
@@ -18,3 +18,6 @@ lint:
 
 probe:
 	set -a; . ./.env; set +a; go run ./cmd/probe
+
+sandbox-setup:
+	set -a; . ./.env; set +a; go run ./cmd/sandboxsetup
