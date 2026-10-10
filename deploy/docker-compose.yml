@@ -45,7 +45,9 @@ services:
     ports:
       - "7233:7233"
     healthcheck:
-      test: ["CMD", "temporal", "operator", "cluster", "health"]
+      # auto-setup binds the frontend to the container's own interface
+      # IP, not loopback, so the healthcheck must dial it by service name.
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
       interval: 5s
       timeout: 5s
       retries: 20
