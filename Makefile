@@ -1,4 +1,4 @@
-.PHONY: up down test test-integration lint
+.PHONY: up down test test-integration lint probe
 
 up:
 	docker compose -f deploy/docker-compose.yml --env-file .env up -d --wait
@@ -15,3 +15,6 @@ test-integration:
 lint:
 	gofmt -l .
 	go vet ./...
+
+probe:
+	set -a; . ./.env; set +a; go run ./cmd/probe
