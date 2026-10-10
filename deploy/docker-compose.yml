@@ -1,0 +1,71 @@
+# Dev environment: one Postgres instance (separate databases for the app and
+# for Temporal's own persistence) plus a Temporal server and its web UI.
+#
+# Versions follow the current temporalio/docker-compose reference
+# (https://github.com/temporalio/docker-compose) as of 2026-10: Postgres 16,
+# Temporal server 1.29.1, Temporal UI 2.34.0. We run a single Postgres
+# container rather than the upstream repo's separate one, since this
+# project's own Postgres is already part of the stack - admin-tools is
+# dropped to keep the slice small; use `docker compose exec temporal
+# temporal ...` if CLI access into the cluster is ever needed.
+name: enquoir
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-enquoir}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-enquoir}
+      POSTGRES_DB: ${POSTGRES_DB:-enquoir}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-enquoir}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [enquoir-network]
+
+  temporal:
+    image: temporalio/auto-setup:1.29.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-enquoir}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-enquoir}
+      POSTGRES_SEEDS: postgres
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+    ports:
+      - "7233:7233"
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [enquoir-network]
+
+  temporal-ui:
+    image: temporalio/ui:2.34.0
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "${TEMPORAL_UI_PORT:-8080}:8080"
+    networks: [enquoir-network]
+
+networks:
+  enquoir-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
