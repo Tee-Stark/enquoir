@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -47,6 +48,34 @@ func NewMoney(minorUnits int64, currency Currency) (Money, error) {
 
 func (m Money) MinorUnits() int64  { return m.minorUnits }
 func (m Money) Currency() Currency { return m.currency }
+
+// moneyJSON is Money's wire shape. Money's fields are unexported for
+// good reason (every instance must pass through NewMoney's checks),
+// but that also hides them from the default JSON marshaller - anything
+// that serialises Money, including Temporal's data converter for a
+// workflow or activity payload, would otherwise see nothing and
+// silently produce "{}".
+type moneyJSON struct {
+	MinorUnits int64    `json:"minor_units"`
+	Currency   Currency `json:"currency"`
+}
+
+func (m Money) MarshalJSON() ([]byte, error) {
+	return json.Marshal(moneyJSON{MinorUnits: m.minorUnits, Currency: m.currency})
+}
+
+func (m *Money) UnmarshalJSON(data []byte) error {
+	var dto moneyJSON
+	if err := json.Unmarshal(data, &dto); err != nil {
+		return err
+	}
+	decoded, err := NewMoney(dto.MinorUnits, dto.Currency)
+	if err != nil {
+		return err
+	}
+	*m = decoded
+	return nil
+}
 
 // ParseMajorUnits parses a decimal major-unit string such as "100.50" into
 // Money, without ever going through a float. The fractional part, if

@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestNewMoney_RejectsUnsupportedCurrency(t *testing.T) {
 	cases := []Currency{"", "JPY", "usd", "XXX"}
@@ -99,5 +102,40 @@ func TestMoney_RoundTripsThroughMajorUnitsString(t *testing.T) {
 		if got := m.MajorUnitsString(); got != decimal {
 			t.Errorf("round trip for %q: got %q", decimal, got)
 		}
+	}
+}
+
+// Money's fields are unexported, but it still crosses JSON boundaries
+// (e.g. Temporal's data converter, for any workflow/activity input or
+// output that embeds it) - the default struct marshalling would see
+// nothing and silently produce "{}". This must round-trip for real.
+func TestMoney_JSONRoundTrip(t *testing.T) {
+	original, err := NewMoney(10050, USD)
+	if err != nil {
+		t.Fatalf("NewMoney: unexpected error: %v", err)
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: unexpected error: %v", err)
+	}
+
+	var decoded Money
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal: unexpected error: %v", err)
+	}
+
+	if decoded.MinorUnits() != original.MinorUnits() || decoded.Currency() != original.Currency() {
+		t.Errorf("round trip changed the value: got %+v, want %+v", decoded, original)
+	}
+}
+
+func TestMoney_UnmarshalJSON_RejectsInvalidValue(t *testing.T) {
+	var m Money
+	if err := json.Unmarshal([]byte(`{"minor_units":0,"currency":"USD"}`), &m); err == nil {
+		t.Error("unmarshalling a zero amount: want error, got nil")
+	}
+	if err := json.Unmarshal([]byte(`{"minor_units":100,"currency":"JPY"}`), &m); err == nil {
+		t.Error("unmarshalling an unsupported currency: want error, got nil")
 	}
 }
