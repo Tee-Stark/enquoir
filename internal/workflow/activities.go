@@ -7,10 +7,13 @@ package workflow
 import (
 	"context"
 	"errors"
+	"os"
+	"time"
 
 	"go.temporal.io/sdk/temporal"
 
 	"enquoir/internal/app"
+	"enquoir/internal/chaos"
 	"enquoir/internal/domain"
 )
 
@@ -42,11 +45,33 @@ type AppendEventInput struct {
 }
 
 func (a *Activities) AppendEvent(ctx context.Context, in AppendEventInput) (domain.Event, error) {
+	// before_log: the IN_FLIGHT event is the one write every safety
+	// guarantee here hangs on - "before the call" means before this
+	// one specifically, not any of the others this same activity logs.
+	if in.Type == string(domain.IN_FLIGHT) {
+		chaos.KillAt(chaos.BeforeLog)
+	}
 	return a.Events.Append(ctx, in.IntentKey, in.Type, in.Payload)
 }
 
 func (a *Activities) CreateTransfer(ctx context.Context, intent domain.Intent) (app.Transfer, error) {
+	chaos.KillAt(chaos.AfterLogBeforeCall)
+
+	// during_call: the real call is synchronous, so there is no
+	// natural place to interrupt it mid-flight. Racing a short-lived
+	// kill against it is the closest a single process can get to "the
+	// worker died while the request was genuinely in the air" - which
+	// is exactly the state this is meant to prove recovery from.
+	if os.Getenv(chaos.EnvVar) == string(chaos.DuringCall) {
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			chaos.KillAt(chaos.DuringCall)
+		}()
+	}
+
 	transfer, err := a.Rail.CreateTransfer(ctx, intent)
+	chaos.KillAt(chaos.AfterCallBeforeCommit)
+
 	if err != nil {
 		return app.Transfer{}, toApplicationError(err)
 	}

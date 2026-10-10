@@ -16,11 +16,13 @@ import (
 	"enquoir/internal/adapters/airwallex"
 	"enquoir/internal/adapters/clock"
 	"enquoir/internal/adapters/postgres"
+	"enquoir/internal/chaos"
 	enquoirworkflow "enquoir/internal/workflow"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	chaos.WarnIfArmed(logger)
 	ctx := context.Background()
 
 	databaseURL := requireEnv(logger, "DATABASE_URL")
