@@ -1,4 +1,4 @@
-.PHONY: up down test test-integration lint probe sandbox-setup
+.PHONY: up down test test-integration lint probe sandbox-setup worker demo
 
 up:
 	docker compose -f deploy/docker-compose.yml --env-file .env up -d --wait
@@ -21,3 +21,9 @@ probe:
 
 sandbox-setup:
 	set -a; . ./.env; set +a; go run ./cmd/sandboxsetup
+
+worker:
+	set -a; . ./.env; set +a; go run ./cmd/worker
+
+demo:
+	set -a; . ./.env; set +a; go run ./cmd/demo
