@@ -12,6 +12,10 @@ import (
 	"enquoir/internal/domain"
 )
 
+// TaskQueue is the task queue PaymentWorkflow and its activities run
+// on. Shared by the worker and anything that starts a payment.
+const TaskQueue = "enquoir-payments"
+
 // PaymentInput is a payment workflow's input. MaxAmountMinorUnits is
 // supplied by whoever starts the workflow, not read inside it, so the
 // workflow stays deterministic no matter where that configuration
