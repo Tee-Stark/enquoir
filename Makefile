@@ -1,4 +1,4 @@
-.PHONY: up down test test-integration lint probe sandbox-setup worker demo
+.PHONY: up down test test-integration lint probe sandbox-setup worker demo api chaos
 
 up:
 	docker compose -f deploy/docker-compose.yml --env-file .env up -d --wait
@@ -27,3 +27,9 @@ worker:
 
 demo:
 	set -a; . ./.env; set +a; go run ./cmd/demo
+
+api:
+	set -a; . ./.env; set +a; go run ./cmd/api
+
+chaos:
+	set -a; . ./.env; set +a; go run ./cmd/chaos
