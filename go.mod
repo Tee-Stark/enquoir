@@ -3,6 +3,7 @@ module enquoir
 go 1.26.4
 
 require (
+	github.com/go-chi/chi/v5 v5.3.2
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/stretchr/testify v1.11.1
 	go.temporal.io/sdk v1.49.0
