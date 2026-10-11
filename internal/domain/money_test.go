@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 )
 
@@ -64,6 +65,41 @@ func TestParseMajorUnits_RejectsMalformedInput(t *testing.T) {
 
 func TestParseMajorUnits_RejectsZeroAndNegative(t *testing.T) {
 	cases := []string{"0", "0.00", "-1.00"}
+	for _, decimal := range cases {
+		if _, err := ParseMajorUnits(decimal, USD); err == nil {
+			t.Errorf("ParseMajorUnits(%q): want error, got nil", decimal)
+		}
+	}
+}
+
+func TestParseMajorUnits_RejectsOverflow(t *testing.T) {
+	// int64 holds values in [-M-1, M], where M = 2^63 - 1.
+	// ParseMajorUnits computes wholeUnits*100 + fracUnits, and if the true
+	// result exceeds M, Go silently wraps it around instead of erroring.
+	//   "92233720368547758.08":  M + 1, the first amount that overflows
+	//                            (wraps to -2^63).
+	//   "184467440737095516.17": wraps all the way to +1 cent, which
+	//                            NewMoney would accept as valid.
+	cases := []string{"92233720368547758.09", "184467440737095516.17"}
+	for _, decimal := range cases {
+		if _, err := ParseMajorUnits(decimal, USD); err == nil {
+			t.Errorf("ParseMajorUnits(%q): want error, got nil", decimal)
+		}
+	}
+}
+
+func TestParseMajorUnits_AcceptsLargestValidAmount(t *testing.T) {
+	m, err := ParseMajorUnits("92233720368547758.07", USD)
+	if err != nil {
+		t.Fatalf("want no error, got %v", err)
+	}
+	if m.MinorUnits() != math.MaxInt64 {
+		t.Errorf("got %d, want %d", m.MinorUnits(), int64(math.MaxInt64))
+	}
+}
+
+func TestParseMajorUnits_RejectsSignsInsideAmount(t *testing.T) {
+	cases := []string{"9.-9", "--5.00"}
 	for _, decimal := range cases {
 		if _, err := ParseMajorUnits(decimal, USD); err == nil {
 			t.Errorf("ParseMajorUnits(%q): want error, got nil", decimal)
