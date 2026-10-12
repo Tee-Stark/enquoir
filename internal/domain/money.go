@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -103,6 +104,10 @@ func ParseMajorUnits(decimal string, currency Currency) (Money, error) {
 		frac = "00"
 	}
 
+	if !allDigits(whole) || !allDigits(frac) {
+		return Money{}, fmt.Errorf("invalid amount %q: digits only", decimal)
+	}
+
 	wholeUnits, err := strconv.ParseInt(whole, 10, 63)
 	if err != nil {
 		return Money{}, fmt.Errorf("invalid amount %q: %w", decimal, err)
@@ -110,6 +115,10 @@ func ParseMajorUnits(decimal string, currency Currency) (Money, error) {
 	fracUnits, err := strconv.ParseInt(frac, 10, 63)
 	if err != nil {
 		return Money{}, fmt.Errorf("invalid amount %q: %w", decimal, err)
+	}
+
+	if wholeUnits > (math.MaxInt64-fracUnits)/100 {
+		return Money{}, fmt.Errorf("invalid amount %q: too large", decimal)
 	}
 
 	minorUnits := wholeUnits*100 + fracUnits
@@ -126,4 +135,16 @@ func (m Money) MajorUnitsString() string {
 	whole := m.minorUnits / 100
 	frac := m.minorUnits % 100
 	return fmt.Sprintf("%d.%02d", whole, frac)
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
