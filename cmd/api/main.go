@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/joho/godotenv"
 	"go.temporal.io/sdk/client"
 
 	"enquoir/internal/adapters/httpapi"
@@ -18,6 +19,10 @@ import (
 const defaultMaxMinorUnits = 1_000_000_00
 
 func main() {
+	if err := godotenv.Load(); err != nil {
+		slog.Warn("No .env file found or failed to load")
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	ctx := context.Background()
 
