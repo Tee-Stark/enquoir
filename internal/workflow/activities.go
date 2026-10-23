@@ -23,8 +23,9 @@ import (
 // exported so whoever starts a workflow can recognise a rejection in
 // the workflow's own failure, too.
 const (
-	ErrTypeRejected  = "Rejected"
-	errTypeAmbiguous = "Ambiguous"
+	ErrTypeRejected           = "Rejected"
+	errTypeAmbiguous          = "Ambiguous"
+	errTypeDuplicateTransfers = "DuplicateTransfers"
 )
 
 // Activities wraps the ports that must run as Temporal activities.
@@ -127,7 +128,7 @@ func (a *Activities) FindBeneficiary(ctx context.Context, key domain.Beneficiary
 	return FindBeneficiaryResult{ID: id, Found: ok}, nil
 }
 
-// toApplicationError tags the two outcomes the workflow must branch on
+// toApplicationError tags the outcomes the workflow must branch on
 // so they survive the activity boundary; anything else is left as-is
 // for Temporal's default handling, since the workflow has no specific
 // recovery for an error it doesn't recognise.
@@ -137,6 +138,8 @@ func toApplicationError(err error) error {
 		return temporal.NewApplicationErrorWithOptions(err.Error(), ErrTypeRejected, temporal.ApplicationErrorOptions{NonRetryable: true})
 	case errors.Is(err, app.ErrAmbiguous):
 		return temporal.NewApplicationErrorWithOptions(err.Error(), errTypeAmbiguous, temporal.ApplicationErrorOptions{NonRetryable: true})
+	case errors.Is(err, app.ErrDuplicateTransfers):
+		return temporal.NewApplicationErrorWithOptions(err.Error(), errTypeDuplicateTransfers, temporal.ApplicationErrorOptions{NonRetryable: true})
 	default:
 		return err
 	}

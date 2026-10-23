@@ -270,3 +270,85 @@ func TestPaymentWorkflow_CancelledTransferEndsFailedWithReason(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "account closed", chain[len(chain)-1].Payload)
 }
+
+func TestPaymentWorkflow_UnclearLookupIsRetriedUntilItAnswers(t *testing.T) {
+	// A rail outage during the lookup used to fail the run and strand
+	// the intent in UNKNOWN with nothing left to resolve it.
+	intent := testIntent(t, 10050)
+	var findCalls atomic.Int32
+	rail := &fakeRail{
+		createFunc: func(ctx context.Context, intent domain.Intent, callNum int) (app.Transfer, error) {
+			return app.Transfer{}, fmt.Errorf("timeout: %w", app.ErrAmbiguous)
+		},
+		findFunc: func(ctx context.Context, requestID string) (app.Transfer, bool, error) {
+			if findCalls.Add(1) <= 2 {
+				return app.Transfer{}, false, fmt.Errorf("login 403: %w", app.ErrAmbiguous)
+			}
+			return app.Transfer{ID: "tr_landed", Status: app.TransferPaid}, true, nil
+		},
+	}
+	te := newEnv(t, rail)
+
+	te.env.ExecuteWorkflow(PaymentWorkflow, PaymentInput{Intent: intent, MaxAmountMinorUnits: highMax})
+
+	require.True(t, te.env.IsWorkflowCompleted())
+	require.NoError(t, te.env.GetWorkflowError())
+	var result PaymentResult
+	require.NoError(t, te.env.GetWorkflowResult(&result))
+	require.Equal(t, domain.APPLIED, result.State)
+	require.Equal(t, 1, rail.calls(), "an unclear lookup must never lead to a second create")
+	require.Equal(t, int32(3), findCalls.Load())
+	require.Equal(t, []string{"PROPOSED", "AUTHORIZED", "IN_FLIGHT", "UNKNOWN", "IN_FLIGHT", "APPLIED"}, te.eventTypes(t, intent.Key))
+}
+
+func TestPaymentWorkflow_UnclearPollIsRetriedUntilItAnswers(t *testing.T) {
+	intent := testIntent(t, 10050)
+	var getCalls atomic.Int32
+	rail := &fakeRail{
+		createFunc: func(ctx context.Context, intent domain.Intent, callNum int) (app.Transfer, error) {
+			return app.Transfer{ID: "tr_1", Status: app.TransferSent}, nil
+		},
+		getFunc: func(ctx context.Context, transferID string) (app.Transfer, error) {
+			if getCalls.Add(1) <= 2 {
+				return app.Transfer{}, fmt.Errorf("status 502: %w", app.ErrAmbiguous)
+			}
+			return app.Transfer{ID: transferID, Status: app.TransferPaid}, nil
+		},
+	}
+	te := newEnv(t, rail)
+
+	te.env.ExecuteWorkflow(PaymentWorkflow, PaymentInput{Intent: intent, MaxAmountMinorUnits: highMax})
+
+	require.True(t, te.env.IsWorkflowCompleted())
+	require.NoError(t, te.env.GetWorkflowError())
+	var result PaymentResult
+	require.NoError(t, te.env.GetWorkflowResult(&result))
+	require.Equal(t, domain.APPLIED, result.State)
+	require.Equal(t, []string{"PROPOSED", "AUTHORIZED", "IN_FLIGHT", "APPLIED"}, te.eventTypes(t, intent.Key))
+}
+
+func TestPaymentWorkflow_DuplicateTransfersStopsTheRunLoudly(t *testing.T) {
+	// Two transfers for one request ID is a double payment already on
+	// the rail. Retrying can't fix it and nothing may proceed: the run
+	// fails, leaving the intent in UNKNOWN for a person to investigate.
+	intent := testIntent(t, 10050)
+	var findCalls atomic.Int32
+	rail := &fakeRail{
+		createFunc: func(ctx context.Context, intent domain.Intent, callNum int) (app.Transfer, error) {
+			return app.Transfer{}, fmt.Errorf("timeout: %w", app.ErrAmbiguous)
+		},
+		findFunc: func(ctx context.Context, requestID string) (app.Transfer, bool, error) {
+			findCalls.Add(1)
+			return app.Transfer{}, false, fmt.Errorf("tr_1, tr_2: %w", app.ErrDuplicateTransfers)
+		},
+	}
+	te := newEnv(t, rail)
+
+	te.env.ExecuteWorkflow(PaymentWorkflow, PaymentInput{Intent: intent, MaxAmountMinorUnits: highMax})
+
+	require.True(t, te.env.IsWorkflowCompleted())
+	require.Error(t, te.env.GetWorkflowError())
+	require.Equal(t, 1, rail.calls())
+	require.Equal(t, int32(1), findCalls.Load(), "a duplicate is not an unclear outcome and must not be retried")
+	require.Equal(t, []string{"PROPOSED", "AUTHORIZED", "IN_FLIGHT", "UNKNOWN"}, te.eventTypes(t, intent.Key))
+}

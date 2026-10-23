@@ -32,7 +32,10 @@ type PaymentResult struct {
 	FailureReason string
 }
 
-const pollInterval = 2 * time.Second
+const (
+	pollInterval   = 2 * time.Second
+	maxReadBackoff = 5 * time.Minute
+)
 
 var activityOptions = workflow.ActivityOptions{
 	StartToCloseTimeout: 30 * time.Second,
@@ -125,7 +128,7 @@ func handleCreateError(ctx workflow.Context, state *domain.State, intent domain.
 	}
 
 	var found FindTransferResult
-	if err := execActivity(ctx, activities().FindTransferByRequestID, string(intent.Key)).Get(ctx, &found); err != nil {
+	if err := readUntilClear(ctx, activities().FindTransferByRequestID, string(intent.Key), &found); err != nil {
 		return PaymentResult{}, err
 	}
 	if !found.Found {
@@ -160,10 +163,35 @@ func pollUntilTerminal(ctx workflow.Context, state *domain.State, intent domain.
 			if err := workflow.Sleep(ctx, pollInterval); err != nil {
 				return PaymentResult{}, err
 			}
-			if err := execActivity(ctx, activities().GetTransfer, transfer.ID).Get(ctx, &transfer); err != nil {
+			if err := readUntilClear(ctx, activities().GetTransfer, transfer.ID, &transfer); err != nil {
 				return PaymentResult{}, err
 			}
 		}
+	}
+}
+
+// readUntilClear runs a read-only rail activity, retrying it with
+// capped exponential backoff for as long as its outcome stays unclear.
+// Reads are always safe to repeat, and giving up would strand the
+// intent mid-payment with nothing left to resolve it - so a rail
+// outage is waited out rather than turned into a failed run. The one
+// exception is a duplicate transfer: a double payment already on the
+// rail, which no retry can fix, so the run stops and a person looks.
+func readUntilClear(ctx workflow.Context, activity any, arg any, result any) error {
+	backoff := pollInterval
+	for {
+		err := execActivity(ctx, activity, arg).Get(ctx, result)
+		if err == nil {
+			return nil
+		}
+		var appErr *temporal.ApplicationError
+		if errors.As(err, &appErr) && appErr.Type() == errTypeDuplicateTransfers {
+			return err
+		}
+		if err := workflow.Sleep(ctx, backoff); err != nil {
+			return err
+		}
+		backoff = min(backoff*2, maxReadBackoff)
 	}
 }
 
