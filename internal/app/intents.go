@@ -34,17 +34,30 @@ type SubmitIntent struct {
 	Events  EventLog
 }
 
+// Run starts intent's workflow only if nothing has ever been recorded
+// for it. The event log, not the workflow engine, decides: the engine
+// only dedupes a run while it is still running and forgets finished
+// runs after its retention period, while a recorded history is
+// permanent. A new run always begins at PROPOSED, which no recorded
+// state may legally move back to, so an intent with any history is
+// reported as it stands - a run in progress carries on by itself, and
+// moving a FAILED or UNKNOWN intent on is a reconciler's job, never a
+// resubmission's.
 func (s *SubmitIntent) Run(ctx context.Context, intent domain.Intent) (SubmitIntentResult, error) {
+	chain, err := s.Events.Load(ctx, intent.Key)
+	if err != nil {
+		return SubmitIntentResult{}, err
+	}
+	if len(chain) > 0 {
+		return SubmitIntentResult{Key: intent.Key, State: domain.State(chain[len(chain)-1].Type)}, nil
+	}
+
+	// No history yet: either brand new, or a run started moments ago
+	// that hasn't recorded anything - starting attaches to that run.
 	if err := s.Starter.Start(ctx, intent); err != nil {
 		return SubmitIntentResult{}, err
 	}
-
-	state := domain.PROPOSED
-	if chain, err := s.Events.Load(ctx, intent.Key); err == nil && len(chain) > 0 {
-		state = domain.State(chain[len(chain)-1].Type)
-	}
-
-	return SubmitIntentResult{Key: intent.Key, State: state}, nil
+	return SubmitIntentResult{Key: intent.Key, State: domain.PROPOSED}, nil
 }
 
 // GetIntentResult is one intent's recorded state and full event
