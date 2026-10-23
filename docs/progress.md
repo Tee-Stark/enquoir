@@ -310,7 +310,41 @@ returns `{id, key}`.
 - Against the real sandbox: the login still returns 403 with the
   current `.env` keys. Whether the real create accepts this payload,
   and whether `nick_name` filtering behaves as documented, is unproven.
-- `Simulator.EnsureBeneficiary` (used by `sandbox-setup`, `demo` and
-  `chaos`) still sends `local_clearing_system: "LOCAL"` and no address,
-  which contradicts the docs. Left unchanged here; it should move to
-  the new registration path.
+- `make sandbox-setup`, `demo` and `chaos` after the switch to
+  `sandbox.EnsurePayee` (see below) - same 403 blocker.
+
+## Fixes from the end-to-end run (same branch)
+
+Running the system end to end against the Compose stack (sandbox login
+refused with 403 throughout) surfaced these; each is its own commit.
+
+- **Resubmitting a finished intent started a second run.** Reproduced
+  live: an over-limit intent's log read PROPOSED, BLOCKED, PROPOSED,
+  BLOCKED. Temporal only dedupes a workflow ID while it runs; for an
+  APPLIED intent past Airwallex's 7-day `request_id` window, that is a
+  double payment. `SubmitIntent` now starts a run only when the event
+  log holds nothing for the key, and starts nothing if the log can't
+  be read. Re-verified live: one run, clean log.
+- **An unclear lookup stranded the intent in UNKNOWN.** The lookup
+  after an unclear create, and the status poll while IN_FLIGHT, failed
+  the run on their first error. Both now retry with backoff capped at
+  5 minutes. Re-verified live with login refused: the run stays
+  Running in UNKNOWN, no second create. The retry is unbounded by
+  design; a long outage grows the workflow's history slowly, and
+  continue-as-new hasn't been added.
+- **Transfer lookup took `items[0]`.** It now matches `request_id`
+  exactly and returns `ErrDuplicateTransfers` on more than one match,
+  which stops the run (non-retryable) for a person to look at. This
+  also makes `cmd/chaos` assert exactly one transfer, not merely one.
+  Its test fake lacked the documented `request_id` field; corrected in
+  its own commit first.
+- **The sandbox payee payload contradicted the docs** ("LOCAL", no
+  address, matched by company name). Replaced `Simulator.EnsureBeneficiary`
+  with `internal/sandbox.EnsurePayee`, which uses the same
+  `BeneficiaryRegistry` calls as the API.
+- **`cmd/probe` printed the bearer token.** Now redacted; its payee
+  payload also follows the docs.
+
+Left as is: `BeneficiaryWorkflow` still fails fast when its lookup
+errors. It backs a synchronous API call, so the caller gets a 500 it
+can safely retry, rather than a request that waits out an outage.
