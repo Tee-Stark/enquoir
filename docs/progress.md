@@ -266,3 +266,51 @@ more of the stack than the last. `make chaos`'s results table belongs
 in this file once it exists, and this phase's tag should wait for it:
 the stated done-criterion is `make chaos` actually passing, not just
 built.
+
+## Beneficiary registration (added outside the phase plan, at the user's request)
+
+Airwallex only pays a beneficiary it already holds, so an intent's
+`payee` had to be a pre-registered ID with no way to get one except
+`make sandbox-setup`. `POST /v1/beneficiaries` now registers one and
+returns `{id, key}`.
+
+### Design choices
+
+- **Contract from the docs, not guessed.** Queried the Airwallex docs
+  MCP server for `POST /beneficiaries/create` and `GET /beneficiaries`.
+  US/USD/LOCAL uses `local_clearing_system: "ACH"`, `aba` routing, and
+  a full address (every US example sends one; validation errors cite
+  address fields).
+- **No `request_id` on beneficiary create.** So Enquoir derives a
+  `BeneficiaryKey` from the trimmed details, sends it as `nickname`,
+  and looks it up via `GET /beneficiaries?nick_name=` (exact match
+  only) before ever creating. This matters for money: an intent's key
+  includes its payee ID, so one real payee under two IDs would let one
+  invoice be paid twice.
+- **Durable workflow, keyed `beneficiary-<key>`.** Concurrent
+  registrations of the same payee attach to one run; the prefix keeps
+  it apart from payment workflow IDs.
+- **`CreateBeneficiary` gets one attempt.** Unlike `CreateTransfer`,
+  a Temporal-level retry isn't idempotent here. Any failure short of a
+  clear rejection loops back to the lookup. A mutation check (retries
+  re-enabled) made the never-retried test fail with 3 creates.
+- **Scope:** US company accounts, USD, ACH only. The key covers every
+  field, so corrected details register a new beneficiary rather than
+  silently reusing one with stale details.
+
+### Verified
+
+- Unit tests for every layer, offline (`make test`).
+- Live against the Compose stack: the route starts the workflow, the
+  worker runs it, and with the sandbox refusing login (403) the lookup
+  fails and no create is attempted.
+
+### Not verified
+
+- Against the real sandbox: the login still returns 403 with the
+  current `.env` keys. Whether the real create accepts this payload,
+  and whether `nick_name` filtering behaves as documented, is unproven.
+- `Simulator.EnsureBeneficiary` (used by `sandbox-setup`, `demo` and
+  `chaos`) still sends `local_clearing_system: "LOCAL"` and no address,
+  which contradicts the docs. Left unchanged here; it should move to
+  the new registration path.

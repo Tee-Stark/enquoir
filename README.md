@@ -65,6 +65,23 @@ make demo   # submits one intent, runs its own in-process worker, pays it
 make api    # listens on :8090 (HTTP_ADDR)
 ```
 
+Register the payee first. Airwallex only pays a beneficiary it already
+holds, so an intent's `payee` is the `id` this returns:
+
+```sh
+curl -X POST localhost:8090/v1/beneficiaries \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Acme Ltd","account_number":"50001121","routing_number":"021000021",
+       "address":{"street":"412 5th Avenue","city":"Seattle","state":"WA","postcode":"98104"}}'
+# {"id":"<beneficiary id>","key":"..."}
+```
+
+Only US company accounts paid in USD over ACH are supported for now.
+Registering the same details again returns the same `id`: Airwallex's
+beneficiary create has no idempotency key, so Enquoir stores its own key
+as the beneficiary's nickname and looks it up before ever creating one.
+A rail rejection comes back as a 422 carrying Airwallex's reason.
+
 ```sh
 curl -X POST localhost:8090/v1/intents \
   -H 'Content-Type: application/json' \
