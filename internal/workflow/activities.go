@@ -19,17 +19,21 @@ import (
 
 // Activity error types, carried across the activity boundary via
 // temporal.ApplicationError since a plain errors.Is on app.ErrRejected/
-// app.ErrAmbiguous doesn't survive that boundary.
+// app.ErrAmbiguous doesn't survive that boundary. ErrTypeRejected is
+// exported so whoever starts a workflow can recognise a rejection in
+// the workflow's own failure, too.
 const (
-	errTypeRejected  = "Rejected"
-	errTypeAmbiguous = "Ambiguous"
+	ErrTypeRejected           = "Rejected"
+	errTypeAmbiguous          = "Ambiguous"
+	errTypeDuplicateTransfers = "DuplicateTransfers"
 )
 
 // Activities wraps the ports that must run as Temporal activities.
 type Activities struct {
-	Intents app.IntentRepository
-	Events  app.EventLog
-	Rail    app.Rail
+	Intents       app.IntentRepository
+	Events        app.EventLog
+	Rail          app.Rail
+	Beneficiaries app.BeneficiaryRegistry
 }
 
 func (a *Activities) SaveIntent(ctx context.Context, intent domain.Intent) (domain.Intent, error) {
@@ -101,16 +105,41 @@ func (a *Activities) FindTransferByRequestID(ctx context.Context, requestID stri
 	return FindTransferResult{Transfer: transfer, Found: ok}, nil
 }
 
-// toApplicationError tags the two outcomes the workflow must branch on
+func (a *Activities) CreateBeneficiary(ctx context.Context, b domain.Beneficiary) (string, error) {
+	id, err := a.Beneficiaries.CreateBeneficiary(ctx, b)
+	if err != nil {
+		return "", toApplicationError(err)
+	}
+	return id, nil
+}
+
+// FindBeneficiaryResult carries FindBeneficiary's result, for the same
+// reason FindTransferResult exists.
+type FindBeneficiaryResult struct {
+	ID    string
+	Found bool
+}
+
+func (a *Activities) FindBeneficiary(ctx context.Context, key domain.BeneficiaryKey) (FindBeneficiaryResult, error) {
+	id, ok, err := a.Beneficiaries.FindBeneficiary(ctx, key)
+	if err != nil {
+		return FindBeneficiaryResult{}, toApplicationError(err)
+	}
+	return FindBeneficiaryResult{ID: id, Found: ok}, nil
+}
+
+// toApplicationError tags the outcomes the workflow must branch on
 // so they survive the activity boundary; anything else is left as-is
 // for Temporal's default handling, since the workflow has no specific
 // recovery for an error it doesn't recognise.
 func toApplicationError(err error) error {
 	switch {
 	case errors.Is(err, app.ErrRejected):
-		return temporal.NewApplicationErrorWithOptions(err.Error(), errTypeRejected, temporal.ApplicationErrorOptions{NonRetryable: true})
+		return temporal.NewApplicationErrorWithOptions(err.Error(), ErrTypeRejected, temporal.ApplicationErrorOptions{NonRetryable: true})
 	case errors.Is(err, app.ErrAmbiguous):
 		return temporal.NewApplicationErrorWithOptions(err.Error(), errTypeAmbiguous, temporal.ApplicationErrorOptions{NonRetryable: true})
+	case errors.Is(err, app.ErrDuplicateTransfers):
+		return temporal.NewApplicationErrorWithOptions(err.Error(), errTypeDuplicateTransfers, temporal.ApplicationErrorOptions{NonRetryable: true})
 	default:
 		return err
 	}

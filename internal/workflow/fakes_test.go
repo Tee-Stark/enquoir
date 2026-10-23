@@ -82,3 +82,36 @@ func (r *fakeRail) calls() int {
 	defer r.mu.Unlock()
 	return r.createCalls
 }
+
+// fakeBeneficiaryRegistry scripts the rail's beneficiary calls the same
+// way fakeRail scripts transfers.
+type fakeBeneficiaryRegistry struct {
+	mu          sync.Mutex
+	createCalls int
+	findCalls   int
+
+	createFunc func(ctx context.Context, b domain.Beneficiary, callNum int) (string, error)
+	findFunc   func(ctx context.Context, key domain.BeneficiaryKey, callNum int) (string, bool, error)
+}
+
+func (r *fakeBeneficiaryRegistry) CreateBeneficiary(ctx context.Context, b domain.Beneficiary) (string, error) {
+	r.mu.Lock()
+	r.createCalls++
+	callNum := r.createCalls
+	r.mu.Unlock()
+	return r.createFunc(ctx, b, callNum)
+}
+
+func (r *fakeBeneficiaryRegistry) FindBeneficiary(ctx context.Context, key domain.BeneficiaryKey) (string, bool, error) {
+	r.mu.Lock()
+	r.findCalls++
+	callNum := r.findCalls
+	r.mu.Unlock()
+	return r.findFunc(ctx, key, callNum)
+}
+
+func (r *fakeBeneficiaryRegistry) creates() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.createCalls
+}

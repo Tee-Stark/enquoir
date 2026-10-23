@@ -21,6 +21,7 @@ import (
 	"enquoir/internal/adapters/postgres"
 	"enquoir/internal/app"
 	"enquoir/internal/domain"
+	"enquoir/internal/sandbox"
 	enquoirworkflow "enquoir/internal/workflow"
 )
 
@@ -91,7 +92,7 @@ func main() {
 	}
 	defer w.Stop()
 
-	beneficiaryID, err := simulator.EnsureBeneficiary(ctx)
+	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail)
 	if err != nil {
 		logger.Error("ensuring test beneficiary", "error", err)
 		os.Exit(1)

@@ -66,7 +66,8 @@ func main() {
 			Starter: &httpapi.TemporalPaymentStarter{Client: temporalClient, MaxAmountMinorUnits: maxMinorUnits},
 			Events:  events,
 		},
-		Get: &app.GetIntent{Events: events},
+		Get:      &app.GetIntent{Events: events},
+		Register: &app.RegisterBeneficiary{Registrar: &httpapi.TemporalBeneficiaryRegistrar{Client: temporalClient}},
 	}
 
 	logger.Info("api listening", "addr", httpAddr)

@@ -13,8 +13,9 @@ import (
 
 var _ app.Rail = (*Client)(nil)
 
-// Client is the Rail implementation: it only ever moves money.
-// Sandbox-only simulation calls live on the separate Simulator type.
+// Client is the Rail implementation: it moves money, and registers the
+// payees money moves to (BeneficiaryRegistry). Sandbox-only simulation
+// calls live on the separate Simulator type.
 type Client struct {
 	t *transport
 }
@@ -144,8 +145,26 @@ func (c *Client) FindTransferByRequestID(ctx context.Context, requestID string) 
 	if err := json.Unmarshal(body, &list); err != nil {
 		return app.Transfer{}, false, fmt.Errorf("airwallex: find transfer by request id %s: unparseable response %s: %w", requestID, body, app.ErrAmbiguous)
 	}
-	if len(list.Items) == 0 {
-		return app.Transfer{}, false, nil
+	// Only an exact request_id match counts, since the list endpoint is
+	// only documented to filter on it, not to match it exactly. More
+	// than one match means a double payment already exists on the rail
+	// and must surface, not be hidden behind whichever came first.
+	var matches []transferDTO
+	for _, item := range list.Items {
+		if item.RequestID == requestID {
+			matches = append(matches, item)
+		}
 	}
-	return list.Items[0].toTransfer(), true, nil
+	switch len(matches) {
+	case 0:
+		return app.Transfer{}, false, nil
+	case 1:
+		return matches[0].toTransfer(), true, nil
+	default:
+		ids := make([]string, len(matches))
+		for i, m := range matches {
+			ids[i] = m.ID
+		}
+		return app.Transfer{}, false, fmt.Errorf("airwallex: find transfer by request id %s: transfers %v: %w", requestID, ids, app.ErrDuplicateTransfers)
+	}
 }

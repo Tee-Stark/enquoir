@@ -23,6 +23,7 @@ import (
 	"enquoir/internal/app"
 	"enquoir/internal/chaos"
 	"enquoir/internal/domain"
+	"enquoir/internal/sandbox"
 	enquoirworkflow "enquoir/internal/workflow"
 )
 
@@ -89,7 +90,7 @@ func main() {
 	}
 	defer temporalClient.Close()
 
-	beneficiaryID, err := simulator.EnsureBeneficiary(ctx)
+	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail)
 	if err != nil {
 		logger.Error("ensuring test beneficiary", "error", err)
 		os.Exit(1)

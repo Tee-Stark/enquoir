@@ -65,6 +65,23 @@ make demo   # submits one intent, runs its own in-process worker, pays it
 make api    # listens on :8090 (HTTP_ADDR)
 ```
 
+Register the payee first. Airwallex only pays a beneficiary it already
+holds, so an intent's `payee` is the `id` this returns:
+
+```sh
+curl -X POST localhost:8090/v1/beneficiaries \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Acme Ltd","account_number":"50001121","routing_number":"021000021",
+       "address":{"street":"412 5th Avenue","city":"Seattle","state":"WA","postcode":"98104"}}'
+# {"id":"<beneficiary id>","key":"..."}
+```
+
+Only US company accounts paid in USD over ACH are supported for now.
+Registering the same details again returns the same `id`: Airwallex's
+beneficiary create has no idempotency key, so Enquoir stores its own key
+as the beneficiary's nickname and looks it up before ever creating one.
+A rail rejection comes back as a 422 carrying Airwallex's reason.
+
 ```sh
 curl -X POST localhost:8090/v1/intents \
   -H 'Content-Type: application/json' \
@@ -79,11 +96,20 @@ curl localhost:8090/healthz
 ```
 
 Posting the exact same intent again (same payee, amount, currency,
-reference and reason) returns the same key and starts nothing new -
-Temporal's own workflow-ID deduplication, since the intent's key is the
-workflow's ID. `GET` 404s until a worker has actually processed at least
-one activity for that intent; nothing recorded yet is nothing observed,
-by design.
+reference and reason) returns the same key, reports its recorded state,
+and starts nothing new - ever, not just while the first run is going.
+The event log decides, not Temporal: once anything is recorded for a
+key, a resubmission never starts another run, since Temporal forgets
+finished runs after its retention period and Airwallex forgets a
+`request_id` after 7 days. `GET` 404s until a worker has actually
+processed at least one activity for that intent; nothing recorded yet is
+nothing observed, by design.
+
+If the rail stops answering mid-payment, the intent waits in `UNKNOWN`
+(or `IN_FLIGHT`) and keeps retrying its lookup with backoff, capped at 5
+minutes, rather than failing - it settles by itself once the rail is
+back. The one thing that stops a run is the rail holding two transfers
+for one request ID: a double payment, left for a person to investigate.
 
 ## The chaos test
 

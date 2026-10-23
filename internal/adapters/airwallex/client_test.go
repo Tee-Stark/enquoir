@@ -208,6 +208,7 @@ func TestClient_CreateTransfer_DroppedConnectionMapsToErrAmbiguous(t *testing.T)
 }
 
 func TestClient_CreateTransfer_DuplicateRequestIDResolvesViaLookup(t *testing.T) {
+	intent := testIntent(t)
 	ts, _ := server(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/transfers/create"):
@@ -215,14 +216,14 @@ func TestClient_CreateTransfer_DuplicateRequestIDResolvesViaLookup(t *testing.T)
 			w.Write([]byte(`{"code":"duplicate_request_id","message":"already used"}`))
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/transfers"):
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"items":[{"id":"tr_existing","status":"SENT"}]}`))
+			w.Write([]byte(`{"items":[{"id":"tr_existing","request_id":"` + string(intent.Key) + `","status":"SENT"}]}`))
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 	})
 	c := newTestClient(t, ts, &fakeClock{now: time.Now()})
 
-	transfer, err := c.CreateTransfer(t.Context(), testIntent(t))
+	transfer, err := c.CreateTransfer(t.Context(), intent)
 	if err != nil {
 		t.Fatalf("CreateTransfer: %v", err)
 	}
@@ -310,5 +311,48 @@ func TestClient_FindTransferByRequestID_NotFound(t *testing.T) {
 	}
 	if ok {
 		t.Error("expected ok=false for a request ID with no matching transfer")
+	}
+}
+
+func TestClient_FindTransferByRequestID_MatchesExactlyAndRefusesDuplicates(t *testing.T) {
+	const requestID = "abc123def456"
+	tests := []struct {
+		name    string
+		body    string
+		wantID  string
+		wantOK  bool
+		wantErr error
+	}{
+		{"exact match is found", `{"items":[{"id":"tr_1","request_id":"abc123def456","status":"SENT"}]}`, "tr_1", true, nil},
+		// The docs only say the list endpoint filters on request_id, not
+		// that it matches exactly, so another transfer must not count.
+		{"other request id is not found", `{"items":[{"id":"tr_2","request_id":"zzz999","status":"PAID"}]}`, "", false, nil},
+		{"two matches means the rail already holds a double payment", `{"items":[` +
+			`{"id":"tr_1","request_id":"abc123def456","status":"PAID"},` +
+			`{"id":"tr_2","request_id":"abc123def456","status":"PAID"}]}`, "", false, app.ErrDuplicateTransfers},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts, _ := server(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(tt.body))
+			})
+			c := newTestClient(t, ts, &fakeClock{now: time.Now()})
+
+			transfer, ok, err := c.FindTransferByRequestID(t.Context(), requestID)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("FindTransferByRequestID error = %v, want it to wrap %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FindTransferByRequestID: %v", err)
+			}
+			if transfer.ID != tt.wantID || ok != tt.wantOK {
+				t.Errorf("FindTransferByRequestID = (%q, %v), want (%q, %v)", transfer.ID, ok, tt.wantID, tt.wantOK)
+			}
+		})
 	}
 }

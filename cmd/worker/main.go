@@ -1,6 +1,6 @@
-// Command worker runs Enquoir's Temporal worker: PaymentWorkflow and
-// its activities, wired to the real Postgres repositories and the real
-// Airwallex rail.
+// Command worker runs Enquoir's Temporal worker: PaymentWorkflow,
+// BeneficiaryWorkflow and their activities, wired to the real Postgres
+// repositories and the real Airwallex rail.
 package main
 
 import (
@@ -55,13 +55,15 @@ func main() {
 	defer temporalClient.Close()
 
 	activities := &enquoirworkflow.Activities{
-		Intents: postgres.NewIntentRepository(pool),
-		Events:  postgres.NewEventLog(pool),
-		Rail:    rail,
+		Intents:       postgres.NewIntentRepository(pool),
+		Events:        postgres.NewEventLog(pool),
+		Rail:          rail,
+		Beneficiaries: rail,
 	}
 
 	w := worker.New(temporalClient, enquoirworkflow.TaskQueue, worker.Options{})
 	w.RegisterWorkflow(enquoirworkflow.PaymentWorkflow)
+	w.RegisterWorkflow(enquoirworkflow.BeneficiaryWorkflow)
 	w.RegisterActivity(activities)
 
 	logger.Info("worker starting", "task_queue", enquoirworkflow.TaskQueue)
