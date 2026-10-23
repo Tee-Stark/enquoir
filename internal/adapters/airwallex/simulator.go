@@ -43,8 +43,10 @@ func (s *Simulator) FundAccount(ctx context.Context, amount domain.Money) error 
 
 	status, body, err := s.t.doJSON(ctx, http.MethodPost, "/api/v1/simulation/deposit/create", map[string]any{
 		"global_account_id": accountID,
-		"amount":            amount.MajorUnitsString(),
-		"payer_name":        "Enquoir",
+		// A JSON number, as the docs type it, built from the exact
+		// decimal string so no float is ever involved.
+		"amount":     json.Number(amount.MajorUnitsString()),
+		"payer_name": "Enquoir",
 	})
 	if err != nil {
 		return err
@@ -56,7 +58,9 @@ func (s *Simulator) FundAccount(ctx context.Context, amount domain.Money) error 
 }
 
 // ensureGlobalAccount lists existing Global Accounts and reuses one
-// matching currency, creating one only if none exists.
+// whose required_features include currency - the real list response
+// has no top-level currency field - creating one only if none exists.
+// Field names follow the Airwallex docs and the probe's observations.
 func (s *Simulator) ensureGlobalAccount(ctx context.Context, currency domain.Currency) (string, error) {
 	status, body, err := s.t.doJSON(ctx, http.MethodGet, "/api/v1/global_accounts", nil)
 	if err != nil {
@@ -65,23 +69,32 @@ func (s *Simulator) ensureGlobalAccount(ctx context.Context, currency domain.Cur
 	if status == http.StatusOK {
 		var list struct {
 			Items []struct {
-				ID       string `json:"id"`
-				Currency string `json:"currency"`
+				ID               string `json:"id"`
+				RequiredFeatures []struct {
+					Currency string `json:"currency"`
+				} `json:"required_features"`
 			} `json:"items"`
 		}
 		if err := json.Unmarshal(body, &list); err == nil {
 			for _, item := range list.Items {
-				if item.Currency == string(currency) {
-					return item.ID, nil
+				for _, f := range item.RequiredFeatures {
+					if f.Currency == string(currency) {
+						return item.ID, nil
+					}
 				}
 			}
 		}
 	}
 
+	// A fixed request_id per currency, so a retried create is
+	// recognised by the rail rather than opening a second account.
 	status, body, err = s.t.doJSON(ctx, http.MethodPost, "/api/v1/global_accounts/create", map[string]any{
-		"country_code":    "US",
-		"currency":        string(currency),
-		"transfer_method": "LOCAL",
+		"country_code": "US",
+		"request_id":   "enquoir-global-account-" + string(currency),
+		"nick_name":    "Enquoir " + string(currency),
+		"required_features": []map[string]any{
+			{"currency": string(currency), "transfer_method": "LOCAL"},
+		},
 	})
 	if err != nil {
 		return "", err
