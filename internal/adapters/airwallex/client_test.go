@@ -208,6 +208,7 @@ func TestClient_CreateTransfer_DroppedConnectionMapsToErrAmbiguous(t *testing.T)
 }
 
 func TestClient_CreateTransfer_DuplicateRequestIDResolvesViaLookup(t *testing.T) {
+	intent := testIntent(t)
 	ts, _ := server(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/transfers/create"):
@@ -215,14 +216,14 @@ func TestClient_CreateTransfer_DuplicateRequestIDResolvesViaLookup(t *testing.T)
 			w.Write([]byte(`{"code":"duplicate_request_id","message":"already used"}`))
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/transfers"):
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"items":[{"id":"tr_existing","status":"SENT"}]}`))
+			w.Write([]byte(`{"items":[{"id":"tr_existing","request_id":"` + string(intent.Key) + `","status":"SENT"}]}`))
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 	})
 	c := newTestClient(t, ts, &fakeClock{now: time.Now()})
 
-	transfer, err := c.CreateTransfer(t.Context(), testIntent(t))
+	transfer, err := c.CreateTransfer(t.Context(), intent)
 	if err != nil {
 		t.Fatalf("CreateTransfer: %v", err)
 	}
