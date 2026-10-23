@@ -111,6 +111,21 @@ minutes, rather than failing - it settles by itself once the rail is
 back. The one thing that stops a run is the rail holding two transfers
 for one request ID: a double payment, left for a person to investigate.
 
+## The end-to-end test
+
+```sh
+make e2e
+```
+
+Runs `scripts/e2e.sh` against a running worker and API: edge validation,
+a policy block, resubmission of a finished intent, then against the real
+sandbox it registers a payee (twice, same ID), pays it (submitted twice,
+one transfer), drives the transfer to PAID through the simulator, and
+checks the intent settles to `APPLIED` with a clean history. Every step
+is a plain, copyable curl. Needs `make up`, `make sandbox-setup`, `make
+worker` and `make api`. Run only one worker: an old one still polling the
+task queue will pick up work with stale code.
+
 ## The chaos test
 
 ```sh
