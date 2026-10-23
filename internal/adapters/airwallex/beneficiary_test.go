@@ -58,7 +58,7 @@ func TestClient_CreateBeneficiary_SendsDocumentedUSLocalPayload(t *testing.T) {
 			"address": map[string]any{
 				"street_address": "412 5th Avenue",
 				"city":           "Seattle",
-				"state":          "WA",
+				"state":          "US-WA", // ISO 3166-2, per the live schema
 				"postcode":       "98104",
 				"country_code":   "US",
 			},
@@ -68,6 +68,7 @@ func TestClient_CreateBeneficiary_SendsDocumentedUSLocalPayload(t *testing.T) {
 				"account_number":         "50001121",
 				"account_routing_type1":  "aba",
 				"account_routing_value1": "021000021",
+				"bank_account_category":  "Checking",
 				"bank_country_code":      "US",
 				"local_clearing_system":  "ACH",
 			},

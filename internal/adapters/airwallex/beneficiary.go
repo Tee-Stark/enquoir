@@ -18,7 +18,8 @@ var _ app.BeneficiaryRegistry = (*Client)(nil)
 // beneficiary's nickname instead - FindBeneficiary looks it up by that
 // nickname to resolve an ambiguous create before anything is retried.
 // Field names follow POST /api/v1/beneficiaries/create in the
-// Airwallex docs.
+// Airwallex docs; required fields and formats follow the live
+// US/USD/LOCAL/ACH form schema (POST /beneficiary_form_schemas/generate).
 func (c *Client) CreateBeneficiary(ctx context.Context, b domain.Beneficiary) (string, error) {
 	status, body, err := c.t.doJSON(ctx, http.MethodPost, "/api/v1/beneficiaries/create", map[string]any{
 		"nickname":         string(b.Key),
@@ -29,7 +30,7 @@ func (c *Client) CreateBeneficiary(ctx context.Context, b domain.Beneficiary) (s
 			"address": map[string]any{
 				"street_address": b.Address.Street,
 				"city":           b.Address.City,
-				"state":          b.Address.State,
+				"state":          "US-" + b.Address.State, // the schema wants ISO 3166-2
 				"postcode":       b.Address.Postcode,
 				"country_code":   "US",
 			},
@@ -39,6 +40,7 @@ func (c *Client) CreateBeneficiary(ctx context.Context, b domain.Beneficiary) (s
 				"account_number":         b.AccountNumber,
 				"account_routing_type1":  "aba",
 				"account_routing_value1": b.RoutingNumber,
+				"bank_account_category":  string(b.Category),
 				"bank_country_code":      "US",
 				"local_clearing_system":  "ACH",
 			},
