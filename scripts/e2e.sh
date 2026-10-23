@@ -203,10 +203,11 @@ pass "exactly one transfer: $TRANSFER_ID"
 # ---------------------------------------------------------------------
 step "10. Drive the transfer to PAID through the sandbox simulator (SENT first)"
 for to in SENT PAID; do
-	show "curl -s -X POST $AWX/api/v1/simulation/transfers/$TRANSFER_ID/transition -H 'Authorization: Bearer \$TOKEN' -H 'Content-Type: application/json' -d '{\"status\":\"$to\"}'"
+	show "curl -s -X POST $AWX/api/v1/simulation/transfers/$TRANSFER_ID/transition -H 'Authorization: Bearer \$TOKEN' -H 'Content-Type: application/json' -d '{\"next_status\":\"$to\"}'"
 	STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$AWX/api/v1/simulation/transfers/$TRANSFER_ID/transition" \
-		-H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "{\"status\":\"$to\"}")
-	BODY=$(jq -c '{id, status} // .' "$TMP" 2>/dev/null || cat "$TMP")
+		-H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "{\"next_status\":\"$to\"}")
+	# Show id and status on success; the whole body (the error) otherwise.
+	if [ "$STATUS" = 200 ]; then BODY=$(jq -c '{id, status}' "$TMP"); else BODY=$(cat "$TMP"); fi
 	got
 	expect_status 200
 done

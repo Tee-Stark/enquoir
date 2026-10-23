@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"enquoir/internal/app"
 	"enquoir/internal/domain"
 )
 
@@ -118,5 +119,26 @@ func TestSimulator_FundAccount_CreatesAccountWhenNoneMatches(t *testing.T) {
 	}
 	if deposit["global_account_id"] != "ga_new" {
 		t.Errorf("deposit went to %v, want the new account ga_new", deposit["global_account_id"])
+	}
+}
+
+func TestSimulator_TransitionTransfer_SendsNextStatus(t *testing.T) {
+	// The real sandbox answered {"status": ...} with 400 "Missing body
+	// parameter next_status"; the docs name the field next_status.
+	var got map[string]any
+	s := newTestSimulator(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/simulation/transfers/tr_1/transition" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		got = decodeNumbers(t, readBody(t, r))
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"tr_1","status":"SENT"}`))
+	})
+
+	if err := s.TransitionTransfer(t.Context(), "tr_1", app.TransferSent); err != nil {
+		t.Fatalf("TransitionTransfer: %v", err)
+	}
+	if want := map[string]any{"next_status": "SENT"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("body = %v, want %v", got, want)
 	}
 }

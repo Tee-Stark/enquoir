@@ -113,10 +113,10 @@ func (s *Simulator) ensureGlobalAccount(ctx context.Context, currency domain.Cur
 }
 
 // TransitionTransfer forces transferID into toStatus through the
-// sandbox's simulation endpoint.
+// sandbox's simulation endpoint, whose body field is next_status.
 func (s *Simulator) TransitionTransfer(ctx context.Context, transferID string, toStatus app.TransferStatus) error {
 	status, body, err := s.t.doJSON(ctx, http.MethodPost, "/api/v1/simulation/transfers/"+transferID+"/transition", map[string]any{
-		"status": string(toStatus),
+		"next_status": string(toStatus),
 	})
 	if err != nil {
 		return err
