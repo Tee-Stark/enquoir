@@ -12,8 +12,9 @@ import (
 
 // Handler holds the use cases the API calls into.
 type Handler struct {
-	Submit *app.SubmitIntent
-	Get    *app.GetIntent
+	Submit   *app.SubmitIntent
+	Get      *app.GetIntent
+	Register *app.RegisterBeneficiary
 }
 
 func NewRouter(h *Handler) chi.Router {
@@ -21,6 +22,7 @@ func NewRouter(h *Handler) chi.Router {
 	r.Get("/healthz", h.healthz)
 	r.Post("/v1/intents", h.submitIntent)
 	r.Get("/v1/intents/{key}", h.getIntent)
+	r.Post("/v1/beneficiaries", h.registerBeneficiary)
 	return r
 }
 
