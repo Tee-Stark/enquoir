@@ -82,7 +82,7 @@ step "2. Invalid input is rejected at the edge, before anything starts"
 show "curl -s -X POST $API/v1/beneficiaries -H 'Content-Type: application/json' -d '{... \"routing_number\":\"021000022\" ...}'"
 STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$API/v1/beneficiaries" \
 	-H 'Content-Type: application/json' \
-	-d '{"name":"Acme Ltd","account_number":"50001121","routing_number":"021000022",
+	-d '{"name":"Acme Ltd","account_number":"50001121","routing_number":"021000022","account_category":"Checking",
 	     "address":{"street":"412 5th Avenue","city":"Seattle","state":"WA","postcode":"98104"}}')
 BODY=$(cat "$TMP")
 got
@@ -141,6 +141,7 @@ pass "HTTP $STATUS, token received"
 # ---------------------------------------------------------------------
 step "6. Register the payee"
 PAYEE='{"name":"Enquoir E2E Payee","account_number":"50001121","routing_number":"021000021",
+        "account_category":"Checking",
         "address":{"street":"412 5th Avenue","city":"Seattle","state":"WA","postcode":"98104"}}'
 show "curl -s -X POST $API/v1/beneficiaries -H 'Content-Type: application/json' -d '$(jq -c . <<<"$PAYEE")'"
 STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$API/v1/beneficiaries" \
