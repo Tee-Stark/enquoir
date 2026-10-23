@@ -113,7 +113,7 @@ func authorize(ctx workflow.Context, state *domain.State, intent domain.Intent) 
 // tell apart from one.
 func handleCreateError(ctx workflow.Context, state *domain.State, intent domain.Intent, err error) (PaymentResult, error) {
 	var appErr *temporal.ApplicationError
-	if errors.As(err, &appErr) && appErr.Type() == errTypeRejected {
+	if errors.As(err, &appErr) && appErr.Type() == ErrTypeRejected {
 		if err := moveTo(ctx, state, intent.Key, domain.FAILED, appErr.Error()); err != nil {
 			return PaymentResult{}, err
 		}
