@@ -13,8 +13,9 @@ import (
 
 var _ app.Rail = (*Client)(nil)
 
-// Client is the Rail implementation: it only ever moves money.
-// Sandbox-only simulation calls live on the separate Simulator type.
+// Client is the Rail implementation: it moves money, and registers the
+// payees money moves to (BeneficiaryRegistry). Sandbox-only simulation
+// calls live on the separate Simulator type.
 type Client struct {
 	t *transport
 }

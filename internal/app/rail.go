@@ -57,6 +57,22 @@ type Rail interface {
 	FindTransferByRequestID(ctx context.Context, requestID string) (transfer Transfer, ok bool, err error)
 }
 
+// BeneficiaryRegistry registers payees on the rail, so an Intent has a
+// payee ID to pay. The rail offers no idempotency key for this, so the
+// beneficiary's key is stored on the rail with it instead, and looking
+// it up by that key is the only safe way to resolve an ambiguous
+// create before ever retrying.
+type BeneficiaryRegistry interface {
+	// CreateBeneficiary registers b on the rail and returns the rail's
+	// ID for it. Returns ErrRejected when the rail refuses the details,
+	// or ErrAmbiguous when the outcome could not be determined.
+	CreateBeneficiary(ctx context.Context, b domain.Beneficiary) (id string, err error)
+
+	// FindBeneficiary looks a beneficiary up by the key it was created
+	// with. ok is false when no such beneficiary exists.
+	FindBeneficiary(ctx context.Context, key domain.BeneficiaryKey) (id string, ok bool, err error)
+}
+
 // Simulator drives sandbox-only state changes that a real rail would
 // never expose: funding an account and forcing a transfer through its
 // states. It is a separate interface from Rail so that nothing which
