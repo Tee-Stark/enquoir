@@ -17,6 +17,11 @@ var ErrRejected = errors.New("rail: transfer rejected")
 // transfer up by request ID before ever retrying.
 var ErrAmbiguous = errors.New("rail: outcome ambiguous")
 
+// ErrDuplicateTransfers means the rail holds more than one transfer for
+// a single request ID - a double payment has already happened. Nothing
+// may proceed automatically; a person has to look.
+var ErrDuplicateTransfers = errors.New("rail: more than one transfer for one request ID")
+
 // TransferStatus is a rail-reported transfer status. These are the
 // rail's own vocabulary, not domain.State: SENT means in flight, not
 // final, and a failed transfer ends as CANCELLED, never "FAILED".

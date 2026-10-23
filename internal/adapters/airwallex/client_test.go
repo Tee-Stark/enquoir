@@ -313,3 +313,46 @@ func TestClient_FindTransferByRequestID_NotFound(t *testing.T) {
 		t.Error("expected ok=false for a request ID with no matching transfer")
 	}
 }
+
+func TestClient_FindTransferByRequestID_MatchesExactlyAndRefusesDuplicates(t *testing.T) {
+	const requestID = "abc123def456"
+	tests := []struct {
+		name    string
+		body    string
+		wantID  string
+		wantOK  bool
+		wantErr error
+	}{
+		{"exact match is found", `{"items":[{"id":"tr_1","request_id":"abc123def456","status":"SENT"}]}`, "tr_1", true, nil},
+		// The docs only say the list endpoint filters on request_id, not
+		// that it matches exactly, so another transfer must not count.
+		{"other request id is not found", `{"items":[{"id":"tr_2","request_id":"zzz999","status":"PAID"}]}`, "", false, nil},
+		{"two matches means the rail already holds a double payment", `{"items":[` +
+			`{"id":"tr_1","request_id":"abc123def456","status":"PAID"},` +
+			`{"id":"tr_2","request_id":"abc123def456","status":"PAID"}]}`, "", false, app.ErrDuplicateTransfers},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts, _ := server(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(tt.body))
+			})
+			c := newTestClient(t, ts, &fakeClock{now: time.Now()})
+
+			transfer, ok, err := c.FindTransferByRequestID(t.Context(), requestID)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("FindTransferByRequestID error = %v, want it to wrap %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FindTransferByRequestID: %v", err)
+			}
+			if transfer.ID != tt.wantID || ok != tt.wantOK {
+				t.Errorf("FindTransferByRequestID = (%q, %v), want (%q, %v)", transfer.ID, ok, tt.wantID, tt.wantOK)
+			}
+		})
+	}
+}
