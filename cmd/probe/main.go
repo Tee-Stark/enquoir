@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"time"
 )
 
@@ -31,9 +32,7 @@ func main() {
 	c := &client{baseURL: baseURL, http: &http.Client{Timeout: 30 * time.Second}}
 
 	section("1. Login")
-	token, loginBody := c.login(clientID, apiKey)
-	fmt.Printf("login response: %s\n", loginBody)
-	c.token = token
+	c.token = c.login(clientID, apiKey)
 
 	section("2. Ensure a funded USD Global Account")
 	accountID := c.ensureGlobalAccount()
@@ -117,11 +116,19 @@ func (c *client) do(method, path string, body any, headers map[string]string) (i
 	if err != nil {
 		log.Fatalf("reading response for %s: %v", path, err)
 	}
-	fmt.Printf("<-- %d %s\n", resp.StatusCode, respBody)
+	fmt.Printf("<-- %d %s\n", resp.StatusCode, redactTokens(respBody))
 	return resp.StatusCode, respBody
 }
 
-func (c *client) login(clientID, apiKey string) (string, []byte) {
+var tokenField = regexp.MustCompile(`"token"\s*:\s*"[^"]*"`)
+
+// redactTokens hides bearer tokens from printed output. The login
+// response carries one, and probe output gets pasted into notes.
+func redactTokens(body []byte) []byte {
+	return tokenField.ReplaceAll(body, []byte(`"token":"<redacted>"`))
+}
+
+func (c *client) login(clientID, apiKey string) string {
 	status, body := c.do(http.MethodPost, "/api/v1/authentication/login", nil, map[string]string{
 		"x-client-id": clientID,
 		"x-api-key":   apiKey,
@@ -139,7 +146,7 @@ func (c *client) login(clientID, apiKey string) (string, []byte) {
 	if parsed.Token == "" {
 		log.Fatal("login response had no top-level \"token\" field - inspect the raw body above and fix this probe")
 	}
-	return parsed.Token, body
+	return parsed.Token
 }
 
 func (c *client) ensureGlobalAccount() string {
@@ -204,7 +211,14 @@ func (c *client) createBeneficiary() string {
 				"bank_country_code":      "US",
 				"account_routing_type1":  "aba",
 				"account_routing_value1": "021000021",
-				"local_clearing_system":  "LOCAL",
+				"local_clearing_system":  "ACH",
+			},
+			"address": map[string]any{
+				"street_address": "412 5th Avenue",
+				"city":           "Seattle",
+				"state":          "WA",
+				"postcode":       "98104",
+				"country_code":   "US",
 			},
 		},
 		"transfer_methods": []string{"LOCAL"},
