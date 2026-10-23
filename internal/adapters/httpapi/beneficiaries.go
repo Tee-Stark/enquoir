@@ -13,6 +13,7 @@ type registerBeneficiaryRequest struct {
 	Name          string `json:"name"`
 	AccountNumber string `json:"account_number"`
 	RoutingNumber string `json:"routing_number"`
+	Category      string `json:"account_category"`
 	Address       struct {
 		Street   string `json:"street"`
 		City     string `json:"city"`
@@ -33,7 +34,7 @@ func (h *Handler) registerBeneficiary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b, err := domain.NewBeneficiary(req.Name, req.AccountNumber, req.RoutingNumber, domain.BeneficiaryAddress{
+	b, err := domain.NewBeneficiary(req.Name, req.AccountNumber, req.RoutingNumber, domain.AccountCategory(req.Category), domain.BeneficiaryAddress{
 		Street:   req.Address.Street,
 		City:     req.Address.City,
 		State:    req.Address.State,

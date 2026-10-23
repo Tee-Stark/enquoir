@@ -49,6 +49,7 @@ const validBeneficiaryBody = `{
 	"name": "Acme Ltd",
 	"account_number": "50001121",
 	"routing_number": "021000021",
+	"account_category": "Checking",
 	"address": {"street": "412 5th Avenue", "city": "Seattle", "state": "WA", "postcode": "98104"}
 }`
 
@@ -104,7 +105,9 @@ func TestRegisterBeneficiary_RejectsInvalidInputWithoutCallingRegistrar(t *testi
 		{"missing name", strings.Replace(validBeneficiaryBody, `"Acme Ltd"`, `""`, 1)},
 		{"bad routing checksum", strings.Replace(validBeneficiaryBody, `"021000021"`, `"021000022"`, 1)},
 		{"bad account number", strings.Replace(validBeneficiaryBody, `"50001121"`, `"50-01121"`, 1)},
-		{"missing address", `{"name":"Acme Ltd","account_number":"50001121","routing_number":"021000021"}`},
+		{"missing address", `{"name":"Acme Ltd","account_number":"50001121","routing_number":"021000021","account_category":"Checking"}`},
+		{"missing account category", strings.Replace(validBeneficiaryBody, `"account_category": "Checking",`, ``, 1)},
+		{"state spelled out", strings.Replace(validBeneficiaryBody, `"state": "WA"`, `"state": "Washington"`, 1)},
 	}
 
 	for _, tt := range tests {

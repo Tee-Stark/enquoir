@@ -15,7 +15,7 @@ import (
 // paid in USD over ACH. The details are fixed, so its key - and so the
 // beneficiary it registers as - stays the same across every run.
 func TestPayee() domain.Beneficiary {
-	b, err := domain.NewBeneficiary("Enquoir Sandbox Test Payee", "000123456789", "021000021", domain.BeneficiaryAddress{
+	b, err := domain.NewBeneficiary("Enquoir Sandbox Test Payee", "000123456789", "021000021", domain.Checking, domain.BeneficiaryAddress{
 		Street:   "412 5th Avenue",
 		City:     "Seattle",
 		State:    "WA",

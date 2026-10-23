@@ -16,7 +16,7 @@ import (
 
 func testBeneficiary(t *testing.T) domain.Beneficiary {
 	t.Helper()
-	b, err := domain.NewBeneficiary("Acme Ltd", "50001121", "021000021", domain.BeneficiaryAddress{
+	b, err := domain.NewBeneficiary("Acme Ltd", "50001121", "021000021", domain.Checking, domain.BeneficiaryAddress{
 		Street: "412 5th Avenue", City: "Seattle", State: "WA", Postcode: "98104",
 	})
 	require.NoError(t, err)
