@@ -14,6 +14,7 @@ import (
 	"enquoir/internal/adapters/airwallex"
 	"enquoir/internal/adapters/clock"
 	"enquoir/internal/domain"
+	"enquoir/internal/sandbox"
 )
 
 func main() {
@@ -28,13 +29,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	simulator, err := airwallex.NewSimulator(baseURL, clientID, apiKey, &http.Client{Timeout: 30 * time.Second}, clock.System{})
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	rail, err := airwallex.NewClient(baseURL, clientID, apiKey, httpClient, clock.System{})
+	if err != nil {
+		logger.Error("building Airwallex client", "error", err)
+		os.Exit(1)
+	}
+	simulator, err := airwallex.NewSimulator(baseURL, clientID, apiKey, httpClient, clock.System{})
 	if err != nil {
 		logger.Error("building simulator", "error", err)
 		os.Exit(1)
 	}
 
-	beneficiaryID, err := simulator.EnsureBeneficiary(ctx)
+	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail)
 	if err != nil {
 		logger.Error("ensuring test beneficiary", "error", err)
 		os.Exit(1)
