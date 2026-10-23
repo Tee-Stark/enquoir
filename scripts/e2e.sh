@@ -134,8 +134,9 @@ STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$AWX/api/v1/authentication
 TOKEN=$(jq -r '.token // empty' "$TMP")
 BODY=$(jq -c 'if .token then .token = "<redacted>" else . end' "$TMP")
 got
-[ "$STATUS" = 200 ] && [ -n "$TOKEN" ] || fail "sandbox login refused - check AWX_CLIENT_ID/AWX_API_KEY are sandbox keys"
-pass "HTTP 200, token received"
+# The sandbox answers a successful login with 201 Created.
+[[ "$STATUS" == 2?? ]] && [ -n "$TOKEN" ] || fail "sandbox login refused - check AWX_CLIENT_ID/AWX_API_KEY are sandbox keys"
+pass "HTTP $STATUS, token received"
 
 # ---------------------------------------------------------------------
 step "6. Register the payee"
