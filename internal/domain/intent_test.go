@@ -5,11 +5,18 @@ import (
 	"testing"
 )
 
+const testOrg OrgID = "org_test"
+
 func mustIntent(t *testing.T, payee string, minorUnits int64, currency, reference, reason string) Intent {
 	t.Helper()
-	intent, err := NewIntent(payee, minorUnits, currency, reference, reason)
+	return mustIntentForOrg(t, testOrg, payee, minorUnits, currency, reference, reason)
+}
+
+func mustIntentForOrg(t *testing.T, org OrgID, payee string, minorUnits int64, currency, reference, reason string) Intent {
+	t.Helper()
+	intent, err := NewIntent(org, payee, minorUnits, currency, reference, reason)
 	if err != nil {
-		t.Fatalf("NewIntent(%q, %d, %q, %q, %q): unexpected error: %v", payee, minorUnits, currency, reference, reason, err)
+		t.Fatalf("NewIntent(%q, %q, %d, %q, %q, %q): unexpected error: %v", org, payee, minorUnits, currency, reference, reason, err)
 	}
 	return intent
 }
@@ -36,6 +43,16 @@ func TestIntentKey_ChangingAnyIdentifyingFieldChangesKey(t *testing.T) {
 		if v.Key == base.Key {
 			t.Errorf("changing %s: expected a different key from base, got the same %q", field, v.Key)
 		}
+	}
+}
+
+// Tenants are isolated: two organisations submitting the exact same
+// payment must never collide into one dedup record.
+func TestIntentKey_DifferentOrganisationsGiveDifferentKeys(t *testing.T) {
+	a := mustIntentForOrg(t, "org_a", "acme-ltd", 10050, "USD", "INV-1001", "invoice settlement")
+	b := mustIntentForOrg(t, "org_b", "acme-ltd", 10050, "USD", "INV-1001", "invoice settlement")
+	if a.Key == b.Key {
+		t.Errorf("two organisations with identical intent fields got the same key %q", a.Key)
 	}
 }
 
@@ -94,29 +111,32 @@ func TestIntentKey_IsSafeLengthAndCharset(t *testing.T) {
 // derivation algorithm is caught by a test, not discovered in production.
 // Cross-checked outside Go:
 //
-//	printf 'acme-ltd\x0010050\x00USD\x00INV-1001' | shasum -a 256 | cut -c1-32
+//	printf 'org_test\x00acme-ltd\x0010050\x00USD\x00INV-1001' | shasum -a 256 | cut -c1-32
 func TestIntentKey_Golden(t *testing.T) {
 	intent := mustIntent(t, "acme-ltd", 10050, "USD", "INV-1001", "invoice settlement")
-	const want = "53c32f513f84d620851bc5bf3ffbcf40"
+	const want = "6c15aeacac1e27902570d35f2b8c8af6"
 	if string(intent.Key) != want {
 		t.Errorf("golden key changed: got %q, want %q", intent.Key, want)
 	}
 }
 
-func TestNewIntent_RejectsEmptyPayeeOrReference(t *testing.T) {
-	if _, err := NewIntent("", 10050, "USD", "INV-1001", "reason"); err == nil {
+func TestNewIntent_RejectsEmptyOrgPayeeOrReference(t *testing.T) {
+	if _, err := NewIntent("", "acme-ltd", 10050, "USD", "INV-1001", "reason"); err == nil {
+		t.Error("NewIntent with empty org: want error, got nil")
+	}
+	if _, err := NewIntent(testOrg, "", 10050, "USD", "INV-1001", "reason"); err == nil {
 		t.Error("NewIntent with empty payee: want error, got nil")
 	}
-	if _, err := NewIntent("acme-ltd", 10050, "USD", "   ", "reason"); err == nil {
+	if _, err := NewIntent(testOrg, "acme-ltd", 10050, "USD", "   ", "reason"); err == nil {
 		t.Error("NewIntent with blank reference: want error, got nil")
 	}
 }
 
 func TestNewIntent_RejectsInvalidMoney(t *testing.T) {
-	if _, err := NewIntent("acme-ltd", 0, "USD", "INV-1001", "reason"); err == nil {
+	if _, err := NewIntent(testOrg, "acme-ltd", 0, "USD", "INV-1001", "reason"); err == nil {
 		t.Error("NewIntent with zero amount: want error, got nil")
 	}
-	if _, err := NewIntent("acme-ltd", 10050, "JPY", "INV-1001", "reason"); err == nil {
+	if _, err := NewIntent(testOrg, "acme-ltd", 10050, "JPY", "INV-1001", "reason"); err == nil {
 		t.Error("NewIntent with unsupported currency: want error, got nil")
 	}
 }
