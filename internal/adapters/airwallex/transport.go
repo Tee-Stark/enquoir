@@ -94,7 +94,7 @@ func (t *transport) ensureToken(ctx context.Context) (string, error) {
 	// The sandbox answers a successful login with 201 Created; accept
 	// any 2xx rather than one exact code.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("airwallex: login: status %d: %s: %w", resp.StatusCode, body, app.ErrAmbiguous)
+		return "", railError(fmt.Sprintf("airwallex: login: status %d: %s", resp.StatusCode, body), resp.StatusCode, body, app.ErrAmbiguous)
 	}
 
 	var parsed struct {
@@ -160,4 +160,15 @@ func (t *transport) doJSON(ctx context.Context, method, path string, body any) (
 	}
 
 	return 0, nil, fmt.Errorf("airwallex: %s %s: exhausted retries on repeated rate limiting: %w", method, path, app.ErrAmbiguous)
+}
+
+// railError describes a failed call the rail answered, keeping its
+// status and its error code (when the body carries one) for the
+// attempt log.
+func railError(message string, status int, body []byte, kind error) error {
+	var parsed struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	return &app.RailError{Kind: kind, HTTPStatus: status, Code: parsed.Code, Message: message}
 }

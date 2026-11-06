@@ -51,10 +51,10 @@ func (c *Client) CreateBeneficiary(ctx context.Context, b domain.Beneficiary) (s
 	}
 
 	if status >= 500 {
-		return "", fmt.Errorf("airwallex: create beneficiary: status %d: %s: %w", status, body, app.ErrAmbiguous)
+		return "", railError(fmt.Sprintf("airwallex: create beneficiary: status %d: %s", status, body), status, body, app.ErrAmbiguous)
 	}
 	if status < 200 || status >= 300 {
-		return "", fmt.Errorf("airwallex: create beneficiary: rejected, status %d: %s: %w", status, body, app.ErrRejected)
+		return "", railError(fmt.Sprintf("airwallex: create beneficiary: rejected, status %d: %s", status, body), status, body, app.ErrRejected)
 	}
 
 	var created struct {
@@ -77,7 +77,7 @@ func (c *Client) FindBeneficiary(ctx context.Context, key domain.BeneficiaryKey)
 		return "", false, err
 	}
 	if status != http.StatusOK {
-		return "", false, fmt.Errorf("airwallex: find beneficiary %s: status %d: %s: %w", key, status, body, app.ErrAmbiguous)
+		return "", false, railError(fmt.Sprintf("airwallex: find beneficiary %s: status %d: %s", key, status, body), status, body, app.ErrAmbiguous)
 	}
 
 	var list struct {
