@@ -725,3 +725,34 @@ What a Cloud consumer now gets, all in `api/openapi.yaml` (served at
 - Submission attempts record what the agent sent, including free-text
   `reason`; nothing redacts it.
 - `GET /v1/payments/{key}` returns at most 500 attempts.
+
+## Performance review follow-up (2026-11-06)
+
+A code-based performance review (no profiling) raised three findings;
+all were real. Fixed, each test-first or under existing coverage:
+
+- **A rate limit that never cleared failed good payments** (`048a0a1`).
+  After the fourth 429 the transport returned the 429 as an ordinary
+  response, and `CreateTransfer` treats any other 4xx as a rejection:
+  the payment ended FAILED for good (resubmissions are deduplicated) and
+  a registration got a 422. An exhausted 429 is now ambiguous, so the
+  workflow looks the transfer up and retries. This was a correctness
+  bug hiding inside the review's latency finding.
+- **Concurrent Airwallex requests are capped at 10** (`2a3d1b7`), the
+  sandbox's documented limit, by a limiter shared by the process's
+  Client and Simulator, held only while a request is in the air. It
+  bounds one process: several workers together can still exceed it
+  (Temporal's task-queue rate limit would be the global answer). The
+  limit itself comes from AGENTS.md; Airwallex has never been observed
+  rate-limiting us.
+- **Saving a new intent takes one round trip** (`1b5264e`), via
+  `RETURNING`; the existing row is read only on a conflict.
+- **Appending an event reads only the last event** (`466c1fa`,
+  `4b5b089`), not the whole chain, and inserts the event and moves the
+  state in one statement: five round trips instead of six. A first
+  attempt to fold the lock and the read into one statement was caught by
+  the 20-way concurrent-append test: a statement that waits for a row
+  lock reads from the snapshot it took before waiting.
+
+Verified: `make test`, `make test-integration`, and against the real
+sandbox `make e2e` (22/22) and `make chaos` (4/4).
