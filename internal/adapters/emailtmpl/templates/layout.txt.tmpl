@@ -1,0 +1,10 @@
+{{.Brand.Name}} - {{.Brand.Tagline}}
+
+{{template "content" .}}
+{{if .P.link}}
+{{template "action" .}}:
+{{.P.link}}
+{{end}}
+--
+{{template "why" .}}
+This is an automated message; replies are not read.

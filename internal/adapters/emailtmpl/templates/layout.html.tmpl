@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>{{template "title" .}}</title>
+</head>
+<body style="margin:0;padding:0;background:{{.Brand.Background}};">
+<span style="display:none;font-size:1px;color:{{.Brand.Background}};max-height:0;max-width:0;opacity:0;overflow:hidden;">{{template "preheader" .}}</span>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:{{.Brand.Background}};">
+  <tr><td align="center" style="padding:32px 16px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;">
+      <tr><td style="background:{{.Brand.Ink}};border-radius:12px 12px 0 0;padding:22px 32px;">
+        <span style="font-family:{{.Brand.Font}};font-size:20px;font-weight:700;letter-spacing:0.5px;color:#FFFFFF;">{{.Brand.Name}}<span style="color:{{.Brand.Accent}};">.</span></span>
+        <div style="font-family:{{.Brand.Font}};font-size:12px;color:#9FB3C8;margin-top:2px;">{{.Brand.Tagline}}</div>
+      </td></tr>
+      <tr><td style="background:{{.Brand.Card}};border:1px solid {{.Brand.Border}};border-top:0;border-radius:0 0 12px 12px;padding:32px;font-family:{{.Brand.Font}};font-size:15px;line-height:1.6;color:{{.Brand.Text}};">
+        {{template "content" .}}
+        {{if .P.link}}
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:28px 0;">
+          <tr><td style="background:{{.Brand.Ink}};border-radius:8px;">
+            <a href="{{.P.link}}" style="display:inline-block;padding:13px 26px;font-family:{{.Brand.Font}};font-size:15px;font-weight:600;color:#FFFFFF;text-decoration:none;">{{template "action" .}}</a>
+          </td></tr>
+        </table>
+        <p style="margin:0 0 6px;font-size:13px;color:{{.Brand.Muted}};">Or paste this link into your browser:</p>
+        <p style="margin:0;font-size:13px;word-break:break-all;"><a href="{{.P.link}}" style="color:{{.Brand.Accent}};">{{.P.link}}</a></p>
+        {{end}}
+        <p style="margin:28px 0 0;font-size:13px;color:{{.Brand.Muted}};border-top:1px solid {{.Brand.Border}};padding-top:18px;">{{template "why" .}}</p>
+      </td></tr>
+      <tr><td align="center" style="padding:20px 32px;font-family:{{.Brand.Font}};font-size:12px;color:{{.Brand.Muted}};">
+        {{.Brand.Name}} &middot; {{.Brand.Tagline}}<br>This is an automated message; replies are not read.
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body>
+</html>

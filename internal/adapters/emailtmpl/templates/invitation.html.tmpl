@@ -1,0 +1,7 @@
+{{define "title"}}Join {{.P.organisation}} on {{.Brand.Name}}{{end}}
+{{define "preheader"}}{{.P.inviter}} invited you to {{.P.organisation}} as {{.P.role}}.{{end}}
+{{define "action"}}Accept invitation{{end}}
+{{define "content"}}<h1 style="margin:0 0 14px;font-size:22px;color:{{.Brand.Ink}};">You're invited to {{.P.organisation}}</h1>
+<p style="margin:0 0 12px;"><strong>{{.P.inviter}}</strong> invited you to join <strong>{{.P.organisation}}</strong> on {{.Brand.Name}} as <strong>{{.P.role}}</strong>.</p>
+<p style="margin:0;">{{.Brand.Name}} keeps an organisation's AI agents from paying anything twice, and records every step they take. The invitation expires in 7 days.</p>{{end}}
+{{define "why"}}You received this because {{.P.inviter}} invited this address. If you weren't expecting it, ignore this email.{{end}}

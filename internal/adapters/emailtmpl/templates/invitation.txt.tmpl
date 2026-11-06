@@ -1,0 +1,8 @@
+{{define "subject"}}{{.P.inviter}} invited you to {{.P.organisation}} on {{.Brand.Name}}{{end}}
+{{define "action"}}Accept the invitation{{end}}
+{{define "content"}}You're invited to {{.P.organisation}}
+
+{{.P.inviter}} invited you to join {{.P.organisation}} on {{.Brand.Name}} as {{.P.role}}.
+
+{{.Brand.Name}} keeps an organisation's AI agents from paying anything twice, and records every step they take. The invitation expires in 7 days.{{end}}
+{{define "why"}}You received this because {{.P.inviter}} invited this address. If you weren't expecting it, ignore this email.{{end}}
