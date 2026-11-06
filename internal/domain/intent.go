@@ -24,7 +24,9 @@ type Intent struct {
 }
 
 // NewIntent builds an Intent, normalising its reference (trimmed) and
-// currency (upper-cased) before deriving its key.
+// currency (upper-cased) before deriving its key. The reason is kept on
+// the Intent for the record but is not part of its key: it is free text
+// an agent writes, and a reworded retry is still the same payment.
 func NewIntent(payee string, minorUnits int64, currency, reference, reason string) (Intent, error) {
 	if strings.TrimSpace(payee) == "" {
 		return Intent{}, errors.New("payee is required")
@@ -45,21 +47,21 @@ func NewIntent(payee string, minorUnits int64, currency, reference, reason strin
 		Amount:    amount,
 		Reference: reference,
 		Reason:    reason,
-		Key:       deriveIntentKey(payee, amount, reference, reason),
+		Key:       deriveIntentKey(payee, amount, reference),
 	}, nil
 }
 
-// deriveIntentKey hashes the intent's normalised fields with a separator
-// byte that cannot appear in any field's text representation, so no
-// combination of field values can collide by shifting a boundary.
-func deriveIntentKey(payee string, amount Money, reference, reason string) IntentKey {
+// deriveIntentKey hashes the fields that identify a payment - who is
+// paid, how much, in what currency, against which reference - with a
+// separator byte between them so no combination of field values can
+// collide by shifting a boundary.
+func deriveIntentKey(payee string, amount Money, reference string) IntentKey {
 	const sep = "\x00"
 	canonical := strings.Join([]string{
 		payee,
 		strconv.FormatInt(amount.MinorUnits(), 10),
 		string(amount.Currency()),
 		reference,
-		reason,
 	}, sep)
 
 	sum := sha256.Sum256([]byte(canonical))

@@ -95,9 +95,12 @@ curl localhost:8090/healthz
 # ok
 ```
 
-Posting the exact same intent again (same payee, amount, currency,
-reference and reason) returns the same key, reports its recorded state,
-and starts nothing new - ever, not just while the first run is going.
+Posting the same intent again (same payee, amount, currency and
+reference) returns the same key, reports its recorded state, and starts
+nothing new - ever, not just while the first run is going. The `reason`
+is recorded but deliberately left out of the key: it is free text an
+agent writes, and an agent rewords it when it retries, so a reworded
+retry must still be the same payment.
 The event log decides, not Temporal: once anything is recorded for a
 key, a resubmission never starts another run, since Temporal forgets
 finished runs after its retention period and Airwallex forgets a

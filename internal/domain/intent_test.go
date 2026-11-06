@@ -22,29 +22,42 @@ func TestIntentKey_SameFieldsGiveSameKey(t *testing.T) {
 	}
 }
 
-func TestIntentKey_ChangingAnyFieldChangesKey(t *testing.T) {
+func TestIntentKey_ChangingAnyIdentifyingFieldChangesKey(t *testing.T) {
 	base := mustIntent(t, "acme-ltd", 10050, "USD", "INV-1001", "invoice settlement")
 
-	variants := []Intent{
-		mustIntent(t, "other-payee", 10050, "USD", "INV-1001", "invoice settlement"),
-		mustIntent(t, "acme-ltd", 999, "USD", "INV-1001", "invoice settlement"),
-		mustIntent(t, "acme-ltd", 10050, "EUR", "INV-1001", "invoice settlement"),
-		mustIntent(t, "acme-ltd", 10050, "USD", "INV-1002", "invoice settlement"),
-		mustIntent(t, "acme-ltd", 10050, "USD", "INV-1001", "different reason"),
+	variants := map[string]Intent{
+		"payee":     mustIntent(t, "other-payee", 10050, "USD", "INV-1001", "invoice settlement"),
+		"amount":    mustIntent(t, "acme-ltd", 999, "USD", "INV-1001", "invoice settlement"),
+		"currency":  mustIntent(t, "acme-ltd", 10050, "EUR", "INV-1001", "invoice settlement"),
+		"reference": mustIntent(t, "acme-ltd", 10050, "USD", "INV-1002", "invoice settlement"),
 	}
 
-	for i, v := range variants {
+	for field, v := range variants {
 		if v.Key == base.Key {
-			t.Errorf("variant %d: expected a different key from base, got the same %q", i, v.Key)
+			t.Errorf("changing %s: expected a different key from base, got the same %q", field, v.Key)
 		}
 	}
 }
 
-func TestIntentKey_DistinctReasonChangesKey(t *testing.T) {
-	a := mustIntent(t, "acme-ltd", 10050, "USD", "INV-1001", "first run")
-	b := mustIntent(t, "acme-ltd", 10050, "USD", "INV-1001", "retry after timeout")
-	if a.Key == b.Key {
-		t.Errorf("distinct reasons produced the same key: %q", a.Key)
+// The reason is free text an agent writes, and an agent rewords it when it
+// retries. If the reason were part of the key, a reworded retry of the same
+// invoice would be a new payment.
+func TestIntentKey_RewordedReasonKeepsKey(t *testing.T) {
+	reasons := []string{
+		"invoice settlement",
+		"Settling INV-1001 for Acme",
+		"retry after timeout",
+		"",
+	}
+	base := mustIntent(t, "acme-ltd", 10050, "USD", "INV-1001", reasons[0])
+	for _, reason := range reasons[1:] {
+		got := mustIntent(t, "acme-ltd", 10050, "USD", "INV-1001", reason)
+		if got.Key != base.Key {
+			t.Errorf("reason %q changed the key: got %q, want %q", reason, got.Key, base.Key)
+		}
+		if got.Reason != reason {
+			t.Errorf("reason not kept on the intent: got %q, want %q", got.Reason, reason)
+		}
 	}
 }
 
@@ -79,9 +92,12 @@ func TestIntentKey_IsSafeLengthAndCharset(t *testing.T) {
 
 // Golden: pins a known key for a fixed input so an accidental change to the
 // derivation algorithm is caught by a test, not discovered in production.
+// Cross-checked outside Go:
+//
+//	printf 'acme-ltd\x0010050\x00USD\x00INV-1001' | shasum -a 256 | cut -c1-32
 func TestIntentKey_Golden(t *testing.T) {
 	intent := mustIntent(t, "acme-ltd", 10050, "USD", "INV-1001", "invoice settlement")
-	const want = "411962bef49df9842be394ab137286a6"
+	const want = "53c32f513f84d620851bc5bf3ffbcf40"
 	if string(intent.Key) != want {
 		t.Errorf("golden key changed: got %q, want %q", intent.Key, want)
 	}
