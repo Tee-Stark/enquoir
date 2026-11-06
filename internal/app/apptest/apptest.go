@@ -164,3 +164,130 @@ func (s *Sessions) StoresPlaintext(secret string) bool {
 	}
 	return false
 }
+
+type agentRecord struct {
+	agent app.Agent
+	keys  []app.APIKey
+	// active is the index into keys of the active key, or -1.
+	active int
+}
+
+// Agents is an in-memory app.AgentStore.
+type Agents struct {
+	mu     sync.Mutex
+	agents map[domain.AgentID]*agentRecord
+	order  []domain.AgentID
+}
+
+func NewAgents() *Agents { return &Agents{agents: map[domain.AgentID]*agentRecord{}} }
+
+func (s *Agents) view(r *agentRecord) app.Agent {
+	a := r.agent
+	if r.active >= 0 {
+		k := r.keys[r.active]
+		a.Key = &k
+	}
+	return a
+}
+
+func (s *Agents) find(org domain.OrgID, id domain.AgentID) (*agentRecord, error) {
+	r, ok := s.agents[id]
+	if !ok || r.agent.OrgID != org {
+		return nil, app.ErrNotFound
+	}
+	return r, nil
+}
+
+func (s *Agents) CreateAgent(ctx context.Context, a app.Agent, key app.APIKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agents[a.ID] = &agentRecord{agent: a, keys: []app.APIKey{key}, active: 0}
+	s.order = append(s.order, a.ID)
+	return nil
+}
+
+func (s *Agents) ListAgents(ctx context.Context, org domain.OrgID) ([]app.Agent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []app.Agent
+	for _, id := range s.order {
+		if r := s.agents[id]; r.agent.OrgID == org {
+			out = append(out, s.view(r))
+		}
+	}
+	return out, nil
+}
+
+func (s *Agents) GetAgent(ctx context.Context, org domain.OrgID, id domain.AgentID) (app.Agent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.find(org, id)
+	if err != nil {
+		return app.Agent{}, err
+	}
+	return s.view(r), nil
+}
+
+func (s *Agents) ReplaceKey(ctx context.Context, org domain.OrgID, id domain.AgentID, key app.APIKey, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.find(org, id)
+	if err != nil || r.agent.Revoked() {
+		return app.ErrNotFound
+	}
+	r.keys = append(r.keys, key)
+	r.active = len(r.keys) - 1
+	return nil
+}
+
+func (s *Agents) RevokeAgent(ctx context.Context, org domain.OrgID, id domain.AgentID, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.find(org, id)
+	if err != nil {
+		return err
+	}
+	if !r.agent.Revoked() {
+		r.agent.RevokedAt = &at
+		r.active = -1
+	}
+	return nil
+}
+
+func (s *Agents) ActiveKeyByHash(ctx context.Context, hash string) (app.APIKey, app.Agent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.agents {
+		if r.active >= 0 && r.keys[r.active].SecretHash == hash {
+			return r.keys[r.active], s.view(r), nil
+		}
+	}
+	return app.APIKey{}, app.Agent{}, app.ErrNotFound
+}
+
+func (s *Agents) TouchKey(ctx context.Context, keyID string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.agents {
+		for i := range r.keys {
+			if r.keys[i].ID == keyID {
+				r.keys[i].LastUsedAt = &at
+			}
+		}
+	}
+	return nil
+}
+
+// StoresPlaintext reports whether any stored key holds secret.
+func (s *Agents) StoresPlaintext(secret string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.agents {
+		for _, k := range r.keys {
+			if k.SecretHash == secret || k.Prefix == secret || k.ID == secret {
+				return true
+			}
+		}
+	}
+	return false
+}
