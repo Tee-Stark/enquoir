@@ -756,3 +756,42 @@ all were real. Fixed, each test-first or under existing coverage:
 
 Verified: `make test`, `make test-integration`, and against the real
 sandbox `make e2e` (22/22) and `make chaos` (4/4).
+
+## Security audit follow-up (2026-11-06)
+
+A security audit of the HTTP boundary, run against `main`, reported:
+
+- **No authentication on any endpoint.** True of `main`; already fixed
+  on this branch (agent API keys on the payment routes, sessions on the
+  dashboard, organisation scoping), and proven by the handler tests and
+  e2e steps 4 and 22. `main` stays open until this branch merges.
+- **No request body limit, no server timeouts.** Real here too. Fixed:
+  every body is capped at 64 KiB (`413 body_too_large`, `7f261c7`), and
+  `httpapi.NewServer` sets read-header, read, write and idle timeouts
+  and a header-size limit, with graceful shutdown on SIGINT/SIGTERM
+  (`08336ba`). The write timeout outlasts the 60s a registration may
+  wait; a test pins it.
+- **Dev ports published on every interface.** Worse than reported:
+  besides Postgres, Temporal's frontend (no authentication) was
+  reachable, letting anyone on the network start a payment workflow
+  directly. All three are now loopback-only (`deploy/docker-compose.yml`).
+
+Verified: `make test`, `make test-integration`, a live 413 and a clean
+SIGTERM shutdown, the dev ports refused from the LAN address, and
+`make e2e` against the real sandbox.
+
+## Next phase: authentication hardening (queued)
+
+- Rate limiting or lockout on log-in and sign-up (credential stuffing,
+  sign-up abuse); the dummy-hash timing equaliser is not a rate limit.
+- Email verification that gates something (it is a placeholder today);
+  decide what an unverified account may do.
+- Organisations with more than one user: invitations, roles (every user
+  is the owner today), removing a user and revoking their sessions.
+- API keys: optional expiry, scopes (e.g. read-only status keys), and a
+  per-key rate limit; `last_used_at` already exists for spotting stale
+  keys.
+- Session hardening: listing and revoking sessions, sliding expiry,
+  revoking all sessions on a password change (there is no password
+  change or reset yet - both belong here).
+- Audit trail of account actions (key created/rotated/revoked, sign-ins).
