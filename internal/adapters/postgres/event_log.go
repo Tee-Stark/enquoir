@@ -27,8 +27,10 @@ func NewEventLog(pool *pgxpool.Pool) *EventLog {
 
 // Append records the next event for an intent, and moves the intent's
 // read-model state with it, in one transaction. It locks the intent's
-// row first, so concurrent appends to one intent queue up instead of
-// computing the same next sequence number. The event is durably
+// row - so concurrent appends to one intent queue instead of computing
+// the same next sequence number - reads only the chain's last event,
+// all the next one needs, then inserts the event and moves the state in
+// one statement. The event is durably
 // written before Append returns, never after a caller acts on it.
 // Tenants are isolated: org scopes every read and write.
 func (l *EventLog) Append(ctx context.Context, org domain.OrgID, intentKey domain.IntentKey, eventType, payload string) (domain.Event, error) {
@@ -44,32 +46,43 @@ func (l *EventLog) Append(ctx context.Context, org domain.OrgID, intentKey domai
 			return err
 		}
 
-		chain, err := loadChain(ctx, tx, org, intentKey)
-		if err != nil {
+		// A separate statement, after the lock is held: one statement
+		// that waited for the lock would still read the last event from
+		// the snapshot it took before waiting - stale, if another
+		// append committed meanwhile.
+		var lastSeq *int
+		var lastHash *string
+		err = tx.QueryRow(ctx, `
+			SELECT sequence_number, hash FROM intent_events
+			WHERE org_id = $1 AND intent_key = $2
+			ORDER BY sequence_number DESC LIMIT 1`, string(org), string(intentKey)).Scan(&lastSeq, &lastHash)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		chain = chain.Append(intentKey, eventType, payload)
-		newEvent = chain[len(chain)-1]
 
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO intent_events (intent_key, org_id, sequence_number, type, payload, prev_hash, hash)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-			RETURNING created_at`,
-			string(intentKey), string(org), newEvent.SequenceNumber, newEvent.Type, newEvent.Payload, newEvent.PrevHash, newEvent.Hash,
-		).Scan(&newEvent.RecordedAt); err != nil {
-			return fmt.Errorf("appending event for %s: %w", intentKey, err)
+		var last *domain.Event
+		if lastSeq != nil {
+			last = &domain.Event{SequenceNumber: *lastSeq, Hash: *lastHash}
 		}
+		newEvent = domain.NextEvent(intentKey, last, eventType, payload)
 
-		_, err = tx.Exec(ctx, `
+		err = tx.QueryRow(ctx, `
+			WITH inserted AS (
+				INSERT INTO intent_events (intent_key, org_id, sequence_number, type, payload, prev_hash, hash)
+				VALUES ($2, $1, $3, $4, $5, $6, $7)
+				RETURNING created_at
+			)
 			UPDATE intents SET
-				state = $3,
-				state_changed_at = $4,
-				transfer_id = CASE WHEN $3 = 'APPLIED' THEN $5 ELSE transfer_id END,
-				failure_reason = CASE WHEN $3 IN ('FAILED', 'BLOCKED') THEN $5 ELSE failure_reason END
-			WHERE org_id = $1 AND key = $2`,
-			string(org), string(intentKey), eventType, newEvent.RecordedAt, payload)
+				state = $4,
+				state_changed_at = (SELECT created_at FROM inserted),
+				transfer_id = CASE WHEN $4 = 'APPLIED' THEN $5 ELSE transfer_id END,
+				failure_reason = CASE WHEN $4 IN ('FAILED', 'BLOCKED') THEN $5 ELSE failure_reason END
+			WHERE org_id = $1 AND key = $2
+			RETURNING state_changed_at`,
+			string(org), string(intentKey), newEvent.SequenceNumber, newEvent.Type, newEvent.Payload, newEvent.PrevHash, newEvent.Hash,
+		).Scan(&newEvent.RecordedAt)
 		if err != nil {
-			return fmt.Errorf("updating state of %s: %w", intentKey, err)
+			return fmt.Errorf("appending event for %s: %w", intentKey, err)
 		}
 		return nil
 	})
