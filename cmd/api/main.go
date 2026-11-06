@@ -3,10 +3,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 	// Analytics resolve any IANA time zone, even in an image with no
 	// zone database of its own.
@@ -134,11 +137,25 @@ func main() {
 		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
 	}
 
+	srv := httpapi.NewServer(httpAddr, httpapi.NewRouter(handler))
+	stop, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	go func() {
+		<-stop.Done()
+		// Let requests in flight finish; refuse new ones.
+		shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdown); err != nil {
+			logger.Error("shutting down", "error", err)
+		}
+	}()
+
 	logger.Info("api listening", "addr", httpAddr)
-	if err := http.ListenAndServe(httpAddr, httpapi.NewRouter(handler)); err != nil {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+	logger.Info("api stopped")
 }
 
 func requireEnv(logger *slog.Logger, name string) string {
