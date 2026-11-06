@@ -40,6 +40,7 @@ type transport struct {
 	httpClient *http.Client
 	clock      app.Clock
 	sleep      func(time.Duration)
+	limiter    *limiter
 
 	mu          sync.Mutex
 	token       string
@@ -57,6 +58,7 @@ func newTransport(baseURL, clientID, apiKey string, httpClient *http.Client, clo
 		httpClient: httpClient,
 		clock:      clock,
 		sleep:      time.Sleep,
+		limiter:    defaultLimiter,
 	}
 }
 
@@ -124,35 +126,14 @@ func (t *transport) doJSON(ctx context.Context, method, path string, body any) (
 
 	backoff := initialBackoff
 	for attempt := 1; attempt <= maxRequestAttempts; attempt++ {
-		token, err := t.ensureToken(ctx)
+		status, respBody, err := t.send(ctx, method, path, bs)
 		if err != nil {
 			return 0, nil, err
 		}
 
-		var reader io.Reader
-		if bs != nil {
-			reader = bytes.NewReader(bs)
-		}
-		req, err := http.NewRequestWithContext(ctx, method, t.baseURL+path, reader)
-		if err != nil {
-			return 0, nil, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+token)
-
-		resp, err := t.httpClient.Do(req)
-		if err != nil {
-			return 0, nil, fmt.Errorf("airwallex: %s %s: %v: %w", method, path, err, app.ErrAmbiguous)
-		}
-		respBody, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr != nil {
-			return 0, nil, fmt.Errorf("airwallex: %s %s: reading response: %v: %w", method, path, readErr, app.ErrAmbiguous)
-		}
-
-		if resp.StatusCode == http.StatusTooManyRequests {
+		if status == http.StatusTooManyRequests {
 			if attempt < maxRequestAttempts {
-				t.sleep(backoff)
+				t.sleep(backoff) // without holding a slot
 				backoff *= 2
 				continue
 			}
@@ -160,10 +141,10 @@ func (t *transport) doJSON(ctx context.Context, method, path string, body any) (
 			// request, so its outcome is unknown, never a rejection. A
 			// caller that saw a 4xx here would end a good payment.
 			return 0, nil, railError(fmt.Sprintf("airwallex: %s %s: still rate limited after %d attempts: status %d: %s",
-				method, path, maxRequestAttempts, resp.StatusCode, respBody), resp.StatusCode, respBody, app.ErrAmbiguous)
+				method, path, maxRequestAttempts, status, respBody), status, respBody, app.ErrAmbiguous)
 		}
 
-		return resp.StatusCode, respBody, nil
+		return status, respBody, nil
 	}
 	panic("unreachable: the loop always returns")
 }
@@ -177,4 +158,39 @@ func railError(message string, status int, body []byte, kind error) error {
 	}
 	_ = json.Unmarshal(body, &parsed)
 	return &app.RailError{Kind: kind, HTTPStatus: status, Code: parsed.Code, Message: message}
+}
+
+// send makes one authenticated request, holding a request slot only
+// while it is in the air (logging in first counts as part of it).
+func (t *transport) send(ctx context.Context, method, path string, body []byte) (int, []byte, error) {
+	if err := t.limiter.acquire(ctx); err != nil {
+		return 0, nil, err
+	}
+	defer t.limiter.release()
+
+	token, err := t.ensureToken(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, t.baseURL+path, reader)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("airwallex: %s %s: %v: %w", method, path, err, app.ErrAmbiguous)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, fmt.Errorf("airwallex: %s %s: reading response: %v: %w", method, path, err, app.ErrAmbiguous)
+	}
+	return resp.StatusCode, respBody, nil
 }
