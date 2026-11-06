@@ -75,6 +75,7 @@ type pointResult struct {
 	FinalState   domain.State
 	TransferID   string
 	History      string
+	CreateCalls  string
 	Detail       string
 }
 
@@ -148,7 +149,7 @@ func main() {
 		logger.Info("chaos: running kill point", "point", point)
 		var r pointResult
 		for try := 1; try <= maxTries; try++ {
-			r = runKillPoint(ctx, logger, temporalClient, rail, simulator, events, workerBin, org, beneficiaryID, point)
+			r = runKillPoint(ctx, logger, temporalClient, rail, simulator, events, workerBin, postgres.NewAttemptLog(pool), org, beneficiaryID, point)
 			if !r.Inconclusive {
 				break
 			}
@@ -278,6 +279,7 @@ func runKillPoint(
 	simulator *airwallex.Simulator,
 	events app.EventLog,
 	workerBin string,
+	attempts app.AttemptLog,
 	org domain.OrgID,
 	beneficiaryID string,
 	point chaos.Point,
@@ -352,6 +354,13 @@ func runKillPoint(
 	// error means exactly one transfer for this intent on the rail.
 	onRail, found, findErr := rail.FindTransferByRequestID(ctx, string(intent.Key))
 
+	creates, _ := attempts.List(ctx, intent.OrgID, app.AttemptFilter{IntentKey: intent.Key, Operation: app.OpCreateTransfer, Limit: 20})
+	var calls []string
+	for i := len(creates.Attempts) - 1; i >= 0; i-- {
+		a := creates.Attempts[i]
+		calls = append(calls, fmt.Sprintf("#%d:%s", a.ActivityAttempt, a.Outcome))
+	}
+
 	passed := wfResult.State == domain.APPLIED &&
 		chainErr == nil && findErr == nil && found &&
 		onRail.ID == wfResult.TransferID
@@ -362,12 +371,13 @@ func runKillPoint(
 	}
 
 	return pointResult{
-		Point:      point,
-		Passed:     passed,
-		FinalState: wfResult.State,
-		TransferID: wfResult.TransferID,
-		History:    history,
-		Detail:     detail,
+		Point:       point,
+		Passed:      passed,
+		FinalState:  wfResult.State,
+		TransferID:  wfResult.TransferID,
+		History:     history,
+		CreateCalls: strings.Join(calls, " "),
+		Detail:      detail,
 	}
 }
 
@@ -433,7 +443,7 @@ func historyOf(chain domain.Chain) string {
 
 func printTable(results []pointResult) {
 	fmt.Println()
-	fmt.Printf("%-24s %-6s %-10s %-36s %-60s %s\n", "KILL POINT", "PASS", "STATE", "TRANSFER ID", "HISTORY", "DETAIL")
+	fmt.Printf("%-24s %-6s %-10s %-36s %-56s %-34s %s\n", "KILL POINT", "PASS", "STATE", "TRANSFER ID", "HISTORY", "CREATE CALLS (attempt:outcome)", "DETAIL")
 	for _, r := range results {
 		status := "PASS"
 		switch {
@@ -442,7 +452,7 @@ func printTable(results []pointResult) {
 		case !r.Passed:
 			status = "FAIL"
 		}
-		fmt.Printf("%-24s %-6s %-10s %-36s %-60s %s\n", r.Point, status, r.FinalState, r.TransferID, r.History, r.Detail)
+		fmt.Printf("%-24s %-6s %-10s %-36s %-56s %-34s %s\n", r.Point, status, r.FinalState, r.TransferID, r.History, r.CreateCalls, r.Detail)
 	}
 	fmt.Println()
 }

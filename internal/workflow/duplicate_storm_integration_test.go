@@ -49,9 +49,12 @@ func TestPaymentWorkflow_DuplicateStormResultsInExactlyOneCreate(t *testing.T) {
 	w := worker.New(c, duplicateStormTaskQueue, worker.Options{})
 	w.RegisterWorkflow(PaymentWorkflow)
 	w.RegisterActivity(&Activities{
-		Intents: newFakeIntentRepository(),
-		Events:  apptest.NewEventLog(),
-		Rail:    rail,
+		Intents:  newFakeIntentRepository(),
+		Events:   apptest.NewEventLog(),
+		Rail:     rail,
+		Attempts: apptest.NewAttempts(),
+		IDs:      &apptest.IDs{},
+		Clock:    apptest.NewClock(),
 	})
 	require.NoError(t, w.Start())
 	defer w.Stop()

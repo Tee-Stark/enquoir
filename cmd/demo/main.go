@@ -86,7 +86,10 @@ func main() {
 
 	w := worker.New(temporalClient, enquoirworkflow.TaskQueue, worker.Options{})
 	w.RegisterWorkflow(enquoirworkflow.PaymentWorkflow)
-	w.RegisterActivity(&enquoirworkflow.Activities{Intents: intents, Events: events, Rail: rail})
+	w.RegisterActivity(&enquoirworkflow.Activities{
+		Intents: intents, Events: events, Rail: rail,
+		Attempts: postgres.NewAttemptLog(pool), IDs: credentials.RandomIDs{}, Clock: clock.System{},
+	})
 	if err := w.Start(); err != nil {
 		logger.Error("starting in-process worker", "error", err)
 		os.Exit(1)

@@ -128,7 +128,7 @@ func handleCreateError(ctx workflow.Context, state *domain.State, intent domain.
 	}
 
 	var found FindTransferResult
-	if err := readUntilClear(ctx, activities().FindTransferByRequestID, string(intent.Key), &found); err != nil {
+	if err := readUntilClear(ctx, activities().FindTransferByRequestID, IntentRef{OrgID: intent.OrgID, IntentKey: intent.Key}, &found); err != nil {
 		return PaymentResult{}, err
 	}
 	if !found.Found {
@@ -163,7 +163,7 @@ func pollUntilTerminal(ctx workflow.Context, state *domain.State, intent domain.
 			if err := workflow.Sleep(ctx, pollInterval); err != nil {
 				return PaymentResult{}, err
 			}
-			if err := readUntilClear(ctx, activities().GetTransfer, transfer.ID, &transfer); err != nil {
+			if err := readUntilClear(ctx, activities().GetTransfer, TransferRef{OrgID: intent.OrgID, IntentKey: intent.Key, TransferID: transfer.ID}, &transfer); err != nil {
 				return PaymentResult{}, err
 			}
 		}

@@ -25,8 +25,9 @@ func testIntent(t *testing.T, minorUnits int64) domain.Intent {
 }
 
 type testEnv struct {
-	env    *testsuite.TestWorkflowEnvironment
-	events *apptest.EventLog
+	env      *testsuite.TestWorkflowEnvironment
+	events   *apptest.EventLog
+	attempts *apptest.Attempts
 }
 
 func newEnv(t *testing.T, rail app.Rail) *testEnv {
@@ -34,17 +35,20 @@ func newEnv(t *testing.T, rail app.Rail) *testEnv {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 
-	events := apptest.NewEventLog()
+	events, attempts := apptest.NewEventLog(), apptest.NewAttempts()
 	a := &Activities{
-		Intents: newFakeIntentRepository(),
-		Events:  events,
-		Rail:    rail,
+		Intents:  newFakeIntentRepository(),
+		Events:   events,
+		Rail:     rail,
+		Attempts: attempts,
+		IDs:      &apptest.IDs{},
+		Clock:    apptest.NewClock(),
 	}
 
 	env.RegisterWorkflow(PaymentWorkflow)
 	env.RegisterActivity(a)
 
-	return &testEnv{env: env, events: events}
+	return &testEnv{env: env, events: events, attempts: attempts}
 }
 
 func (e *testEnv) eventTypes(t *testing.T, key domain.IntentKey) []string {
@@ -129,7 +133,7 @@ func TestPaymentWorkflow_RecordsInFlightBeforeCallingRail(t *testing.T) {
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
-	a := &Activities{Intents: newFakeIntentRepository(), Events: events, Rail: rail}
+	a := &Activities{Intents: newFakeIntentRepository(), Events: events, Rail: rail, Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 	env.RegisterWorkflow(PaymentWorkflow)
 	env.RegisterActivity(a)
 
