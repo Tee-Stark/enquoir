@@ -47,7 +47,7 @@ func (h *Handler) submitIntent(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.Submit.Run(r.Context(), intent)
 	if err != nil {
-		writeProblem(w, http.StatusInternalServerError, codeInternal, "could not submit intent")
+		writeAppError(w, err, "could not submit intent")
 		return
 	}
 

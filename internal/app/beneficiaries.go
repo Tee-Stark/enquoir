@@ -22,14 +22,30 @@ type RegisterBeneficiaryResult struct {
 	Key domain.BeneficiaryKey
 }
 
-// RegisterBeneficiary is the register-beneficiary use case.
+// RegisterBeneficiary is the register-beneficiary use case. It records
+// the registering organisation as the payee's owner: only it may pay
+// the payee.
 type RegisterBeneficiary struct {
-	Registrar BeneficiaryRegistrar
+	Registrar     BeneficiaryRegistrar
+	Beneficiaries BeneficiaryStore
+	Clock         Clock
 }
 
 func (r *RegisterBeneficiary) Run(ctx context.Context, b domain.Beneficiary) (RegisterBeneficiaryResult, error) {
 	id, err := r.Registrar.Register(ctx, b)
 	if err != nil {
+		return RegisterBeneficiaryResult{}, err
+	}
+	if err := r.Beneficiaries.Save(ctx, RegisteredBeneficiary{
+		OrgID:         b.OrgID,
+		Key:           b.Key,
+		RailID:        id,
+		Name:          b.Name,
+		AccountLast4:  b.AccountNumber[len(b.AccountNumber)-4:],
+		RoutingNumber: b.RoutingNumber,
+		Category:      b.Category,
+		CreatedAt:     r.Clock.Now(),
+	}); err != nil {
 		return RegisterBeneficiaryResult{}, err
 	}
 	return RegisterBeneficiaryResult{ID: id, Key: b.Key}, nil

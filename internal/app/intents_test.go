@@ -24,7 +24,7 @@ func testIntent(t *testing.T) domain.Intent {
 func TestSubmitIntent_FreshSubmissionReturnsProposed(t *testing.T) {
 	intent := testIntent(t)
 	starter := &apptest.PaymentStarter{}
-	use := &app.SubmitIntent{Starter: starter, Events: apptest.NewEventLog()}
+	use := &app.SubmitIntent{Starter: starter, Events: apptest.NewEventLog(), Payees: ownedPayees()}
 
 	result, err := use.Run(context.Background(), intent)
 	if err != nil {
@@ -48,7 +48,7 @@ func TestSubmitIntent_AttachingReturnsCurrentRecordedState(t *testing.T) {
 	events.Append(context.Background(), testOrg, intent.Key, "AUTHORIZED", "")
 	events.Append(context.Background(), testOrg, intent.Key, "APPLIED", "tr_1")
 
-	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{}, Events: events}
+	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{}, Events: events, Payees: ownedPayees()}
 
 	result, err := use.Run(context.Background(), intent)
 	if err != nil {
@@ -84,7 +84,7 @@ func TestSubmitIntent_RecordedHistoryIsNeverRestarted(t *testing.T) {
 				events.Append(context.Background(), testOrg, intent.Key, typ, "")
 			}
 			starter := &apptest.PaymentStarter{}
-			use := &app.SubmitIntent{Starter: starter, Events: events}
+			use := &app.SubmitIntent{Starter: starter, Events: events, Payees: ownedPayees()}
 
 			result, err := use.Run(context.Background(), intent)
 			if err != nil {
@@ -106,7 +106,7 @@ func TestSubmitIntent_PropagatesEventLogError(t *testing.T) {
 	intent := testIntent(t)
 	wantErr := errors.New("postgres unavailable")
 	starter := &apptest.PaymentStarter{}
-	use := &app.SubmitIntent{Starter: starter, Events: failingEventLog{err: wantErr}}
+	use := &app.SubmitIntent{Starter: starter, Events: failingEventLog{err: wantErr}, Payees: ownedPayees()}
 
 	_, err := use.Run(context.Background(), intent)
 	if !errors.Is(err, wantErr) {
@@ -130,7 +130,7 @@ func (l failingEventLog) Load(ctx context.Context, org domain.OrgID, key domain.
 func TestSubmitIntent_PropagatesStarterError(t *testing.T) {
 	intent := testIntent(t)
 	wantErr := errors.New("temporal unavailable")
-	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{Err: wantErr}, Events: apptest.NewEventLog()}
+	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{Err: wantErr}, Events: apptest.NewEventLog(), Payees: ownedPayees()}
 
 	_, err := use.Run(context.Background(), intent)
 	if !errors.Is(err, wantErr) {
@@ -180,5 +180,36 @@ func TestGetIntent_KeyFromAnotherOrganisationReturnsNotFound(t *testing.T) {
 	_, err := use.Run(context.Background(), domain.OrgID("org_other"), intent.Key)
 	if !errors.Is(err, app.ErrIntentNotFound) {
 		t.Errorf("Run error = %v, want ErrIntentNotFound for another organisation's key", err)
+	}
+}
+
+// ownedPayees is a store in which testOrg owns "payee-1", the payee
+// testIntent pays.
+func ownedPayees() *apptest.Beneficiaries {
+	return apptest.NewBeneficiaries().Own(testOrg, "payee-1")
+}
+
+// Every organisation pays through one rail account, so a payee ID
+// from another organisation is a real beneficiary the rail would pay.
+// Only payees the submitting organisation registered may be paid.
+func TestSubmitIntent_RefusesAPayeeTheOrganisationDoesNotOwn(t *testing.T) {
+	intent := testIntent(t)
+	cases := map[string]*apptest.Beneficiaries{
+		"another organisation's payee": apptest.NewBeneficiaries().Own("org_other", "payee-1"),
+		"a payee nobody registered":    apptest.NewBeneficiaries(),
+	}
+	for name, payees := range cases {
+		t.Run(name, func(t *testing.T) {
+			starter, events := &apptest.PaymentStarter{}, apptest.NewEventLog()
+			use := &app.SubmitIntent{Starter: starter, Events: events, Payees: payees}
+
+			_, err := use.Run(context.Background(), intent)
+			if !errors.Is(err, app.ErrPayeeUnknown) {
+				t.Fatalf("err = %v, want ErrPayeeUnknown", err)
+			}
+			if starter.CallCount() != 0 {
+				t.Errorf("started %d workflows for a payee the organisation does not own, want 0", starter.CallCount())
+			}
+		})
 	}
 }

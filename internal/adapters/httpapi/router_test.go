@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -255,5 +256,28 @@ func TestHealthz_ReturnsOK(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// One organisation's agent cannot pay a payee another organisation
+// registered: the shared rail account would pay it, so Enquoir refuses.
+func TestSubmitIntent_AnotherOrganisationsPayeeIsRefused(t *testing.T) {
+	registrar := &fakeRegistrar{}
+	f, bearerA := newBeneficiaryFixture(t, registrar)
+	_, bearerB := f.newAgent(t)
+
+	registered := decodeRegister(t, postBeneficiaryAs(t, f, bearerA, validBeneficiaryBody))
+	intent := fmt.Sprintf(`{"payee":%q,"amount":"10.50","currency":"USD","reference":"INV-X"}`, registered.ID)
+
+	rec := postIntentAs(t, f, bearerB, intent)
+	if p := decodeProblem(t, rec); rec.Code != http.StatusUnprocessableEntity || p.Code != "payee_unknown" {
+		t.Errorf("org B paying org A's payee: %d %q, want 422 payee_unknown", rec.Code, p.Code)
+	}
+	if f.starter.CallCount() != 0 {
+		t.Errorf("a workflow started for another organisation's payee")
+	}
+
+	if rec := postIntentAs(t, f, bearerA, intent); rec.Code != http.StatusOK {
+		t.Errorf("org A paying its own payee: %d %s, want 200", rec.Code, rec.Body)
 	}
 }

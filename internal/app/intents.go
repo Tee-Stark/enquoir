@@ -11,6 +11,11 @@ import (
 // as far as this system has observed, that intent does not exist.
 var ErrIntentNotFound = errors.New("intent not found")
 
+// ErrPayeeUnknown means an intent names a payee its organisation never
+// registered - possibly another organisation's, which the shared rail
+// account would otherwise pay.
+var ErrPayeeUnknown = errors.New("payee not registered by this organisation")
+
 // PaymentStarter starts, or attaches to, the durable workflow that
 // carries one Intent to a terminal state. Submitting the same intent
 // twice must attach to the run already in progress, never start a
@@ -32,6 +37,7 @@ type SubmitIntentResult struct {
 type SubmitIntent struct {
 	Starter PaymentStarter
 	Events  EventLog
+	Payees  BeneficiaryStore
 }
 
 // Run starts intent's workflow only if nothing has ever been recorded
@@ -44,6 +50,14 @@ type SubmitIntent struct {
 // moving a FAILED or UNKNOWN intent on is a reconciler's job, never a
 // resubmission's.
 func (s *SubmitIntent) Run(ctx context.Context, intent domain.Intent) (SubmitIntentResult, error) {
+	owned, err := s.Payees.Owns(ctx, intent.OrgID, intent.Payee)
+	if err != nil {
+		return SubmitIntentResult{}, err
+	}
+	if !owned {
+		return SubmitIntentResult{}, ErrPayeeUnknown
+	}
+
 	chain, err := s.Events.Load(ctx, intent.OrgID, intent.Key)
 	if err != nil {
 		return SubmitIntentResult{}, err

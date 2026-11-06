@@ -99,7 +99,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail, org)
+	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail, postgres.NewBeneficiaryStore(pool), clock.System{}, org)
 	if err != nil {
 		logger.Error("ensuring test beneficiary", "error", err)
 		os.Exit(1)

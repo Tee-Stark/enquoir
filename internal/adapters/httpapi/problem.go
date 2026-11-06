@@ -19,6 +19,7 @@ const (
 	codeUnauthenticated  = "unauthenticated"
 	codeInvalidCreds     = "invalid_credentials"
 	codeEmailTaken       = "email_taken"
+	codePayeeUnknown     = "payee_unknown"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.
@@ -57,6 +58,9 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 		writeProblem(w, http.StatusUnauthorized, codeInvalidCreds, err.Error())
 	case errors.Is(err, app.ErrEmailTaken):
 		writeProblem(w, http.StatusConflict, codeEmailTaken, err.Error())
+	case errors.Is(err, app.ErrPayeeUnknown):
+		writeProblem(w, http.StatusUnprocessableEntity, codePayeeUnknown,
+			"the payee is not a beneficiary this organisation registered; register it with POST /v1/beneficiaries first")
 	case errors.Is(err, app.ErrNotFound):
 		writeProblem(w, http.StatusNotFound, codeNotFound, "not found")
 	default:

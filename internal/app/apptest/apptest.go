@@ -349,3 +349,57 @@ func (s *PaymentStarter) CallCount() int {
 	defer s.mu.Unlock()
 	return len(s.calls)
 }
+
+// Beneficiaries is an in-memory app.BeneficiaryStore.
+type Beneficiaries struct {
+	mu    sync.Mutex
+	saved map[domain.BeneficiaryKey]app.RegisteredBeneficiary
+}
+
+func NewBeneficiaries() *Beneficiaries {
+	return &Beneficiaries{saved: map[domain.BeneficiaryKey]app.RegisteredBeneficiary{}}
+}
+
+// Own seeds that org owns railID, for tests that need a payee. Unlike
+// Save it skips the one-owner check, so tests can give several
+// organisations a payee with the same literal ID.
+func (s *Beneficiaries) Own(org domain.OrgID, railID string) *Beneficiaries {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := domain.BeneficiaryKey(string(org) + "/" + railID)
+	s.saved[key] = app.RegisteredBeneficiary{OrgID: org, Key: key, RailID: railID}
+	return s
+}
+
+func (s *Beneficiaries) Save(ctx context.Context, b app.RegisteredBeneficiary) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.saved {
+		if existing.RailID == b.RailID && existing.OrgID != b.OrgID {
+			return fmt.Errorf("rail beneficiary %s is already owned by another organisation", b.RailID)
+		}
+	}
+	if _, ok := s.saved[b.Key]; !ok {
+		s.saved[b.Key] = b
+	}
+	return nil
+}
+
+func (s *Beneficiaries) Owns(ctx context.Context, org domain.OrgID, railID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, b := range s.saved {
+		if b.OrgID == org && b.RailID == railID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// Get returns what was saved under key.
+func (s *Beneficiaries) Get(key domain.BeneficiaryKey) (app.RegisteredBeneficiary, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.saved[key]
+	return b, ok
+}

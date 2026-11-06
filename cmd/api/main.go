@@ -84,6 +84,7 @@ func main() {
 	hasher := &credentials.PBKDF2Hasher{}
 	ids := credentials.RandomIDs{}
 	agents := postgres.NewAgentStore(pool)
+	beneficiaries := postgres.NewBeneficiaryStore(pool)
 	secrets := credentials.RandomSecrets{}
 	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: sysClock, TTL: sessionTTL}
 
@@ -91,9 +92,14 @@ func main() {
 		Submit: &app.SubmitIntent{
 			Starter: &httpapi.TemporalPaymentStarter{Client: temporalClient, MaxAmountMinorUnits: maxMinorUnits},
 			Events:  events,
+			Payees:  beneficiaries,
 		},
-		Get:      &app.GetIntent{Events: events},
-		Register: &app.RegisterBeneficiary{Registrar: &httpapi.TemporalBeneficiaryRegistrar{Client: temporalClient}},
+		Get: &app.GetIntent{Events: events},
+		Register: &app.RegisterBeneficiary{
+			Registrar:     &httpapi.TemporalBeneficiaryRegistrar{Client: temporalClient},
+			Beneficiaries: beneficiaries,
+			Clock:         sysClock,
+		},
 
 		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: sysClock, Issuer: issuer},
 		LogIn:          &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},

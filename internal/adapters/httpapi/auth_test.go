@@ -22,6 +22,7 @@ type authFixture struct {
 	agents  *apptest.Agents
 	events  *apptest.EventLog
 	starter *apptest.PaymentStarter
+	payees  *apptest.Beneficiaries
 }
 
 func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
@@ -29,7 +30,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	clock := apptest.NewClock()
 	accounts, sessions, hasher := apptest.NewAccounts(), apptest.NewSessions(), &apptest.Hasher{}
 	agents, ids, secrets := apptest.NewAgents(), &apptest.IDs{}, &apptest.Secrets{}
-	events, starter := apptest.NewEventLog(), &apptest.PaymentStarter{}
+	events, starter, payees := apptest.NewEventLog(), &apptest.PaymentStarter{}, apptest.NewBeneficiaries()
 	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: clock, TTL: 7 * 24 * time.Hour}
 	h := &Handler{
 		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: clock, Issuer: issuer},
@@ -45,10 +46,10 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: clock},
 		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: clock},
 
-		Submit: &app.SubmitIntent{Starter: starter, Events: events},
+		Submit: &app.SubmitIntent{Starter: starter, Events: events, Payees: payees},
 		Get:    &app.GetIntent{Events: events},
 	}
-	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter}
+	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees}
 }
 
 var testEmailCounter atomic.Int64
@@ -70,7 +71,10 @@ func (f *authFixture) newAgent(t *testing.T) (domain.OrgID, string) {
 		t.Fatalf("decoding signup response: %v", err)
 	}
 	issued := f.createAgent(t, sessionCookie(t, rec), "Test Agent")
-	return domain.OrgID(signed.Organisation.ID), issued.APIKey.Secret
+	org := domain.OrgID(signed.Organisation.ID)
+	// By convention every test organisation owns a payee "payee-1".
+	f.payees.Own(org, "payee-1")
+	return org, issued.APIKey.Secret
 }
 
 func (f *authFixture) do(t *testing.T, method, path, body string, cookies ...*http.Cookie) *httptest.ResponseRecorder {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"enquoir/internal/app/apptest"
 	"enquoir/internal/domain"
 )
 
@@ -54,7 +55,8 @@ func TestEnsurePayee(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id, err := EnsurePayee(context.Background(), tt.registry, testOrg)
+			owners := apptest.NewBeneficiaries()
+			id, err := EnsurePayee(context.Background(), tt.registry, owners, apptest.NewClock(), testOrg)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("EnsurePayee error = %v, want %v", err, tt.wantErr)
 			}
@@ -63,6 +65,10 @@ func TestEnsurePayee(t *testing.T) {
 			}
 			if tt.registry.creates != tt.wantCreates {
 				t.Errorf("creates = %d, want %d", tt.registry.creates, tt.wantCreates)
+			}
+			owned, _ := owners.Owns(context.Background(), testOrg, tt.wantID)
+			if tt.wantErr == nil && !owned {
+				t.Errorf("the organisation does not own its test payee %q", tt.wantID)
 			}
 		})
 	}

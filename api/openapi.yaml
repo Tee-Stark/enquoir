@@ -341,6 +341,15 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "422":
+          description: |
+            The payee is not a beneficiary this organisation registered
+            (`payee_unknown`). Register it with POST /v1/beneficiaries first.
+            Nothing is started.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -380,6 +389,10 @@ paths:
         the same details again returns the same beneficiary: Airwallex's
         beneficiary create has no idempotency key, so Enquoir stores its own
         key on the rail and looks it up before ever creating one.
+
+        The payee belongs to the registering organisation: only its agents can
+        pay it. The same details registered by another organisation are a
+        separate beneficiary.
       security:
         - agentKey: []
       requestBody:
@@ -496,6 +509,7 @@ components:
             - unauthenticated
             - invalid_credentials
             - email_taken
+            - payee_unknown
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.
@@ -651,7 +665,9 @@ components:
       properties:
         payee:
           type: string
-          description: The beneficiary ID returned by POST /v1/beneficiaries.
+          description: |
+            The beneficiary ID returned by POST /v1/beneficiaries. It must be a
+            payee this organisation registered.
         amount:
           type: string
           description: Major units as a decimal string with at most two decimals.
