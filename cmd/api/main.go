@@ -122,6 +122,7 @@ func main() {
 			Registrar:     &httpapi.TemporalBeneficiaryRegistrar{Client: temporalClient},
 			Beneficiaries: beneficiaries,
 			Clock:         sysClock,
+			Audit:         audit,
 		},
 
 		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: sysClock, Issuer: issuer, Emails: emails},

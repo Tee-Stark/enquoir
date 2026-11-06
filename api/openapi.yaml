@@ -1410,8 +1410,12 @@ paths:
         The payee belongs to the registering organisation: only its agents can
         pay it. The same details registered by another organisation are a
         separate beneficiary.
+
+        Agents register payees with their API key; members can too, from the
+        dashboard, as operator or above with a verified email.
       security:
         - agentKey: []
+        - session: []
       requestBody:
         required: true
         content:

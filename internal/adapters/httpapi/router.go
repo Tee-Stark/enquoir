@@ -74,8 +74,10 @@ func NewRouter(h *Handler) chi.Router {
 		r.Use(h.requireAgent)
 		r.Post("/v1/intents", h.submitIntent)
 		r.Get("/v1/intents/{key}", h.getIntent)
-		r.Post("/v1/beneficiaries", h.registerBeneficiary)
 	})
+	// Agents register payees with their key; members from the
+	// dashboard, as operator or above with a verified email.
+	r.With(h.agentOrMember(domain.PermWrite)).Post("/v1/beneficiaries", h.registerBeneficiary)
 
 	r.With(h.limitIP(app.RuleSignUpPerIP)).Post("/v1/auth/signup", h.signUp)
 	r.With(h.limitIP(app.RuleLoginPerIP)).Post("/v1/auth/login", h.logIn)

@@ -385,3 +385,27 @@ func (h *Handler) revokeOtherSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// agentOrMember admits an agent by its API key, or else a signed-in,
+// verified member whose role has perm.
+func (h *Handler) agentOrMember(perm domain.Permission) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		asMember := h.requireUser(h.allow(perm)(requireVerified(next)))
+		asAgent := h.requireAgent(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if bearerToken(r) != "" {
+				asAgent.ServeHTTP(w, r)
+				return
+			}
+			asMember.ServeHTTP(w, r)
+		})
+	}
+}
+
+// orgOf is the organisation acting: the agent's, or the member's.
+func orgOf(ctx context.Context) domain.OrgID {
+	if a := agentFrom(ctx); a.OrgID != "" {
+		return a.OrgID
+	}
+	return userFrom(ctx).Organisation.ID
+}
