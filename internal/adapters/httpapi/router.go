@@ -23,6 +23,8 @@ type Handler struct {
 	ResolveSession *app.ResolveSession
 	SwitchOrg      *app.SwitchOrganisation
 	MyOrgs         *app.ListMyOrganisations
+	VerifyEmail    *app.VerifyEmail
+	ResendVerify   *app.ResendVerification
 	Cookies        CookieSettings
 	Origins        AllowedOrigins
 
@@ -62,9 +64,10 @@ func NewRouter(h *Handler) chi.Router {
 	r.With(h.requireUser).Get("/v1/auth/session", h.getSession)
 	r.With(h.requireUser).Post("/v1/auth/switch-organisation", h.switchOrganisation)
 
+	r.Post("/v1/auth/verify-email", h.verifyEmail)
+	r.With(h.requireUser).Post("/v1/auth/verify-email/resend", h.resendVerification)
+
 	// Placeholders until their requirements arrive.
-	r.Post("/v1/auth/verify-email", notImplemented("Email verification"))
-	r.With(h.requireUser).Post("/v1/auth/verify-email/resend", notImplemented("Email verification"))
 	r.With(h.requireUser).Get("/v1/onboarding", notImplemented("Onboarding"))
 	r.With(h.requireUser).Put("/v1/onboarding", notImplemented("Onboarding"))
 
@@ -73,12 +76,13 @@ func NewRouter(h *Handler) chi.Router {
 	r.Group(func(r chi.Router) {
 		r.Use(h.requireUser)
 		read, write := h.allow(domain.PermRead), h.allow(domain.PermWrite)
+		verified := requireVerified
 
-		r.With(write).Post("/v1/agents", h.createAgent)
+		r.With(write, verified).Post("/v1/agents", h.createAgent)
 		r.With(read).Get("/v1/agents", h.listAgents)
 		r.With(read).Get("/v1/agents/{id}", h.getAgent)
 		r.With(write).Delete("/v1/agents/{id}", h.revokeAgent)
-		r.With(write).Post("/v1/agents/{id}/rotate-key", h.rotateAgentKey)
+		r.With(write, verified).Post("/v1/agents/{id}/rotate-key", h.rotateAgentKey)
 
 		r.With(read).Get("/v1/payments", h.listPayments)
 		r.With(read).Get("/v1/payments/{key}", h.getPayment)

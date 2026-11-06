@@ -86,8 +86,6 @@ func TestPlaceholders_Return501(t *testing.T) {
 	f := newAuthFixture(t, true)
 	_, cookie := f.newOrg(t)
 	for _, r := range []struct{ method, path, body string }{
-		{http.MethodPost, "/v1/auth/verify-email", `{"token":"x"}`},
-		{http.MethodPost, "/v1/auth/verify-email/resend", ""},
 		{http.MethodGet, "/v1/onboarding", ""},
 		{http.MethodPut, "/v1/onboarding", `{}`},
 	} {

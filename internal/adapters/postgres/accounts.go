@@ -170,3 +170,18 @@ func (s *SessionStore) Revoke(ctx context.Context, tokenHash string, at time.Tim
 	}
 	return nil
 }
+
+var _ app.UserStore = (*AccountStore)(nil)
+
+func (s *AccountStore) MarkEmailVerified(ctx context.Context, user domain.UserID, at time.Time) error {
+	_, err := s.pool.Exec(ctx, `UPDATE users SET email_verified_at = COALESCE(email_verified_at, $2) WHERE id = $1`, string(user), at)
+	return err
+}
+
+func (s *AccountStore) SetPassword(ctx context.Context, user domain.UserID, hash string, at time.Time) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE users SET password_hash = $2, password_changed_at = $3 WHERE id = $1`, string(user), hash, at)
+	if err == nil && tag.RowsAffected() == 0 {
+		return app.ErrNotFound
+	}
+	return err
+}

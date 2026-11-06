@@ -108,3 +108,23 @@ func TestSessionStore_CreateGetRevoke(t *testing.T) {
 		t.Errorf("Get(unknown) err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestAccountStore_VerifyAndSetPassword(t *testing.T) {
+	ctx := context.Background()
+	store := NewAccountStore(testPool(t))
+	_, user := newTestOrg(t, store)
+	now := time.Now()
+	if err := store.MarkEmailVerified(ctx, user.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPassword(ctx, user.ID, "new-hash", now); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := store.UserByID(ctx, user.ID)
+	if !u.EmailVerified || u.PasswordHash != "new-hash" {
+		t.Errorf("user = %+v", u)
+	}
+	if err := store.SetPassword(ctx, "usr_nobody", "x", now); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("unknown user: %v", err)
+	}
+}

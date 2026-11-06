@@ -23,6 +23,7 @@ import (
 	"enquoir/internal/adapters/httpapi"
 	"enquoir/internal/adapters/postgres"
 	"enquoir/internal/app"
+	enquoirworkflow "enquoir/internal/workflow"
 )
 
 const defaultMaxMinorUnits = 1_000_000_00
@@ -95,6 +96,8 @@ func main() {
 	payments := postgres.NewPaymentReader(pool)
 	analytics := postgres.NewAnalyticsReader(pool)
 	secrets := credentials.RandomSecrets{}
+	emails := &app.Emails{Outbox: postgres.NewEmailOutbox(pool), Dispatcher: &enquoirworkflow.EmailDispatcher{Client: temporalClient}, IDs: ids, Clock: sysClock}
+	tokens := postgres.NewTokenStore(pool)
 	issuer := &app.SessionIssuer{Sessions: sessions, IDs: ids, Secrets: secrets, Clock: sysClock, TTL: sessionTTL}
 
 	handler := &httpapi.Handler{
@@ -114,7 +117,9 @@ func main() {
 			Clock:         sysClock,
 		},
 
-		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: sysClock, Issuer: issuer},
+		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: sysClock, Issuer: issuer, Emails: emails},
+		VerifyEmail:    &app.VerifyEmail{Tokens: tokens, Users: accounts, Clock: sysClock},
+		ResendVerify:   &app.ResendVerification{Emails: emails},
 		LogIn:          &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
 		LogOut:         &app.LogOut{Sessions: sessions, Clock: sysClock},
 		ResolveSession: &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: sysClock},

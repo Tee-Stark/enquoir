@@ -803,3 +803,28 @@ func (s *Tokens) StoresPlaintext(token string) bool {
 	_, ok := s.tokens[token]
 	return ok
 }
+
+// MarkEmailVerified and SetPassword make Accounts an app.UserStore.
+func (a *Accounts) MarkEmailVerified(ctx context.Context, user domain.UserID, at time.Time) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	u, ok := a.users[user]
+	if !ok {
+		return app.ErrNotFound
+	}
+	u.EmailVerified = true
+	a.users[user] = u
+	return nil
+}
+
+func (a *Accounts) SetPassword(ctx context.Context, user domain.UserID, hash string, at time.Time) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	u, ok := a.users[user]
+	if !ok {
+		return app.ErrNotFound
+	}
+	u.PasswordHash = hash
+	a.users[user] = u
+	return nil
+}

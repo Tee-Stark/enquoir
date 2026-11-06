@@ -254,3 +254,37 @@ func (h *Handler) requireAgent(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), agentKey, p)))
 	})
 }
+
+// requireVerified admits only a user whose email address is verified:
+// issuing credentials, inviting people and registering payees.
+func requireVerified(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !userFrom(r.Context()).User.EmailVerified {
+			writeAppError(w, app.ErrEmailUnverified, "")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (h *Handler) verifyEmail(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := h.VerifyEmail.Run(r.Context(), req.Token); err != nil {
+		writeAppError(w, err, "could not verify the email address")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) resendVerification(w http.ResponseWriter, r *http.Request) {
+	if err := h.ResendVerify.Run(r.Context(), userFrom(r.Context())); err != nil {
+		writeAppError(w, err, "could not send the verification email")
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}

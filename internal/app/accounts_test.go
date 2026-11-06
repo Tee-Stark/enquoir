@@ -21,6 +21,8 @@ type accountsFixture struct {
 	logOut   *app.LogOut
 	resolve  *app.ResolveSession
 	issuer   *app.SessionIssuer
+	emails   *app.Emails
+	tokens   *apptest.Tokens
 }
 
 func newAccountsFixture() *accountsFixture {

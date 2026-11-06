@@ -25,6 +25,9 @@ const (
 	codeBodyTooLarge     = "body_too_large"
 	codeForbidden        = "forbidden"
 	codeNoOrganisation   = "no_organisation"
+	codeEmailUnverified  = "email_unverified"
+	codeAlreadyVerified  = "already_verified"
+	codeTokenInvalid     = "token_invalid"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.
@@ -61,6 +64,12 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 		writeProblem(w, http.StatusUnauthorized, codeUnauthenticated, "sign in, or send a valid API key")
 	case errors.Is(err, app.ErrInvalidCredentials):
 		writeProblem(w, http.StatusUnauthorized, codeInvalidCreds, err.Error())
+	case errors.Is(err, app.ErrEmailUnverified):
+		writeProblem(w, http.StatusForbidden, codeEmailUnverified, err.Error()+": follow the link we emailed, or ask for a new one")
+	case errors.Is(err, app.ErrAlreadyVerified):
+		writeProblem(w, http.StatusConflict, codeAlreadyVerified, err.Error())
+	case errors.Is(err, app.ErrTokenInvalid):
+		writeProblem(w, http.StatusBadRequest, codeTokenInvalid, err.Error())
 	case errors.Is(err, app.ErrForbidden):
 		writeProblem(w, http.StatusForbidden, codeForbidden, err.Error())
 	case errors.Is(err, app.ErrNoOrganisation):

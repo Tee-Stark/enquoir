@@ -12,7 +12,9 @@ import (
 func (f *authFixture) signUpAs(t *testing.T, email string) *http.Cookie {
 	t.Helper()
 	body := fmt.Sprintf(`{"email":%q,"password":"correct horse battery","organisation_name":"Org of %s"}`, email, email)
-	return sessionCookie(t, f.do(t, http.MethodPost, "/v1/auth/signup", body))
+	cookie := sessionCookie(t, f.do(t, http.MethodPost, "/v1/auth/signup", body))
+	f.verify(t, email)
+	return cookie
 }
 
 type agentBody struct {

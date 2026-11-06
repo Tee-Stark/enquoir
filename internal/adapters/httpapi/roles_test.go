@@ -15,6 +15,7 @@ func (f *authFixture) memberAs(t *testing.T, org domain.OrgID, role domain.Role)
 	t.Helper()
 	email := fmt.Sprintf("member-%d@example.com", testEmailCounter.Add(1))
 	rec := f.do(t, http.MethodPost, "/v1/auth/signup", fmt.Sprintf(`{"email":%q,"password":"correct horse battery","organisation_name":"Own"}`, email))
+	f.verify(t, email)
 	var body authBody
 	json.Unmarshal(rec.Body.Bytes(), &body)
 	f.clock.Advance(1)

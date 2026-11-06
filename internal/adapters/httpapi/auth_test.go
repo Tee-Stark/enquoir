@@ -26,6 +26,7 @@ type authFixture struct {
 	attempts *apptest.Attempts
 	payments *apptest.Payments
 	accounts *apptest.Accounts
+	mailer   *apptest.Mailer
 }
 
 func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
@@ -38,8 +39,14 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	events.Clock = clock
 	analytics := &fixtureAnalytics{}
 	issuer := &app.SessionIssuer{Sessions: sessions, IDs: ids, Secrets: secrets, Clock: clock, TTL: 7 * 24 * time.Hour}
+	mailer, outbox, tokens := &apptest.Mailer{}, apptest.NewOutbox(), apptest.NewTokens()
+	deliver := &app.DeliverEmail{Outbox: outbox, Tokens: tokens, Renderer: apptest.Renderer{}, Mailer: mailer,
+		Secrets: secrets, Clock: clock, AppBaseURL: "https://enquoir.etimi.me"}
+	emails := &app.Emails{Outbox: outbox, Dispatcher: &apptest.Dispatcher{Deliver: deliver.Run}, IDs: ids, Clock: clock}
 	h := &Handler{
-		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: clock, Issuer: issuer},
+		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: clock, Issuer: issuer, Emails: emails},
+		VerifyEmail:    &app.VerifyEmail{Tokens: tokens, Users: accounts, Clock: clock},
+		ResendVerify:   &app.ResendVerification{Emails: emails},
 		LogIn:          &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
 		LogOut:         &app.LogOut{Sessions: sessions, Clock: clock},
 		ResolveSession: &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: clock},
@@ -65,7 +72,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		TimeSeries:        &app.GetTimeSeries{Analytics: analytics, Clock: clock},
 		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
 	}
-	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments, accounts: accounts}
+	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments, accounts: accounts, mailer: mailer}
 }
 
 var testEmailCounter atomic.Int64
@@ -86,6 +93,7 @@ func (f *authFixture) newAgent(t *testing.T) (domain.OrgID, string) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &signed); err != nil {
 		t.Fatalf("decoding signup response: %v", err)
 	}
+	f.verify(t, email)
 	issued := f.createAgent(t, sessionCookie(t, rec), "Test Agent")
 	org := domain.OrgID(signed.Organisation.ID)
 	// By convention every test organisation owns a payee "payee-1".
@@ -240,5 +248,14 @@ func TestSession_ExpiresAfterItsTTL(t *testing.T) {
 	f.clock.Advance(7*24*time.Hour + time.Second)
 	if rec := f.do(t, http.MethodGet, "/v1/auth/session", "", cookie); rec.Code != http.StatusUnauthorized {
 		t.Errorf("expired session: %d, want 401", rec.Code)
+	}
+}
+
+// verify follows the verification link last emailed to email.
+func (f *authFixture) verify(t *testing.T, email string) {
+	t.Helper()
+	token := f.mailer.TokenTo(domain.Email(email))
+	if rec := f.do(t, http.MethodPost, "/v1/auth/verify-email", fmt.Sprintf(`{"token":%q}`, token)); rec.Code != http.StatusNoContent {
+		t.Fatalf("verifying %s: %d %s", email, rec.Code, rec.Body)
 	}
 }

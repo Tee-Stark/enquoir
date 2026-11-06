@@ -132,15 +132,17 @@ type SignUpCommand struct {
 	OrganisationName string
 }
 
-// SignUp creates an organisation, its owner, and a first session.
-// Email verification is a placeholder: the user starts unverified and
-// nothing is gated on it yet.
+// SignUp creates an organisation, its owner, and a first session, and
+// sends a verification email. The user starts unverified: they can
+// look around, but cannot create agents or invite anyone until they
+// verify.
 type SignUp struct {
 	Accounts AccountStore
 	Hasher   PasswordHasher
 	IDs      IDGenerator
 	Clock    Clock
 	Issuer   *SessionIssuer
+	Emails   *Emails // nil: no email (tooling)
 }
 
 func (s *SignUp) Run(ctx context.Context, cmd SignUpCommand) (SignedIn, error) {
@@ -168,6 +170,11 @@ func (s *SignUp) Run(ctx context.Context, cmd SignUpCommand) (SignedIn, error) {
 		return SignedIn{}, err
 	}
 
+	if s.Emails != nil {
+		if _, err := s.Emails.Send(ctx, verificationEmail(user)); err != nil {
+			return SignedIn{}, err
+		}
+	}
 	session, err := s.Issuer.issue(ctx, user, org.ID)
 	if err != nil {
 		return SignedIn{}, err

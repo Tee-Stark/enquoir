@@ -102,9 +102,10 @@ paths:
       operationId: signUp
       summary: Create an organisation and its owner
       description: |
-        Creates a new organisation with the signing-up user as its owner, and
-        signs them in (sets the session cookie). The email starts unverified;
-        nothing is gated on verification yet.
+        Creates a new organisation with the signing-up user as its owner, signs
+        them in (sets the session cookie), and emails a verification link.
+        Until they verify, they cannot create agents, invite anyone or register
+        payees.
       requestBody:
         required: true
         content:
@@ -264,39 +265,59 @@ paths:
     post:
       tags: [Accounts]
       operationId: verifyEmail
-      summary: Verify an email address (placeholder)
-      description: Not built yet - returns 501 until its requirements arrive. Will take the token from the verification email.
+      summary: Verify an email address with the emailed link's token
+      description: |
+        The frontend's `/verify-email?token=...` page posts the token here.
+        A link works once and expires after 24 hours; asking for a new one
+        spends the old. No session needed.
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [token]
               properties:
                 token:
                   type: string
       responses:
-        "413":
-          $ref: "#/components/responses/BodyTooLarge"
+        "204":
+          description: Verified.
+        "400":
+          description: The body is malformed, or the link is invalid, used or expired (`token_invalid`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
         "403":
           $ref: "#/components/responses/Forbidden"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/auth/verify-email/resend:
     post:
       tags: [Accounts]
       operationId: resendVerificationEmail
-      summary: Resend the verification email (placeholder)
-      description: Not built yet - returns 501 until its requirements arrive.
+      summary: Send a fresh verification link
       security:
         - session: []
       responses:
+        "202":
+          description: Queued for sending.
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
           $ref: "#/components/responses/Forbidden"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "409":
+          description: Already verified (`already_verified`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/onboarding:
     get:
@@ -995,8 +1016,9 @@ components:
       description: |
         Your role does not allow this (`forbidden`; see Role), a browser sent
         it from an origin not in CORS_ALLOWED_ORIGINS (`forbidden_origin`),
-        or, on log-in, the account belongs to no organisation
-        (`no_organisation`).
+        on log-in, the account belongs to no organisation (`no_organisation`),
+        or the action needs a verified email address (`email_unverified`:
+        creating or rotating agent keys, inviting, registering payees).
       content:
         application/problem+json:
           schema:
@@ -1055,6 +1077,9 @@ components:
             - body_too_large
             - forbidden
             - no_organisation
+            - email_unverified
+            - already_verified
+            - token_invalid
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.
@@ -1096,7 +1121,9 @@ components:
           type: string
         email_verified:
           type: boolean
-          description: Always false until email verification is built.
+          description: |
+            Until true, the user can look around but cannot create agents,
+            invite anyone or register payees.
         created_at:
           type: string
           format: date-time
