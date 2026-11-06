@@ -478,3 +478,96 @@ read. The clean worker re-sent the create (Temporal attempt 2, 30s
 later) and the rail still holds one transfer. It differs from
 `after_call_before_commit` in that the worker never saw a response at
 all, versus saw one and failed to record it.
+
+## Phase 4: Enquoir Cloud - picking up mid-phase (2026-11-06)
+
+Taken over on `feat/cloud` (never pushed, 10 commits ahead of `main`)
+after the previous session ran out of credits mid-phase. What it had
+already built, verified by reading the code and running the full
+suite rather than taking it on faith: an OpenAPI 3.1 contract enforced
+at test time (`internal/adapters/httpapi/contract_test.go` checks every
+response against `api/openapi.yaml`, and a separate test checks the
+spec documents every route and nothing else); RFC 9457 problem
+responses; sign-up/log-in/log-out/session with PBKDF2-hashed passwords
+and a `DummyPasswordHash` timing-equaliser for unknown emails; agents
+with one API key each (create, list, get, rotate, revoke), dashboard-
+session-gated; Postgres persistence for all of it; `internal/app/apptest`
+as shared in-memory fakes. Its last commit's own closing message named
+exactly where it stopped: agent management now needs a session - the
+AI agent's own routes were still wide open.
+
+### The gap, and what filled it
+
+`POST`/`GET /v1/intents` and `POST /v1/beneficiaries` had no auth at
+all, and `domain.Intent` carried no `OrgID` - a direct miss against
+AGENTS.md's own rule that every intent belongs to one organisation and
+that the intent key includes it. Filled by:
+
+- `domain.NewIntent` takes an `OrgID` now, hashed into the key. Breaks
+  the key again, same consequence as the earlier reason-removal:
+  pre-change history is a dead key space. New golden value cross-
+  checked with `shasum`, same discipline as last time.
+- `IntentRepository`/`EventLog` take an org on every call, scoped
+  explicitly in Postgres (`org_id` columns, migration 0005, which also
+  truncates both tables - nothing recorded under the old key
+  derivation is worth keeping) - a second, independent guard beyond
+  the key's own uncollidability, since AGENTS.md calls for reads and
+  writes to always be scoped by organisation, not just for the key to
+  make collision impossible.
+- `requireAgent`, mirroring `requireUser`'s shape but authenticating
+  "Authorization: Bearer \<key>" instead of a session cookie, gates all
+  three routes. The submitting agent's `OrgID` flows into
+  `domain.NewIntent` and `GetIntent`.
+- `internal/sandbox.EnsureDemoOrg` gives `cmd/demo`/`cmd/chaos` (and
+  anything else that needs to submit a real intent without its own
+  sign-up flow) a real organisation to submit under, idempotent the
+  same way `EnsurePayee` already was.
+- `api/openapi.yaml` updated to match (a new `agentKey` security
+  scheme, on all three routes, with their 401s) - the contract test
+  caught the gap immediately once the middleware went in without it.
+
+Deliberately left alone: whether a beneficiary is *owned* by the
+organisation that registered it. Airwallex's beneficiary object is
+shared across every organisation on Enquoir's one sandbox account for
+now (per AGENTS.md, per-organisation rail credentials are a later
+seam), so nothing stops one organisation's agent from naming another's
+rail beneficiary ID as a payee today. Gating the route behind agent
+auth closes off anonymous access, but a real ownership model - its
+own Postgres table, keyed by organisation - is a genuine design
+decision, not wiring, and wasn't invented here without asking.
+
+### Verified
+
+- `go test ./...` and `make test-integration`, both clean, after every
+  commit in this phase.
+- `make demo`, twice in a row, against the real sandbox: `APPLIED`
+  both times, correct history, and exactly one `Enquoir Demo`
+  organisation in Postgres across both runs (confirmed by querying
+  `organisations`/`users` directly, not just trusting the logs).
+- `make chaos` against the real sandbox: one run hit a genuine
+  Airwallex rejection (`fee_unknown`) on `before_log`, correctly ended
+  that run `FAILED` with no transfer created - a real rejection, not a
+  bug in this work, and `cmd/chaos`'s own gap (it assumes a point
+  always reaches a transfer) is noted in rail-notes.md rather than
+  silently patched over. Immediately re-run, all four points passed
+  cleanly. Across both runs: one organisation, ten intents, all under
+  that one `org_id` (`SELECT count(DISTINCT org_id) FROM intents` = 1).
+- New tests proving the isolation claims directly, not just that the
+  code compiles: two organisations submitting the identical intent get
+  different keys (domain, app, and HTTP layers); a key recorded under
+  one organisation is not found for another, even asked for by its
+  exact value, at the app, Postgres, and HTTP layers.
+
+### Not verified / open
+
+- Beneficiary ownership (above) - a decision for the next session, not
+  a bug in this one.
+- `internal/adapters/httpapi/contract_test.go`'s "documents every route
+  and nothing else" check passed throughout, but Attempts, History,
+  Replay and Analytics - the rest of Phase 4's stated scope in
+  AGENTS.md - are entirely unbuilt. Nothing in this session touched
+  them.
+- `docs/demo-brief.md` is sitting untracked in the working tree, left
+  exactly as found - it documents the pre-Cloud, single-tenant demo
+  script and doesn't mention organisations or agents at all. Not part
+  of this branch's history; not touched, not committed, not deleted.

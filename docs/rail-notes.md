@@ -60,3 +60,17 @@ of scope for now.
 With `during_call` killing the worker once the create had fully left
 it, Airwallex still created the transfer (in the same second). It does
 not abandon a request whose client disconnected before the response.
+
+## Observed: an intermittent `fee_unknown` rejection (2026-11-06)
+
+One `make chaos` run's `before_log` point got a real 400 from
+`/transfers/create`: `{"code":"fee_unknown","message":"There is a
+problem with your transfer fee configuration. Please contact your
+Account Manager."}` - a clear rejection, correctly ending the
+workflow at `FAILED` with no transfer ever created (`cmd/chaos`
+itself then times out waiting for a transfer that was never going to
+exist, which is its own known gap: it assumes a point always leads to
+a transfer, never a clean rejection). Re-ran the exact same
+sequence immediately after and all four points passed, `before_log`
+included, so this looks like an intermittent sandbox-side condition
+on this fee corridor, not anything in the request Enquoir sent.
