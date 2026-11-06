@@ -20,6 +20,8 @@ type Handler struct {
 func NewRouter(h *Handler) chi.Router {
 	r := chi.NewRouter()
 	r.Get("/healthz", h.healthz)
+	r.Get("/openapi.yaml", serveSpec)
+	r.Get("/docs", serveDocs)
 	r.Post("/v1/intents", h.submitIntent)
 	r.Get("/v1/intents/{key}", h.getIntent)
 	r.Post("/v1/beneficiaries", h.registerBeneficiary)

@@ -54,14 +54,14 @@ func (s *fakeStarter) callCount() int {
 	return len(s.calls)
 }
 
-func newTestRouter() (http.Handler, *fakeEventLog, *fakeStarter) {
+func newTestRouter(t *testing.T) (http.Handler, *fakeEventLog, *fakeStarter) {
 	events := newFakeEventLog()
 	starter := &fakeStarter{}
 	h := &Handler{
 		Submit: &app.SubmitIntent{Starter: starter, Events: events},
 		Get:    &app.GetIntent{Events: events},
 	}
-	return NewRouter(h), events, starter
+	return contract(t, NewRouter(h)), events, starter
 }
 
 func postIntent(t *testing.T, router http.Handler, body string) *httptest.ResponseRecorder {
@@ -76,7 +76,7 @@ func postIntent(t *testing.T, router http.Handler, body string) *httptest.Respon
 const validIntentJSON = `{"payee":"payee-1","amount":"10.50","currency":"USD","reference":"INV-1001","reason":"invoice settlement"}`
 
 func TestSubmitIntent_ValidRequestReturnsKeyAndState(t *testing.T) {
-	router, _, starter := newTestRouter()
+	router, _, starter := newTestRouter(t)
 
 	rec := postIntent(t, router, validIntentJSON)
 	if rec.Code != http.StatusOK {
@@ -99,7 +99,7 @@ func TestSubmitIntent_ValidRequestReturnsKeyAndState(t *testing.T) {
 }
 
 func TestSubmitIntent_SameIntentTwiceReturnsSameKeyAndStartsNothingNew(t *testing.T) {
-	router, _, starter := newTestRouter()
+	router, _, starter := newTestRouter(t)
 
 	first := postIntent(t, router, validIntentJSON)
 	second := postIntent(t, router, validIntentJSON)
@@ -120,7 +120,7 @@ func TestSubmitIntent_SameIntentTwiceReturnsSameKeyAndStartsNothingNew(t *testin
 // submission has history, the reworded one must resolve to the same key
 // and start nothing.
 func TestSubmitIntent_RewordedReasonResolvesToSameIntentAndStartsNothingNew(t *testing.T) {
-	router, events, starter := newTestRouter()
+	router, events, starter := newTestRouter(t)
 
 	first := postIntent(t, router, validIntentJSON)
 	var firstResp submitIntentResponse
@@ -158,7 +158,7 @@ func TestSubmitIntent_RejectsInvalidInput(t *testing.T) {
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
-			router, _, _ := newTestRouter()
+			router, _, _ := newTestRouter(t)
 			rec := postIntent(t, router, body)
 			if rec.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
@@ -168,7 +168,7 @@ func TestSubmitIntent_RejectsInvalidInput(t *testing.T) {
 }
 
 func TestGetIntent_ReturnsStateAndHistory(t *testing.T) {
-	router, events, _ := newTestRouter()
+	router, events, _ := newTestRouter(t)
 
 	intent, err := domain.NewIntent("payee-1", 1050, "USD", "INV-2", "test")
 	if err != nil {
@@ -202,7 +202,7 @@ func TestGetIntent_ReturnsStateAndHistory(t *testing.T) {
 }
 
 func TestGetIntent_UnknownKeyReturnsNotFound(t *testing.T) {
-	router, _, _ := newTestRouter()
+	router, _, _ := newTestRouter(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/intents/does-not-exist", nil)
 	rec := httptest.NewRecorder()
@@ -214,7 +214,7 @@ func TestGetIntent_UnknownKeyReturnsNotFound(t *testing.T) {
 }
 
 func TestHealthz_ReturnsOK(t *testing.T) {
-	router, _, _ := newTestRouter()
+	router, _, _ := newTestRouter(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()

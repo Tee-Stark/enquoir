@@ -32,8 +32,8 @@ func (r *fakeRegistrar) Register(ctx context.Context, b domain.Beneficiary) (str
 	return "ben_" + string(b.Key)[:8], nil
 }
 
-func newBeneficiaryRouter(registrar *fakeRegistrar) http.Handler {
-	return NewRouter(&Handler{Register: &app.RegisterBeneficiary{Registrar: registrar}})
+func newBeneficiaryRouter(t *testing.T, registrar *fakeRegistrar) http.Handler {
+	return contract(t, NewRouter(&Handler{Register: &app.RegisterBeneficiary{Registrar: registrar}}))
 }
 
 func postBeneficiary(t *testing.T, router http.Handler, body string) *httptest.ResponseRecorder {
@@ -70,7 +70,7 @@ func decodeRegister(t *testing.T, rec *httptest.ResponseRecorder) registerRespon
 
 func TestRegisterBeneficiary_ValidRequestReturnsIDAndKey(t *testing.T) {
 	registrar := &fakeRegistrar{}
-	rec := postBeneficiary(t, newBeneficiaryRouter(registrar), validBeneficiaryBody)
+	rec := postBeneficiary(t, newBeneficiaryRouter(t, registrar), validBeneficiaryBody)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
@@ -86,7 +86,7 @@ func TestRegisterBeneficiary_ValidRequestReturnsIDAndKey(t *testing.T) {
 
 func TestRegisterBeneficiary_SameDetailsTwiceReturnSameKey(t *testing.T) {
 	registrar := &fakeRegistrar{}
-	router := newBeneficiaryRouter(registrar)
+	router := newBeneficiaryRouter(t, registrar)
 
 	first := decodeRegister(t, postBeneficiary(t, router, validBeneficiaryBody))
 	second := decodeRegister(t, postBeneficiary(t, router, strings.Replace(validBeneficiaryBody, `"Acme Ltd"`, `"  Acme Ltd "`, 1)))
@@ -113,7 +113,7 @@ func TestRegisterBeneficiary_RejectsInvalidInputWithoutCallingRegistrar(t *testi
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registrar := &fakeRegistrar{}
-			rec := postBeneficiary(t, newBeneficiaryRouter(registrar), tt.body)
+			rec := postBeneficiary(t, newBeneficiaryRouter(t, registrar), tt.body)
 			if rec.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want 400; body %s", rec.Code, rec.Body)
 			}
@@ -137,7 +137,7 @@ func TestRegisterBeneficiary_MapsRegistrarErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rec := postBeneficiary(t, newBeneficiaryRouter(&fakeRegistrar{err: tt.err}), validBeneficiaryBody)
+			rec := postBeneficiary(t, newBeneficiaryRouter(t, &fakeRegistrar{err: tt.err}), validBeneficiaryBody)
 			if rec.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d; body %s", rec.Code, tt.wantStatus, rec.Body)
 			}

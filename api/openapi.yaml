@@ -1,0 +1,295 @@
+openapi: 3.1.0
+info:
+  title: Enquoir API
+  version: 0.4.0
+  summary: The safe control and observability layer for agentic finance.
+  description: |
+    Enquoir sits between an AI agent and a payment rail. The agent states an
+    intent; Enquoir derives a stable key from it, checks policy, executes it
+    through a durable workflow, records every step before it acts, and
+    reconciles unclear outcomes before anything is retried.
+
+    The rail is Airwallex, **sandbox only**. No real money can move.
+servers:
+  - url: http://localhost:8090
+    description: Local development
+tags:
+  - name: Payments
+    description: Payment intents submitted by agents.
+  - name: Beneficiaries
+    description: Payees registered on the rail before they can be paid.
+  - name: Meta
+    description: Health and the API contract itself.
+
+paths:
+  /healthz:
+    get:
+      tags: [Meta]
+      operationId: healthz
+      summary: Liveness check
+      responses:
+        "200":
+          description: The server is up.
+          content:
+            text/plain:
+              schema:
+                type: string
+                const: ok
+
+  /openapi.yaml:
+    get:
+      tags: [Meta]
+      operationId: getOpenAPISpec
+      summary: This OpenAPI document
+      responses:
+        "200":
+          description: The OpenAPI 3.1 description of every route.
+          content:
+            application/yaml:
+              schema:
+                type: object
+                description: An OpenAPI 3.1 document.
+                required: [openapi, info, paths]
+
+  /docs:
+    get:
+      tags: [Meta]
+      operationId: getAPIDocs
+      summary: Human-readable API reference
+      description: An HTML page that renders /openapi.yaml.
+      responses:
+        "200":
+          description: The API reference page.
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /v1/intents:
+    post:
+      tags: [Payments]
+      operationId: submitIntent
+      summary: Submit a payment intent
+      description: |
+        Submitting the same intent again (same payee, amount, currency and
+        reference) returns the same key and starts nothing new, however
+        long after the first submission. The `reason` is recorded but is not
+        part of the key, so an agent that rewords it on a retry still gets
+        the same payment.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitIntentRequest"
+      responses:
+        "200":
+          description: Accepted, or recognised as an intent already submitted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmitIntentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/intents/{key}:
+    get:
+      tags: [Payments]
+      operationId: getIntent
+      summary: Get an intent's state and history
+      parameters:
+        - $ref: "#/components/parameters/IntentKey"
+      responses:
+        "200":
+          description: The intent's recorded state and hash-chained history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntentDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/beneficiaries:
+    post:
+      tags: [Beneficiaries]
+      operationId: registerBeneficiary
+      summary: Register a payee
+      description: |
+        Registers a US company bank account paid in USD over ACH. Registering
+        the same details again returns the same beneficiary: Airwallex's
+        beneficiary create has no idempotency key, so Enquoir stores its own
+        key on the rail and looks it up before ever creating one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterBeneficiaryRequest"
+      responses:
+        "200":
+          description: Registered, or found already registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisterBeneficiaryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          description: The rail refused the details; the message carries its reason.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  parameters:
+    IntentKey:
+      name: key
+      in: path
+      required: true
+      description: The intent key returned on submission.
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: The request was malformed or failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: No such resource.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: Something failed on Enquoir's side. Safe to retry.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    State:
+      type: string
+      description: |
+        Where an intent is in its lifecycle. APPLIED and BLOCKED are final.
+        - PROPOSED: received by the workflow.
+        - AUTHORIZED: policy passed.
+        - IN_FLIGHT: recorded, then sent to the rail.
+        - UNKNOWN: the outcome is unclear; Enquoir looks it up before anything else.
+        - APPLIED: the rail confirmed the transfer PAID.
+        - FAILED: the rail rejected or cancelled it.
+        - BLOCKED: policy refused it; the rail was never called.
+      enum: [PROPOSED, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED]
+
+    SubmitIntentRequest:
+      type: object
+      required: [payee, amount, currency, reference]
+      properties:
+        payee:
+          type: string
+          description: The beneficiary ID returned by POST /v1/beneficiaries.
+        amount:
+          type: string
+          description: Major units as a decimal string with at most two decimals.
+          examples: ["10.50"]
+        currency:
+          type: string
+          enum: [USD, EUR, GBP, usd, eur, gbp]
+        reference:
+          type: string
+          description: Your reference for the payment, such as an invoice number.
+        reason:
+          type: string
+          description: Free text, recorded but not part of the intent key.
+
+    SubmitIntentResponse:
+      type: object
+      required: [key, state]
+      properties:
+        key:
+          type: string
+          description: The intent key. Same intent, same key.
+        state:
+          $ref: "#/components/schemas/State"
+
+    Event:
+      type: object
+      required: [sequence_number, type, payload]
+      properties:
+        sequence_number:
+          type: integer
+        type:
+          $ref: "#/components/schemas/State"
+        payload:
+          type: string
+
+    IntentDetail:
+      type: object
+      required: [key, state, events]
+      properties:
+        key:
+          type: string
+        state:
+          $ref: "#/components/schemas/State"
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/Event"
+
+    RegisterBeneficiaryRequest:
+      type: object
+      required: [name, account_number, routing_number, account_category, address]
+      properties:
+        name:
+          type: string
+        account_number:
+          type: string
+          description: 4 to 17 digits.
+        routing_number:
+          type: string
+          description: A 9-digit ABA routing number with a valid checksum.
+        account_category:
+          type: string
+          enum: [Checking, Savings, checking, savings]
+        address:
+          type: object
+          required: [street, city, state, postcode]
+          properties:
+            street:
+              type: string
+            city:
+              type: string
+            state:
+              type: string
+              description: A two-letter US state code, such as WA (US-WA is also accepted).
+            postcode:
+              type: string
+              description: A 5-digit ZIP or ZIP+4.
+
+    RegisterBeneficiaryResponse:
+      type: object
+      required: [id, key]
+      properties:
+        id:
+          type: string
+          description: The rail's beneficiary ID. Use it as an intent's payee.
+        key:
+          type: string
+          description: Enquoir's key for these details.
