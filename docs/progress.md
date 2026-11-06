@@ -420,7 +420,8 @@ What the run actually proves:
   fires before the create leaves (the call takes ~2s, login first). It
   behaved as a second `after_log_before_call`. Making it real needs the
   kill tied to the request being sent (e.g. in the HTTP transport once
-  the body is written), not a timer.
+  the body is written), not a timer. **Fixed later the same day; see
+  "during_call, made real" below.**
 - **Recovery happens by activity retry, not the workflow's `UNKNOWN`
   path.** No history shows `UNKNOWN`: a killed worker reports nothing,
   Temporal redispatches the activity after its 30s timeout, and the
@@ -429,8 +430,51 @@ What the run actually proves:
   live only in the leaked workflow above (lookup retries while login
   was refused), not resolved to completion against the sandbox.
 
-### Not verified
+### Re-verified
 
-- A kill while the create request is in flight (see `during_call`).
-- Re-verified after all three commits: `make test` offline, and
+- After all three commits: `make test` offline, and
   `make test-integration` leaves no running workflow behind.
+
+## during_call, made real (2026-11-06)
+
+`3b55853`. `chaos.ArmTransport` wraps the worker's rail HTTP transport;
+armed at `during_call`, it exits the process the moment a transfer
+create has been handed to the kernel, before any response is read. The
+50ms timer in `CreateTransfer` is gone.
+
+Go's transport reports a request written (`httptrace.WroteRequest`)
+*before* flushing its buffer over HTTP/1.1 (`transport.go` writeLoop)
+and *after* flushing over HTTP/2 (`h2_bundle.go` writeRequestBody). A
+first, trace-only attempt killed the HTTP/1.1 request while it was
+still in the process's buffer: the server never received it. So the
+armed transport wraps each connection it dials: over h2 it exits at
+`WroteRequest`, over HTTP/1.1 after the next completed write (the
+flush).
+
+Tested via subprocess against plain HTTP/1.1, TLS HTTP/1.1 and TLS h2,
+each over a connection a login already warmed (as in the worker); the
+server checks the protocol it saw and that it received the full body.
+Mutating either branch fails its case. The warm connection matters:
+on a fresh h2 connection, setup traffic produced a later write that
+hid the h2 branch's absence.
+
+Also fixed (`bae781a`): `TestKillAt_ExitsWhenPointMatches` passed even
+with a `KillAt` that never exits, because the subprocess's own
+`t.Fatal` also exits 1. Proven by mutation, then fixed in its own
+commit.
+
+`make chaos` against the real sandbox, again all four PASS:
+
+| Kill point | Worker died (UTC) | Transfer created (UTC) | Transfers for key |
+|---|---|---|---|
+| `before_log` | 11:57:29 | 11:58:02 | 1 |
+| `after_log_before_call` | 11:58:11 | 11:58:45 | 1 |
+| `during_call` | 11:58:55 | **11:58:55** | 1 |
+| `after_call_before_commit` | 11:59:30 | 11:59:30 | 1 |
+
+`during_call` now does what it says: Airwallex created the transfer in
+the second the worker died, from a request whose response nobody ever
+read. The clean worker re-sent the create (Temporal attempt 2, 30s
+later) and the rail still holds one transfer. It differs from
+`after_call_before_commit` in that the worker never saw a response at
+all, versus saw one and failed to record it.

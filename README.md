@@ -149,8 +149,9 @@ and runs a freshly built worker binary as its subprocesses. `make up` and
 running**: it would take the armed worker's work.
 
 Passed all four points against the real sandbox on 2026-11-06; see
-docs/progress.md for the results and what each point does and doesn't
-prove (`during_call`'s kill currently fires before the request leaves).
+docs/progress.md for the results and what each point proves.
+`during_call` kills the worker inside its HTTP transport the moment the
+transfer create has fully left the process, before any response is read.
 
 ## Architecture
 
@@ -230,13 +231,12 @@ Verified against the real Airwallex sandbox (2026-11-06):
   from the documented facts is recorded in docs/rail-notes.md.
 - A retry with a reworded `reason` resolves to the same intent and
   leaves exactly one transfer on the rail.
-- In the `after_call_before_commit` chaos point, the worker's create
-  really landed on Airwallex before it died, the retried create reused
-  the request ID, and the rail still held one transfer.
+- In the `during_call` and `after_call_before_commit` chaos points, the
+  worker's create really landed on Airwallex before it died (with no
+  response read, and with a response read but not recorded), the
+  retried create reused the request ID, and the rail still held one
+  transfer.
 
 Not yet verified:
 
-- A worker killed while its create request is genuinely in the air:
-  `during_call`'s kill fires before the request leaves (details in
-  docs/progress.md).
 - A `PAID` transfer failing afterwards (needs webhooks, out of scope).

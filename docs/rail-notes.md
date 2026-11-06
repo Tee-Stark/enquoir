@@ -54,6 +54,9 @@ of scope for now.
 
 - Whether `nick_name` filtering is exact or a substring match. The
   adapter only accepts an exact match either way.
-- A create whose request was genuinely in the air when the worker died
-  (see `during_call` in docs/progress.md: its kill fires before the
-  request leaves).
+
+## Observed: a create whose sender died mid-request
+
+With `during_call` killing the worker once the create had fully left
+it, Airwallex still created the transfer (in the same second). It does
+not abandon a request whose client disconnected before the response.
