@@ -95,7 +95,7 @@ func main() {
 	payments := postgres.NewPaymentReader(pool)
 	analytics := postgres.NewAnalyticsReader(pool)
 	secrets := credentials.RandomSecrets{}
-	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: sysClock, TTL: sessionTTL}
+	issuer := &app.SessionIssuer{Sessions: sessions, IDs: ids, Secrets: secrets, Clock: sysClock, TTL: sessionTTL}
 
 	handler := &httpapi.Handler{
 		Submit: &app.SubmitIntent{

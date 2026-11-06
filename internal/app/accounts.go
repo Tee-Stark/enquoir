@@ -33,19 +33,29 @@ type Organisation struct {
 	CreatedAt time.Time
 }
 
-// User is a person who signs in to the dashboard. For now every user
-// is their organisation's owner; invitations and roles attach here.
+// User is a person who signs in to the dashboard. One user may belong
+// to several organisations, with a role in each (Membership).
 type User struct {
 	ID            domain.UserID
-	OrgID         domain.OrgID
 	Email         domain.Email
 	PasswordHash  string
 	EmailVerified bool
 	CreatedAt     time.Time
 }
 
-// Session is a signed-in dashboard session, stored by token hash.
+// Membership is a user's role in one organisation.
+type Membership struct {
+	Organisation Organisation
+	UserID       domain.UserID
+	Role         domain.Role
+	CreatedAt    time.Time
+}
+
+// Session is a signed-in dashboard session, bound to one organisation
+// and stored by token hash. ID names it for listing and revocation;
+// the token is never stored.
 type Session struct {
+	ID        string
 	TokenHash string
 	UserID    domain.UserID
 	OrgID     domain.OrgID
@@ -54,15 +64,19 @@ type Session struct {
 	RevokedAt *time.Time
 }
 
-// AccountStore persists organisations and their users.
+// AccountStore persists users, organisations and memberships.
 type AccountStore interface {
-	// CreateOrganisationWithOwner stores both or neither. Returns
-	// ErrEmailTaken if owner's email is already registered.
+	// CreateOrganisationWithOwner stores the organisation, the user and
+	// the user's owner membership, all or nothing. Returns
+	// ErrEmailTaken if the email is already registered.
 	CreateOrganisationWithOwner(ctx context.Context, org Organisation, owner User) error
-	// UserByEmail returns ErrNotFound when no user has email.
+	// UserByEmail and UserByID return ErrNotFound for no such user.
 	UserByEmail(ctx context.Context, email domain.Email) (User, error)
-	// UserWithOrganisation returns ErrNotFound when no such user exists.
-	UserWithOrganisation(ctx context.Context, id domain.UserID) (User, Organisation, error)
+	UserByID(ctx context.Context, id domain.UserID) (User, error)
+	// Membership returns ErrNotFound when user is not in org.
+	Membership(ctx context.Context, org domain.OrgID, user domain.UserID) (Membership, error)
+	// MembershipsOf lists user's memberships, oldest first.
+	MembershipsOf(ctx context.Context, user domain.UserID) ([]Membership, error)
 }
 
 // SessionStore persists sessions by token hash.
@@ -83,25 +97,28 @@ type IssuedSession struct {
 	ExpiresAt time.Time
 }
 
-// SignedIn is the result of signing up or logging in.
+// SignedIn is the result of signing up or logging in: the user, the
+// organisation the new session is bound to, and the role there.
 type SignedIn struct {
 	User         User
 	Organisation Organisation
+	Role         domain.Role
 	Session      IssuedSession
 }
 
 // SessionIssuer creates sessions. Shared by sign-up and log-in.
 type SessionIssuer struct {
 	Sessions SessionStore
+	IDs      IDGenerator
 	Secrets  SecretGenerator
 	Clock    Clock
 	TTL      time.Duration
 }
 
-func (i *SessionIssuer) issue(ctx context.Context, u User) (IssuedSession, error) {
+func (i *SessionIssuer) issue(ctx context.Context, u User, org domain.OrgID) (IssuedSession, error) {
 	token := i.Secrets.NewSecret("ses")
 	now := i.Clock.Now()
-	s := Session{TokenHash: HashSecret(token), UserID: u.ID, OrgID: u.OrgID, CreatedAt: now, ExpiresAt: now.Add(i.TTL)}
+	s := Session{ID: i.IDs.NewID("ses"), TokenHash: HashSecret(token), UserID: u.ID, OrgID: org, CreatedAt: now, ExpiresAt: now.Add(i.TTL)}
 	if err := i.Sessions.Create(ctx, s); err != nil {
 		return IssuedSession{}, fmt.Errorf("creating session: %w", err)
 	}
@@ -146,16 +163,16 @@ func (s *SignUp) Run(ctx context.Context, cmd SignUpCommand) (SignedIn, error) {
 
 	now := s.Clock.Now()
 	org := Organisation{ID: domain.OrgID(s.IDs.NewID("org")), Name: orgName, CreatedAt: now}
-	user := User{ID: domain.UserID(s.IDs.NewID("usr")), OrgID: org.ID, Email: email, PasswordHash: hash, CreatedAt: now}
+	user := User{ID: domain.UserID(s.IDs.NewID("usr")), Email: email, PasswordHash: hash, CreatedAt: now}
 	if err := s.Accounts.CreateOrganisationWithOwner(ctx, org, user); err != nil {
 		return SignedIn{}, err
 	}
 
-	session, err := s.Issuer.issue(ctx, user)
+	session, err := s.Issuer.issue(ctx, user, org.ID)
 	if err != nil {
 		return SignedIn{}, err
 	}
-	return SignedIn{User: user, Organisation: org, Session: session}, nil
+	return SignedIn{User: user, Organisation: org, Role: domain.Owner, Session: session}, nil
 }
 
 // DummyPasswordHash is verified against when no account matches, so a
@@ -183,15 +200,21 @@ func (l *LogIn) Run(ctx context.Context, email, password string) (SignedIn, erro
 		return SignedIn{}, ErrInvalidCredentials
 	}
 
-	_, org, err := l.Accounts.UserWithOrganisation(ctx, user.ID)
+	// The session binds to the oldest membership; switching
+	// organisation is explicit.
+	memberships, err := l.Accounts.MembershipsOf(ctx, user.ID)
 	if err != nil {
 		return SignedIn{}, err
 	}
-	session, err := l.Issuer.issue(ctx, user)
+	if len(memberships) == 0 {
+		return SignedIn{}, ErrNoOrganisation
+	}
+	m := memberships[0]
+	session, err := l.Issuer.issue(ctx, user, m.Organisation.ID)
 	if err != nil {
 		return SignedIn{}, err
 	}
-	return SignedIn{User: user, Organisation: org, Session: session}, nil
+	return SignedIn{User: user, Organisation: m.Organisation, Role: m.Role, Session: session}, nil
 }
 
 func (l *LogIn) findUser(ctx context.Context, raw string) (User, error) {
@@ -216,14 +239,22 @@ func (l *LogOut) Run(ctx context.Context, token string) error {
 	return l.Sessions.Revoke(ctx, HashSecret(token), l.Clock.Now())
 }
 
-// UserPrincipal is a signed-in dashboard user and their organisation.
+// UserPrincipal is a signed-in dashboard user, the organisation their
+// session is bound to, and their role there.
 type UserPrincipal struct {
 	User         User
 	Organisation Organisation
+	Role         domain.Role
+	SessionID    string
 	ExpiresAt    time.Time
 }
 
-// ResolveSession turns a session token into the signed-in user.
+// Can reports whether the principal's role has a permission.
+func (p UserPrincipal) Can(perm domain.Permission) bool { return p.Role.Can(perm) }
+
+// ResolveSession turns a session token into the signed-in user. A
+// session whose membership is gone (the member was removed) no longer
+// resolves.
 type ResolveSession struct {
 	Sessions SessionStore
 	Accounts AccountStore
@@ -244,12 +275,50 @@ func (r *ResolveSession) Run(ctx context.Context, token string) (UserPrincipal, 
 	if s.RevokedAt != nil || !r.Clock.Now().Before(s.ExpiresAt) {
 		return UserPrincipal{}, ErrUnauthenticated
 	}
-	user, org, err := r.Accounts.UserWithOrganisation(ctx, s.UserID)
-	if errors.Is(err, ErrNotFound) {
-		return UserPrincipal{}, ErrUnauthenticated
-	}
+	user, err := r.Accounts.UserByID(ctx, s.UserID)
 	if err != nil {
-		return UserPrincipal{}, err
+		return UserPrincipal{}, unauthenticatedIfMissing(err)
 	}
-	return UserPrincipal{User: user, Organisation: org, ExpiresAt: s.ExpiresAt}, nil
+	m, err := r.Accounts.Membership(ctx, s.OrgID, s.UserID)
+	if err != nil {
+		return UserPrincipal{}, unauthenticatedIfMissing(err)
+	}
+	return UserPrincipal{User: user, Organisation: m.Organisation, Role: m.Role, SessionID: s.ID, ExpiresAt: s.ExpiresAt}, nil
+}
+
+func unauthenticatedIfMissing(err error) error {
+	if errors.Is(err, ErrNotFound) {
+		return ErrUnauthenticated
+	}
+	return err
+}
+
+// SwitchOrganisation moves the signed-in user to another organisation
+// they belong to: a new session bound to it replaces the current one.
+type SwitchOrganisation struct {
+	Accounts AccountStore
+	Sessions SessionStore
+	Issuer   *SessionIssuer
+}
+
+func (s *SwitchOrganisation) Run(ctx context.Context, p UserPrincipal, currentToken string, to domain.OrgID) (SignedIn, error) {
+	m, err := s.Accounts.Membership(ctx, to, p.User.ID)
+	if err != nil {
+		return SignedIn{}, err // ErrNotFound: not a member, or no such organisation
+	}
+	session, err := s.Issuer.issue(ctx, p.User, to)
+	if err != nil {
+		return SignedIn{}, err
+	}
+	if err := s.Sessions.Revoke(ctx, HashSecret(currentToken), s.Issuer.Clock.Now()); err != nil {
+		return SignedIn{}, err
+	}
+	return SignedIn{User: p.User, Organisation: m.Organisation, Role: m.Role, Session: session}, nil
+}
+
+// ListMyOrganisations lists the organisations a user belongs to.
+type ListMyOrganisations struct{ Accounts AccountStore }
+
+func (l *ListMyOrganisations) Run(ctx context.Context, user domain.UserID) ([]Membership, error) {
+	return l.Accounts.MembershipsOf(ctx, user)
 }

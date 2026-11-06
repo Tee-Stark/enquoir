@@ -12,6 +12,7 @@ import (
 
 type fakeAccounts struct {
 	byEmail map[domain.Email]app.User
+	orgOf   map[domain.UserID]domain.OrgID
 	creates int
 	// createErr is returned once, then cleared, simulating a racing
 	// creator winning between our lookup and our create.
@@ -29,7 +30,15 @@ func (a *fakeAccounts) CreateOrganisationWithOwner(ctx context.Context, org app.
 		a.byEmail = map[domain.Email]app.User{}
 	}
 	a.byEmail[owner.Email] = owner
+	a.own(owner.ID, org.ID)
 	return nil
+}
+
+func (a *fakeAccounts) own(user domain.UserID, org domain.OrgID) {
+	if a.orgOf == nil {
+		a.orgOf = map[domain.UserID]domain.OrgID{}
+	}
+	a.orgOf[user] = org
 }
 
 func (a *fakeAccounts) UserByEmail(ctx context.Context, email domain.Email) (app.User, error) {
@@ -40,8 +49,20 @@ func (a *fakeAccounts) UserByEmail(ctx context.Context, email domain.Email) (app
 	return u, nil
 }
 
-func (a *fakeAccounts) UserWithOrganisation(ctx context.Context, id domain.UserID) (app.User, app.Organisation, error) {
-	return app.User{}, app.Organisation{}, app.ErrNotFound
+func (a *fakeAccounts) UserByID(ctx context.Context, id domain.UserID) (app.User, error) {
+	return app.User{}, app.ErrNotFound
+}
+
+func (a *fakeAccounts) Membership(ctx context.Context, org domain.OrgID, user domain.UserID) (app.Membership, error) {
+	return app.Membership{}, app.ErrNotFound
+}
+
+func (a *fakeAccounts) MembershipsOf(ctx context.Context, user domain.UserID) ([]app.Membership, error) {
+	org, ok := a.orgOf[user]
+	if !ok {
+		return nil, nil
+	}
+	return []app.Membership{{Organisation: app.Organisation{ID: org}, UserID: user, Role: domain.Owner}}, nil
 }
 
 type fixedIDs struct{ n int }
@@ -95,7 +116,8 @@ func TestEnsureDemoOrg_RaceToCreateResolvesToTheWinner(t *testing.T) {
 	// Seed the "winner" as if a concurrent call already landed.
 	accounts.byEmail = map[domain.Email]app.User{}
 	winnerOrg := domain.OrgID("org_winner")
-	accounts.byEmail[demoEmail] = app.User{OrgID: winnerOrg, Email: demoEmail}
+	accounts.byEmail[demoEmail] = app.User{ID: "usr_winner", Email: demoEmail}
+	accounts.own("usr_winner", winnerOrg)
 
 	org, err := EnsureDemoOrg(context.Background(), accounts, &fixedIDs{}, fixedClock{t: time.Now()})
 	if err != nil {
@@ -125,6 +147,14 @@ func (a *failingAccounts) UserByEmail(ctx context.Context, email domain.Email) (
 	return app.User{}, a.err
 }
 
-func (a *failingAccounts) UserWithOrganisation(ctx context.Context, id domain.UserID) (app.User, app.Organisation, error) {
-	return app.User{}, app.Organisation{}, a.err
+func (a *failingAccounts) UserByID(ctx context.Context, id domain.UserID) (app.User, error) {
+	return app.User{}, a.err
+}
+
+func (a *failingAccounts) Membership(ctx context.Context, org domain.OrgID, user domain.UserID) (app.Membership, error) {
+	return app.Membership{}, a.err
+}
+
+func (a *failingAccounts) MembershipsOf(ctx context.Context, user domain.UserID) ([]app.Membership, error) {
+	return nil, a.err
 }

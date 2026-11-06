@@ -36,7 +36,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	attempts, payments := apptest.NewAttempts(), apptest.NewPayments()
 	events.Clock = clock
 	analytics := &fixtureAnalytics{}
-	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: clock, TTL: 7 * 24 * time.Hour}
+	issuer := &app.SessionIssuer{Sessions: sessions, IDs: ids, Secrets: secrets, Clock: clock, TTL: 7 * 24 * time.Hour}
 	h := &Handler{
 		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: clock, Issuer: issuer},
 		LogIn:          &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},

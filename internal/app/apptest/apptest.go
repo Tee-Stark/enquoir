@@ -75,27 +75,56 @@ func (c *Clock) Advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
+// Accounts is an in-memory app.AccountStore with memberships.
 type Accounts struct {
-	mu    sync.Mutex
-	orgs  map[domain.OrgID]app.Organisation
-	users map[domain.UserID]app.User
+	mu          sync.Mutex
+	orgs        map[domain.OrgID]app.Organisation
+	users       map[domain.UserID]app.User
+	memberships []app.Membership
 }
 
 func NewAccounts() *Accounts {
 	return &Accounts{orgs: map[domain.OrgID]app.Organisation{}, users: map[domain.UserID]app.User{}}
 }
 
+func (a *Accounts) emailTaken(email domain.Email) bool {
+	for _, u := range a.users {
+		if u.Email == email {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *Accounts) CreateOrganisationWithOwner(ctx context.Context, org app.Organisation, owner app.User) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for _, u := range a.users {
-		if u.Email == owner.Email {
-			return app.ErrEmailTaken
-		}
+	if a.emailTaken(owner.Email) {
+		return app.ErrEmailTaken
 	}
 	a.orgs[org.ID] = org
 	a.users[owner.ID] = owner
+	a.memberships = append(a.memberships, app.Membership{Organisation: org, UserID: owner.ID, Role: domain.Owner, CreatedAt: owner.CreatedAt})
 	return nil
+}
+
+// AddMember adds user (who must exist) to org with role.
+func (a *Accounts) AddMember(org domain.OrgID, user domain.UserID, role domain.Role, at time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.memberships = append(a.memberships, app.Membership{Organisation: a.orgs[org], UserID: user, Role: role, CreatedAt: at})
+}
+
+// RemoveMembershipForTest drops a membership directly.
+func (a *Accounts) RemoveMembershipForTest(org domain.OrgID, user domain.UserID) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, m := range a.memberships {
+		if m.Organisation.ID == org && m.UserID == user {
+			a.memberships = append(a.memberships[:i], a.memberships[i+1:]...)
+			return
+		}
+	}
 }
 
 func (a *Accounts) UserByEmail(ctx context.Context, email domain.Email) (app.User, error) {
@@ -109,14 +138,39 @@ func (a *Accounts) UserByEmail(ctx context.Context, email domain.Email) (app.Use
 	return app.User{}, app.ErrNotFound
 }
 
-func (a *Accounts) UserWithOrganisation(ctx context.Context, id domain.UserID) (app.User, app.Organisation, error) {
+func (a *Accounts) UserByID(ctx context.Context, id domain.UserID) (app.User, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	u, ok := a.users[id]
 	if !ok {
-		return app.User{}, app.Organisation{}, app.ErrNotFound
+		return app.User{}, app.ErrNotFound
 	}
-	return u, a.orgs[u.OrgID], nil
+	return u, nil
+}
+
+func (a *Accounts) Membership(ctx context.Context, org domain.OrgID, user domain.UserID) (app.Membership, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, m := range a.memberships {
+		if m.Organisation.ID == org && m.UserID == user {
+			m.Organisation = a.orgs[org]
+			return m, nil
+		}
+	}
+	return app.Membership{}, app.ErrNotFound
+}
+
+func (a *Accounts) MembershipsOf(ctx context.Context, user domain.UserID) ([]app.Membership, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []app.Membership
+	for _, m := range a.memberships {
+		if m.UserID == user {
+			m.Organisation = a.orgs[m.Organisation.ID]
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 
 type Sessions struct {

@@ -8,6 +8,7 @@ import (
 
 	"enquoir/internal/app"
 	"enquoir/internal/app/apptest"
+	"enquoir/internal/domain"
 )
 
 type accountsFixture struct {
@@ -19,6 +20,7 @@ type accountsFixture struct {
 	logIn    *app.LogIn
 	logOut   *app.LogOut
 	resolve  *app.ResolveSession
+	issuer   *app.SessionIssuer
 }
 
 func newAccountsFixture() *accountsFixture {
@@ -28,10 +30,11 @@ func newAccountsFixture() *accountsFixture {
 		hasher:   &apptest.Hasher{},
 		clock:    apptest.NewClock(),
 	}
-	issuer := &app.SessionIssuer{Sessions: f.sessions, Secrets: &apptest.Secrets{}, Clock: f.clock, TTL: 7 * 24 * time.Hour}
+	issuer := &app.SessionIssuer{Sessions: f.sessions, IDs: &apptest.IDs{}, Secrets: &apptest.Secrets{}, Clock: f.clock, TTL: 7 * 24 * time.Hour}
 	f.signUp = &app.SignUp{Accounts: f.accounts, Hasher: f.hasher, IDs: &apptest.IDs{}, Clock: f.clock, Issuer: issuer}
 	f.logIn = &app.LogIn{Accounts: f.accounts, Hasher: f.hasher, Issuer: issuer}
 	f.logOut = &app.LogOut{Sessions: f.sessions, Clock: f.clock}
+	f.issuer = issuer
 	f.resolve = &app.ResolveSession{Sessions: f.sessions, Accounts: f.accounts, Clock: f.clock}
 	return f
 }
@@ -47,8 +50,11 @@ func TestSignUp_CreatesOrganisationOwnerAndSession(t *testing.T) {
 	if got.User.Email != "ada@example.com" || got.User.EmailVerified {
 		t.Errorf("user = %+v, want normalised email, not yet verified", got.User)
 	}
-	if got.Organisation.Name != "Acme Treasury" || got.User.OrgID != got.Organisation.ID {
-		t.Errorf("organisation = %+v, user org %q: the owner must belong to the new organisation", got.Organisation, got.User.OrgID)
+	if got.Organisation.Name != "Acme Treasury" || got.Role != domain.Owner {
+		t.Errorf("organisation = %+v, role %q: the signer-up must own the new organisation", got.Organisation, got.Role)
+	}
+	if m, err := f.accounts.Membership(context.Background(), got.Organisation.ID, got.User.ID); err != nil || m.Role != domain.Owner {
+		t.Errorf("membership = %+v, %v; want an owner membership", m, err)
 	}
 	if got.User.PasswordHash == validSignUp.Password {
 		t.Error("the password was stored in plaintext")
@@ -161,5 +167,50 @@ func TestLogOut_RevokesTheSessionAndIsIdempotent(t *testing.T) {
 	}
 	if _, err := f.resolve.Run(ctx, signed.Session.Token); !errors.Is(err, app.ErrUnauthenticated) {
 		t.Errorf("Resolve after logout err = %v, want app.ErrUnauthenticated", err)
+	}
+}
+
+func TestLogIn_BindsTheSessionToTheOldestMembershipAndSwitches(t *testing.T) {
+	f := newAccountsFixture()
+	ctx := context.Background()
+	ada, _ := f.signUp.Run(ctx, validSignUp)
+	bobs, _ := f.signUp.Run(ctx, app.SignUpCommand{Email: "bob@example.com", Password: "correct horse battery", OrganisationName: "Bob Co"})
+	f.clock.Advance(time.Minute)
+	f.accounts.AddMember(bobs.Organisation.ID, ada.User.ID, domain.Viewer, f.clock.Now())
+
+	in, err := f.logIn.Run(ctx, "ada@example.com", validSignUp.Password)
+	if err != nil || in.Organisation.ID != ada.Organisation.ID || in.Role != domain.Owner {
+		t.Fatalf("login = %+v, %v; want ada's own (oldest) organisation as owner", in, err)
+	}
+
+	p, _ := f.resolve.Run(ctx, in.Session.Token)
+	switcher := &app.SwitchOrganisation{Accounts: f.accounts, Sessions: f.sessions, Issuer: f.issuer}
+	switched, err := switcher.Run(ctx, p, in.Session.Token, bobs.Organisation.ID)
+	if err != nil || switched.Role != domain.Viewer || switched.Organisation.Name != "Bob Co" {
+		t.Fatalf("switch = %+v, %v; want Bob Co as viewer", switched, err)
+	}
+	if _, err := f.resolve.Run(ctx, in.Session.Token); !errors.Is(err, app.ErrUnauthenticated) {
+		t.Errorf("the session switched away from still resolves: %v", err)
+	}
+	if p2, err := f.resolve.Run(ctx, switched.Session.Token); err != nil || p2.Organisation.ID != bobs.Organisation.ID || p2.Role != domain.Viewer {
+		t.Errorf("the new session = %+v, %v", p2, err)
+	}
+
+	stranger, _ := f.signUp.Run(ctx, app.SignUpCommand{Email: "eve@example.com", Password: "correct horse battery", OrganisationName: "Eve"})
+	if _, err := switcher.Run(ctx, p, in.Session.Token, stranger.Organisation.ID); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("switching to an organisation ada is not in: %v, want ErrNotFound", err)
+	}
+}
+
+func TestResolveSession_StopsWhenTheMembershipIsGone(t *testing.T) {
+	f := newAccountsFixture()
+	ctx := context.Background()
+	signed, _ := f.signUp.Run(ctx, validSignUp)
+	f.accounts.RemoveMembershipForTest(signed.Organisation.ID, signed.User.ID)
+	if _, err := f.resolve.Run(ctx, signed.Session.Token); !errors.Is(err, app.ErrUnauthenticated) {
+		t.Errorf("a removed member's session resolves: %v", err)
+	}
+	if _, err := f.logIn.Run(ctx, "ada@example.com", validSignUp.Password); !errors.Is(err, app.ErrNoOrganisation) {
+		t.Errorf("logging in with no organisation: %v, want ErrNoOrganisation", err)
 	}
 }

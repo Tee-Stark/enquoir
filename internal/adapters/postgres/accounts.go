@@ -39,33 +39,46 @@ func (s *AccountStore) CreateOrganisationWithOwner(ctx context.Context, org app.
 			string(org.ID), org.Name, org.CreatedAt); err != nil {
 			return fmt.Errorf("creating organisation: %w", err)
 		}
-		_, err := tx.Exec(ctx, `
-			INSERT INTO users (id, org_id, email, password_hash, created_at)
-			VALUES ($1, $2, $3, $4, $5)`,
-			string(owner.ID), string(owner.OrgID), string(owner.Email), owner.PasswordHash, owner.CreatedAt)
-		if isUniqueViolation(err, "users_email_key") {
-			return app.ErrEmailTaken
+		if err := insertUser(ctx, tx, owner); err != nil {
+			return err
 		}
-		if err != nil {
-			return fmt.Errorf("creating user: %w", err)
-		}
-		return nil
+		return insertMembership(ctx, tx, org.ID, owner.ID, domain.Owner, owner.CreatedAt)
 	})
 }
 
-const userColumns = `u.id, u.org_id, u.email, u.password_hash, u.email_verified_at IS NOT NULL, u.created_at`
+func insertUser(ctx context.Context, tx pgx.Tx, u app.User) error {
+	_, err := tx.Exec(ctx, `INSERT INTO users (id, email, password_hash, created_at) VALUES ($1, $2, $3, $4)`,
+		string(u.ID), string(u.Email), u.PasswordHash, u.CreatedAt)
+	if isUniqueViolation(err, "users_email_key") {
+		return app.ErrEmailTaken
+	}
+	if err != nil {
+		return fmt.Errorf("creating user: %w", err)
+	}
+	return nil
+}
 
-func scanUser(row pgx.Row, extra ...any) (app.User, error) {
+func insertMembership(ctx context.Context, tx pgx.Tx, org domain.OrgID, user domain.UserID, role domain.Role, at time.Time) error {
+	_, err := tx.Exec(ctx, `INSERT INTO memberships (org_id, user_id, role, created_at) VALUES ($1, $2, $3, $4)`,
+		string(org), string(user), string(role), at)
+	if err != nil {
+		return fmt.Errorf("creating membership: %w", err)
+	}
+	return nil
+}
+
+const userColumns = `u.id, u.email, u.password_hash, u.email_verified_at IS NOT NULL, u.created_at`
+
+func scanUser(row pgx.Row) (app.User, error) {
 	var u app.User
-	var id, org, email string
-	dest := append([]any{&id, &org, &email, &u.PasswordHash, &u.EmailVerified, &u.CreatedAt}, extra...)
-	if err := row.Scan(dest...); err != nil {
+	var id, email string
+	if err := row.Scan(&id, &email, &u.PasswordHash, &u.EmailVerified, &u.CreatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return app.User{}, app.ErrNotFound
 		}
 		return app.User{}, err
 	}
-	u.ID, u.OrgID, u.Email = domain.UserID(id), domain.OrgID(org), domain.Email(email)
+	u.ID, u.Email = domain.UserID(id), domain.Email(email)
 	return u, nil
 }
 
@@ -73,17 +86,46 @@ func (s *AccountStore) UserByEmail(ctx context.Context, email domain.Email) (app
 	return scanUser(s.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM users u WHERE u.email = $1`, string(email)))
 }
 
-func (s *AccountStore) UserWithOrganisation(ctx context.Context, id domain.UserID) (app.User, app.Organisation, error) {
-	var org app.Organisation
-	user, err := scanUser(s.pool.QueryRow(ctx, `
-		SELECT `+userColumns+`, o.name, o.created_at
-		FROM users u JOIN organisations o ON o.id = u.org_id
-		WHERE u.id = $1`, string(id)), &org.Name, &org.CreatedAt)
-	if err != nil {
-		return app.User{}, app.Organisation{}, err
+func (s *AccountStore) UserByID(ctx context.Context, id domain.UserID) (app.User, error) {
+	return scanUser(s.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM users u WHERE u.id = $1`, string(id)))
+}
+
+const membershipSelect = `
+	SELECT o.id, o.name, o.created_at, m.user_id, m.role, m.created_at
+	FROM memberships m JOIN organisations o ON o.id = m.org_id`
+
+func scanMembership(row pgx.Row) (app.Membership, error) {
+	var m app.Membership
+	var org, user, role string
+	if err := row.Scan(&org, &m.Organisation.Name, &m.Organisation.CreatedAt, &user, &role, &m.CreatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return app.Membership{}, app.ErrNotFound
+		}
+		return app.Membership{}, err
 	}
-	org.ID = user.OrgID
-	return user, org, nil
+	m.Organisation.ID, m.UserID, m.Role = domain.OrgID(org), domain.UserID(user), domain.Role(role)
+	return m, nil
+}
+
+func (s *AccountStore) Membership(ctx context.Context, org domain.OrgID, user domain.UserID) (app.Membership, error) {
+	return scanMembership(s.pool.QueryRow(ctx, membershipSelect+` WHERE m.org_id = $1 AND m.user_id = $2`, string(org), string(user)))
+}
+
+func (s *AccountStore) MembershipsOf(ctx context.Context, user domain.UserID) ([]app.Membership, error) {
+	rows, err := s.pool.Query(ctx, membershipSelect+` WHERE m.user_id = $1 ORDER BY m.created_at, o.id`, string(user))
+	if err != nil {
+		return nil, fmt.Errorf("listing memberships: %w", err)
+	}
+	defer rows.Close()
+	var out []app.Membership
+	for rows.Next() {
+		m, err := scanMembership(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // SessionStore persists dashboard sessions by token hash.
@@ -95,9 +137,9 @@ func NewSessionStore(pool *pgxpool.Pool) *SessionStore { return &SessionStore{po
 
 func (s *SessionStore) Create(ctx context.Context, sess app.Session) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO sessions (token_hash, user_id, org_id, created_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5)`,
-		sess.TokenHash, string(sess.UserID), string(sess.OrgID), sess.CreatedAt, sess.ExpiresAt)
+		INSERT INTO sessions (id, token_hash, user_id, org_id, created_at, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		sess.ID, sess.TokenHash, string(sess.UserID), string(sess.OrgID), sess.CreatedAt, sess.ExpiresAt)
 	if err != nil {
 		return fmt.Errorf("creating session: %w", err)
 	}
@@ -108,9 +150,9 @@ func (s *SessionStore) Get(ctx context.Context, tokenHash string) (app.Session, 
 	var sess app.Session
 	var user, org string
 	err := s.pool.QueryRow(ctx, `
-		SELECT token_hash, user_id, org_id, created_at, expires_at, revoked_at
+		SELECT id, token_hash, user_id, org_id, created_at, expires_at, revoked_at
 		FROM sessions WHERE token_hash = $1`, tokenHash,
-	).Scan(&sess.TokenHash, &user, &org, &sess.CreatedAt, &sess.ExpiresAt, &sess.RevokedAt)
+	).Scan(&sess.ID, &sess.TokenHash, &user, &org, &sess.CreatedAt, &sess.ExpiresAt, &sess.RevokedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Session{}, app.ErrNotFound
 	}

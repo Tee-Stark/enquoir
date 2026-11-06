@@ -22,7 +22,7 @@ func newTestOrg(t *testing.T, store *AccountStore) (app.Organisation, app.User) 
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	org := app.Organisation{ID: domain.OrgID(ids.NewID("org")), Name: "Test " + t.Name(), CreatedAt: now}
 	user := app.User{
-		ID: domain.UserID(ids.NewID("usr")), OrgID: org.ID,
+		ID:           domain.UserID(ids.NewID("usr")),
 		Email:        domain.Email(fmt.Sprintf("%s@example.com", ids.NewID("u"))),
 		PasswordHash: "hashed", CreatedAt: now,
 	}
@@ -38,12 +38,22 @@ func TestAccountStore_CreateAndFind(t *testing.T) {
 	org, user := newTestOrg(t, store)
 
 	got, err := store.UserByEmail(ctx, user.Email)
-	if err != nil || got.ID != user.ID || got.OrgID != org.ID || got.PasswordHash != "hashed" || got.EmailVerified {
+	if err != nil || got.ID != user.ID || got.PasswordHash != "hashed" || got.EmailVerified {
 		t.Errorf("UserByEmail = %+v, %v", got, err)
 	}
-	u, o, err := store.UserWithOrganisation(ctx, user.ID)
-	if err != nil || u.Email != user.Email || o.Name != org.Name || !o.CreatedAt.Equal(org.CreatedAt) {
-		t.Errorf("UserWithOrganisation = %+v, %+v, %v", u, o, err)
+	if u, err := store.UserByID(ctx, user.ID); err != nil || u.Email != user.Email {
+		t.Errorf("UserByID = %+v, %v", u, err)
+	}
+	m, err := store.Membership(ctx, org.ID, user.ID)
+	if err != nil || m.Role != domain.Owner || m.Organisation.Name != org.Name || !m.Organisation.CreatedAt.Equal(org.CreatedAt) {
+		t.Errorf("Membership = %+v, %v", m, err)
+	}
+	other, _ := newTestOrg(t, store)
+	if _, err := store.Membership(ctx, other.ID, user.ID); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("membership in an organisation the user is not in: %v", err)
+	}
+	if ms, err := store.MembershipsOf(ctx, user.ID); err != nil || len(ms) != 1 || ms[0].Organisation.ID != org.ID {
+		t.Errorf("MembershipsOf = %+v, %v", ms, err)
 	}
 	if _, err := store.UserByEmail(ctx, "nobody-"+user.Email); !errors.Is(err, app.ErrNotFound) {
 		t.Errorf("UserByEmail(unknown) err = %v, want ErrNotFound", err)
@@ -58,7 +68,7 @@ func TestAccountStore_TakenEmailStoresNothing(t *testing.T) {
 	_, user := newTestOrg(t, store)
 
 	org2 := app.Organisation{ID: domain.OrgID(ids.NewID("org")), Name: "Second", CreatedAt: time.Now()}
-	dup := app.User{ID: domain.UserID(ids.NewID("usr")), OrgID: org2.ID, Email: user.Email, PasswordHash: "x", CreatedAt: time.Now()}
+	dup := app.User{ID: domain.UserID(ids.NewID("usr")), Email: user.Email, PasswordHash: "x", CreatedAt: time.Now()}
 	if err := store.CreateOrganisationWithOwner(ctx, org2, dup); !errors.Is(err, app.ErrEmailTaken) {
 		t.Fatalf("err = %v, want ErrEmailTaken", err)
 	}
@@ -72,16 +82,16 @@ func TestAccountStore_TakenEmailStoresNothing(t *testing.T) {
 func TestSessionStore_CreateGetRevoke(t *testing.T) {
 	ctx := context.Background()
 	pool := testPool(t)
-	_, user := newTestOrg(t, NewAccountStore(pool))
+	org, user := newTestOrg(t, NewAccountStore(pool))
 	sessions := NewSessionStore(pool)
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	s := app.Session{TokenHash: app.HashSecret(ids.NewID("ses")), UserID: user.ID, OrgID: user.OrgID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	s := app.Session{ID: ids.NewID("ses"), TokenHash: app.HashSecret(ids.NewID("ses")), UserID: user.ID, OrgID: org.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
 	if err := sessions.Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}
 	got, err := sessions.Get(ctx, s.TokenHash)
-	if err != nil || got.UserID != user.ID || !got.ExpiresAt.Equal(s.ExpiresAt) || got.RevokedAt != nil {
+	if err != nil || got.UserID != user.ID || got.ID != s.ID || got.OrgID != org.ID || !got.ExpiresAt.Equal(s.ExpiresAt) || got.RevokedAt != nil {
 		t.Fatalf("Get = %+v, %v", got, err)
 	}
 	if err := sessions.Revoke(ctx, s.TokenHash, now); err != nil {
