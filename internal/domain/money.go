@@ -148,3 +148,6 @@ func allDigits(s string) bool {
 	}
 	return true
 }
+
+// Supported reports whether c is a currency Enquoir accepts.
+func (c Currency) Supported() bool { return c.valid() }

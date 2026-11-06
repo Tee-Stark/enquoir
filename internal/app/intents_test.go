@@ -24,9 +24,9 @@ func testIntent(t *testing.T) domain.Intent {
 func TestSubmitIntent_FreshSubmissionReturnsProposed(t *testing.T) {
 	intent := testIntent(t)
 	starter := &apptest.PaymentStarter{}
-	use := &app.SubmitIntent{Starter: starter, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents()}
+	use := &app.SubmitIntent{Starter: starter, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 
-	result, err := use.Run(context.Background(), intent)
+	result, err := use.Run(context.Background(), commandFor(intent))
 	if err != nil {
 		t.Fatalf("Run: unexpected error: %v", err)
 	}
@@ -48,9 +48,9 @@ func TestSubmitIntent_AttachingReturnsCurrentRecordedState(t *testing.T) {
 	events.Append(context.Background(), testOrg, intent.Key, "AUTHORIZED", "")
 	events.Append(context.Background(), testOrg, intent.Key, "APPLIED", "tr_1")
 
-	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{}, Events: events, Payees: ownedPayees(), Intents: apptest.NewIntents()}
+	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{}, Events: events, Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 
-	result, err := use.Run(context.Background(), intent)
+	result, err := use.Run(context.Background(), commandFor(intent))
 	if err != nil {
 		t.Fatalf("Run: unexpected error: %v", err)
 	}
@@ -84,9 +84,9 @@ func TestSubmitIntent_RecordedHistoryIsNeverRestarted(t *testing.T) {
 				events.Append(context.Background(), testOrg, intent.Key, typ, "")
 			}
 			starter := &apptest.PaymentStarter{}
-			use := &app.SubmitIntent{Starter: starter, Events: events, Payees: ownedPayees(), Intents: apptest.NewIntents()}
+			use := &app.SubmitIntent{Starter: starter, Events: events, Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 
-			result, err := use.Run(context.Background(), intent)
+			result, err := use.Run(context.Background(), commandFor(intent))
 			if err != nil {
 				t.Fatalf("Run: unexpected error: %v", err)
 			}
@@ -106,9 +106,9 @@ func TestSubmitIntent_PropagatesEventLogError(t *testing.T) {
 	intent := testIntent(t)
 	wantErr := errors.New("postgres unavailable")
 	starter := &apptest.PaymentStarter{}
-	use := &app.SubmitIntent{Starter: starter, Events: failingEventLog{err: wantErr}, Payees: ownedPayees(), Intents: apptest.NewIntents()}
+	use := &app.SubmitIntent{Starter: starter, Events: failingEventLog{err: wantErr}, Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 
-	_, err := use.Run(context.Background(), intent)
+	_, err := use.Run(context.Background(), commandFor(intent))
 	if !errors.Is(err, wantErr) {
 		t.Errorf("Run error = %v, want it to wrap %v", err, wantErr)
 	}
@@ -130,9 +130,9 @@ func (l failingEventLog) Load(ctx context.Context, org domain.OrgID, key domain.
 func TestSubmitIntent_PropagatesStarterError(t *testing.T) {
 	intent := testIntent(t)
 	wantErr := errors.New("temporal unavailable")
-	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{Err: wantErr}, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents()}
+	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{Err: wantErr}, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 
-	_, err := use.Run(context.Background(), intent)
+	_, err := use.Run(context.Background(), commandFor(intent))
 	if !errors.Is(err, wantErr) {
 		t.Errorf("Run error = %v, want it to wrap %v", err, wantErr)
 	}
@@ -201,9 +201,9 @@ func TestSubmitIntent_RefusesAPayeeTheOrganisationDoesNotOwn(t *testing.T) {
 	for name, payees := range cases {
 		t.Run(name, func(t *testing.T) {
 			starter, events := &apptest.PaymentStarter{}, apptest.NewEventLog()
-			use := &app.SubmitIntent{Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents()}
+			use := &app.SubmitIntent{Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 
-			_, err := use.Run(context.Background(), intent)
+			_, err := use.Run(context.Background(), commandFor(intent))
 			if !errors.Is(err, app.ErrPayeeUnknown) {
 				t.Fatalf("err = %v, want ErrPayeeUnknown", err)
 			}
@@ -222,19 +222,28 @@ func TestSubmitIntent_RecordsTheIntentAndTheAgentThatFirstSubmittedIt(t *testing
 	intent := testIntent(t)
 	intent.Agent = "agt_first"
 	intents := apptest.NewIntents()
-	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{}, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: intents}
+	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{}, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: intents, Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 
-	if _, err := use.Run(context.Background(), intent); err != nil {
+	if _, err := use.Run(context.Background(), commandFor(intent)); err != nil {
 		t.Fatal(err)
 	}
 	again := intent
 	again.Agent = "agt_second"
-	if _, err := use.Run(context.Background(), again); err != nil {
+	if _, err := use.Run(context.Background(), commandFor(again)); err != nil {
 		t.Fatal(err)
 	}
 
 	stored, ok := intents.Get(intent.Key)
 	if !ok || stored.Agent != "agt_first" || stored.OrgID != testOrg {
 		t.Errorf("stored = %+v (found %v), want the intent attributed to agt_first", stored, ok)
+	}
+}
+
+// commandFor is the submission an agent would send for intent.
+func commandFor(intent domain.Intent) app.SubmitIntentCommand {
+	return app.SubmitIntentCommand{
+		OrgID: intent.OrgID, Agent: intent.Agent, Payee: intent.Payee,
+		Amount: intent.Amount.MajorUnitsString(), Currency: string(intent.Amount.Currency()),
+		Reference: intent.Reference, Reason: intent.Reason,
 	}
 }

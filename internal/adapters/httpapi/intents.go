@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -21,8 +20,9 @@ type submitIntentRequest struct {
 }
 
 type submitIntentResponse struct {
-	Key   string `json:"key"`
-	State string `json:"state"`
+	Key     string `json:"key"`
+	State   string `json:"state"`
+	Outcome string `json:"outcome"`
 }
 
 func (h *Handler) submitIntent(w http.ResponseWriter, r *http.Request) {
@@ -32,29 +32,20 @@ func (h *Handler) submitIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	amount, err := domain.ParseMajorUnits(req.Amount, domain.Currency(strings.ToUpper(strings.TrimSpace(req.Currency))))
-	if err != nil {
-		writeProblem(w, http.StatusBadRequest, codeValidationFailed, err.Error())
-		return
-	}
-
 	agent := agentFrom(r.Context())
-	intent, err := domain.NewIntent(agent.OrgID, req.Payee, amount.MinorUnits(), string(amount.Currency()), req.Reference, req.Reason)
-	if err != nil {
-		writeProblem(w, http.StatusBadRequest, codeValidationFailed, err.Error())
-		return
-	}
-	intent.Agent = agent.AgentID
-
-	result, err := h.Submit.Run(r.Context(), intent)
+	result, err := h.Submit.Run(r.Context(), app.SubmitIntentCommand{
+		OrgID: agent.OrgID, Agent: agent.AgentID,
+		Payee: req.Payee, Amount: req.Amount, Currency: req.Currency, Reference: req.Reference, Reason: req.Reason,
+	})
 	if err != nil {
 		writeAppError(w, err, "could not submit intent")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, submitIntentResponse{
-		Key:   string(result.Key),
-		State: string(result.State),
+		Key:     string(result.Key),
+		State:   string(result.State),
+		Outcome: string(result.Outcome),
 	})
 }
 

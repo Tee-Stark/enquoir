@@ -85,15 +85,19 @@ func main() {
 	ids := credentials.RandomIDs{}
 	agents := postgres.NewAgentStore(pool)
 	beneficiaries := postgres.NewBeneficiaryStore(pool)
+	attempts := postgres.NewAttemptLog(pool)
 	secrets := credentials.RandomSecrets{}
 	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: sysClock, TTL: sessionTTL}
 
 	handler := &httpapi.Handler{
 		Submit: &app.SubmitIntent{
-			Starter: &httpapi.TemporalPaymentStarter{Client: temporalClient, MaxAmountMinorUnits: maxMinorUnits},
-			Events:  events,
-			Payees:  beneficiaries,
-			Intents: postgres.NewIntentRepository(pool),
+			Starter:  &httpapi.TemporalPaymentStarter{Client: temporalClient, MaxAmountMinorUnits: maxMinorUnits},
+			Events:   events,
+			Payees:   beneficiaries,
+			Intents:  postgres.NewIntentRepository(pool),
+			Attempts: attempts,
+			IDs:      ids,
+			Clock:    sysClock,
 		},
 		Get: &app.GetIntent{Events: events},
 		Register: &app.RegisterBeneficiary{

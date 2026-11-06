@@ -281,3 +281,22 @@ func TestSubmitIntent_AnotherOrganisationsPayeeIsRefused(t *testing.T) {
 		t.Errorf("org A paying its own payee: %d %s, want 200", rec.Code, rec.Body)
 	}
 }
+
+func TestSubmitIntent_ReportsWhatTheSubmissionDidAndRecordsEveryOne(t *testing.T) {
+	f := newAuthFixture(t, true)
+	_, bearer := f.newAgent(t)
+
+	var first, second submitIntentResponse
+	json.Unmarshal(postIntentAs(t, f, bearer, validIntentJSON).Body.Bytes(), &first)
+	f.events.Append(context.Background(), f.starter.Calls()[0].OrgID, domain.IntentKey(first.Key), "PROPOSED", "")
+	json.Unmarshal(postIntentAs(t, f, bearer, validIntentJSON).Body.Bytes(), &second)
+	if first.Outcome != "started" || second.Outcome != "deduplicated" {
+		t.Errorf("outcomes = %q then %q, want started then deduplicated", first.Outcome, second.Outcome)
+	}
+
+	postIntentAs(t, f, bearer, `{"payee":"payee-1","amount":"1.005","currency":"USD","reference":"R"}`)
+	all := f.attempts.All()
+	if len(all) != 3 || all[2].Outcome != "invalid" {
+		t.Errorf("attempts = %d (last %q), want 3, the last invalid", len(all), all[len(all)-1].Outcome)
+	}
+}

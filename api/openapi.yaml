@@ -684,13 +684,21 @@ components:
 
     SubmitIntentResponse:
       type: object
-      required: [key, state]
+      required: [key, state, outcome]
       properties:
         key:
           type: string
           description: The intent key. Same intent, same key.
         state:
           $ref: "#/components/schemas/State"
+        outcome:
+          type: string
+          description: |
+            What this submission did.
+            - started: a new payment began.
+            - attached: the same intent was submitted moments ago and its run is starting; this joined it.
+            - deduplicated: the intent already has a recorded history; nothing new started, `state` is where it stands.
+          enum: [started, attached, deduplicated]
 
     Event:
       type: object

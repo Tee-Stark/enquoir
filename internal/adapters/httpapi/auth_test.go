@@ -16,13 +16,14 @@ import (
 )
 
 type authFixture struct {
-	router  http.Handler
-	handler *Handler
-	clock   *apptest.Clock
-	agents  *apptest.Agents
-	events  *apptest.EventLog
-	starter *apptest.PaymentStarter
-	payees  *apptest.Beneficiaries
+	router   http.Handler
+	handler  *Handler
+	clock    *apptest.Clock
+	agents   *apptest.Agents
+	events   *apptest.EventLog
+	starter  *apptest.PaymentStarter
+	payees   *apptest.Beneficiaries
+	attempts *apptest.Attempts
 }
 
 func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
@@ -31,6 +32,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	accounts, sessions, hasher := apptest.NewAccounts(), apptest.NewSessions(), &apptest.Hasher{}
 	agents, ids, secrets := apptest.NewAgents(), &apptest.IDs{}, &apptest.Secrets{}
 	events, starter, payees := apptest.NewEventLog(), &apptest.PaymentStarter{}, apptest.NewBeneficiaries()
+	attempts := apptest.NewAttempts()
 	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: clock, TTL: 7 * 24 * time.Hour}
 	h := &Handler{
 		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: clock, Issuer: issuer},
@@ -46,10 +48,10 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: clock},
 		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: clock},
 
-		Submit: &app.SubmitIntent{Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents()},
+		Submit: &app.SubmitIntent{Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents(), Attempts: attempts, IDs: ids, Clock: clock},
 		Get:    &app.GetIntent{Events: events},
 	}
-	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees}
+	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts}
 }
 
 var testEmailCounter atomic.Int64

@@ -429,3 +429,62 @@ func (r *Intents) Get(key domain.IntentKey) (domain.Intent, bool) {
 	i, ok := r.stored[key]
 	return i, ok
 }
+
+// Attempts is an in-memory app.AttemptLog.
+type Attempts struct {
+	mu       sync.Mutex
+	attempts []app.Attempt
+	Clock    app.Clock // for interrupted; NewClock() if nil
+}
+
+func NewAttempts() *Attempts { return &Attempts{} }
+
+func (l *Attempts) Record(ctx context.Context, a app.Attempt) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.attempts = append(l.attempts, a)
+	return nil
+}
+
+func (l *Attempts) Start(ctx context.Context, a app.Attempt) error {
+	a.Outcome = app.OutcomeInProgress
+	return l.Record(ctx, a)
+}
+
+func (l *Attempts) Finish(ctx context.Context, org domain.OrgID, id string, f app.AttemptFinish) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i := range l.attempts {
+		a := &l.attempts[i]
+		if a.ID == id && a.OrgID == org {
+			a.Outcome, a.TransferID, a.TransferStatus = f.Outcome, f.TransferID, f.TransferStatus
+			a.HTTPStatus, a.ErrorCode, a.ErrorMessage = f.HTTPStatus, f.ErrorCode, f.ErrorMessage
+			at := f.FinishedAt
+			a.FinishedAt = &at
+			return nil
+		}
+	}
+	return app.ErrNotFound
+}
+
+func (l *Attempts) List(ctx context.Context, org domain.OrgID, f app.AttemptFilter) (app.AttemptPage, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []app.Attempt
+	for i := len(l.attempts) - 1; i >= 0; i-- {
+		a := l.attempts[i]
+		if a.OrgID != org || (f.Kind != "" && a.Kind != f.Kind) || (f.IntentKey != "" && a.IntentKey != f.IntentKey) ||
+			(f.Operation != "" && a.Operation != f.Operation) || (f.AgentID != "" && a.AgentID != f.AgentID) {
+			continue
+		}
+		out = append(out, a)
+	}
+	return app.AttemptPage{Attempts: out}, nil
+}
+
+// All returns every recorded attempt, oldest first.
+func (l *Attempts) All() []app.Attempt {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]app.Attempt(nil), l.attempts...)
+}
