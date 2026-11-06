@@ -139,11 +139,11 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
         "422":
-          description: The rail refused the details; the message carries its reason.
+          description: The rail refused the details; `detail` carries its reason. Code `rail_rejected`.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/Problem"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -159,31 +159,50 @@ components:
 
   responses:
     BadRequest:
-      description: The request was malformed or failed validation.
+      description: The body is not valid JSON (`invalid_json`) or failed validation (`validation_failed`).
       content:
-        application/json:
+        application/problem+json:
           schema:
-            $ref: "#/components/schemas/Error"
+            $ref: "#/components/schemas/Problem"
     NotFound:
-      description: No such resource.
+      description: No such resource (`not_found`).
       content:
-        application/json:
+        application/problem+json:
           schema:
-            $ref: "#/components/schemas/Error"
+            $ref: "#/components/schemas/Problem"
     InternalError:
-      description: Something failed on Enquoir's side. Safe to retry.
+      description: Something failed on Enquoir's side (`internal_error`). Safe to retry.
       content:
-        application/json:
+        application/problem+json:
           schema:
-            $ref: "#/components/schemas/Error"
+            $ref: "#/components/schemas/Problem"
 
   schemas:
-    Error:
+    Problem:
       type: object
-      required: [error]
+      description: |
+        An RFC 9457 problem details object. Branch on `code`, which is
+        stable; `detail` is for people and may change.
+      required: [type, title, status, detail, code]
       properties:
-        error:
+        type:
           type: string
+          const: about:blank
+        title:
+          type: string
+          description: The HTTP status text.
+        status:
+          type: integer
+        detail:
+          type: string
+        code:
+          type: string
+          enum:
+            - invalid_json
+            - validation_failed
+            - not_found
+            - rail_rejected
+            - internal_error
 
     State:
       type: string

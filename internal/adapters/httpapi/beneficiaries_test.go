@@ -56,7 +56,7 @@ const validBeneficiaryBody = `{
 type registerResponse struct {
 	ID    string `json:"id"`
 	Key   string `json:"key"`
-	Error string `json:"error"`
+	Detail string `json:"detail"`
 }
 
 func decodeRegister(t *testing.T, rec *httptest.ResponseRecorder) registerResponse {
@@ -141,8 +141,8 @@ func TestRegisterBeneficiary_MapsRegistrarErrors(t *testing.T) {
 			if rec.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d; body %s", rec.Code, tt.wantStatus, rec.Body)
 			}
-			if resp := decodeRegister(t, rec); !strings.Contains(resp.Error, tt.wantInBody) {
-				t.Errorf("error %q does not mention %q", resp.Error, tt.wantInBody)
+			if resp := decodeRegister(t, rec); !strings.Contains(resp.Detail, tt.wantInBody) {
+				t.Errorf("error %q does not mention %q", resp.Detail, tt.wantInBody)
 			}
 		})
 	}
