@@ -134,10 +134,18 @@ func (h *Handler) getSession(w http.ResponseWriter, r *http.Request) {
 
 type ctxKey int
 
-const userKey ctxKey = iota
+const (
+	userKey ctxKey = iota
+	agentKey
+)
 
 func userFrom(ctx context.Context) app.UserPrincipal {
 	p, _ := ctx.Value(userKey).(app.UserPrincipal)
+	return p
+}
+
+func agentFrom(ctx context.Context) app.AgentPrincipal {
+	p, _ := ctx.Value(agentKey).(app.AgentPrincipal)
 	return p
 }
 
@@ -155,5 +163,30 @@ func (h *Handler) requireUser(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, p)))
+	})
+}
+
+// bearerToken extracts the token from a "Bearer <token>" Authorization
+// header, or "" if the header is missing or a different scheme.
+func bearerToken(r *http.Request) string {
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if len(h) <= len(prefix) || h[:len(prefix)] != prefix {
+		return ""
+	}
+	return h[len(prefix):]
+}
+
+// requireAgent admits only requests carrying a valid agent API key, as
+// a "Bearer <key>" Authorization header. This is how an AI agent
+// authenticates, as distinct from requireUser's dashboard session.
+func (h *Handler) requireAgent(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, err := h.AuthenticateAgent.Run(r.Context(), bearerToken(r))
+		if err != nil {
+			writeAppError(w, err, "could not check the API key")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), agentKey, p)))
 	})
 }

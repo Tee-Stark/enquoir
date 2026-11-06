@@ -35,9 +35,13 @@ func NewRouter(h *Handler) chi.Router {
 	r.Get("/healthz", h.healthz)
 	r.Get("/openapi.yaml", serveSpec)
 	r.Get("/docs", serveDocs)
-	r.Post("/v1/intents", h.submitIntent)
-	r.Get("/v1/intents/{key}", h.getIntent)
-	r.Post("/v1/beneficiaries", h.registerBeneficiary)
+
+	r.Group(func(r chi.Router) {
+		r.Use(h.requireAgent)
+		r.Post("/v1/intents", h.submitIntent)
+		r.Get("/v1/intents/{key}", h.getIntent)
+		r.Post("/v1/beneficiaries", h.registerBeneficiary)
+	})
 
 	r.Post("/v1/auth/signup", h.signUp)
 	r.Post("/v1/auth/login", h.logIn)

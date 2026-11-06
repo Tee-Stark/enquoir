@@ -43,13 +43,13 @@ func TestErrorsAreProblemDetails(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			router, _, _ := newTestRouter(t)
+			f := newAuthFixture(t, true)
+			_, bearer := f.newAgent(t)
 			var rec *httptest.ResponseRecorder
 			if tc.method == http.MethodPost {
-				rec = postIntent(t, router, tc.body)
+				rec = postIntentAs(t, f, bearer, tc.body)
 			} else {
-				rec = httptest.NewRecorder()
-				router.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+				rec = getIntentAs(t, f, bearer, "nope")
 			}
 			p := decodeProblem(t, rec)
 			if rec.Code != tc.status || p.Status != tc.status {

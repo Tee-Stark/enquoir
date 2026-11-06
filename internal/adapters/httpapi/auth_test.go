@@ -3,19 +3,25 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"enquoir/internal/app"
 	"enquoir/internal/app/apptest"
+	"enquoir/internal/domain"
 )
 
 type authFixture struct {
-	router http.Handler
-	clock  *apptest.Clock
-	agents *apptest.Agents
+	router  http.Handler
+	handler *Handler
+	clock   *apptest.Clock
+	agents  *apptest.Agents
+	events  *apptest.EventLog
+	starter *apptest.PaymentStarter
 }
 
 func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
@@ -23,6 +29,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	clock := apptest.NewClock()
 	accounts, sessions, hasher := apptest.NewAccounts(), apptest.NewSessions(), &apptest.Hasher{}
 	agents, ids, secrets := apptest.NewAgents(), &apptest.IDs{}, &apptest.Secrets{}
+	events, starter := apptest.NewEventLog(), &apptest.PaymentStarter{}
 	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: clock, TTL: 7 * 24 * time.Hour}
 	h := &Handler{
 		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: clock, Issuer: issuer},
@@ -37,8 +44,33 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		RotateAgentKey:    &app.RotateAgentKey{Agents: agents, IDs: ids, Secrets: secrets, Clock: clock},
 		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: clock},
 		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: clock},
+
+		Submit: &app.SubmitIntent{Starter: starter, Events: events},
+		Get:    &app.GetIntent{Events: events},
 	}
-	return &authFixture{router: contract(t, NewRouter(h)), clock: clock, agents: agents}
+	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter}
+}
+
+var testEmailCounter atomic.Int64
+
+// newAgent signs up a fresh organisation, creates an agent for it, and
+// returns the organisation's ID and the agent's bearer token - a
+// realistic way to get something requireAgent will accept, since an
+// agent always belongs to a real, signed-up organisation.
+func (f *authFixture) newAgent(t *testing.T) (domain.OrgID, string) {
+	t.Helper()
+	email := fmt.Sprintf("agent-owner-%d@example.com", testEmailCounter.Add(1))
+	body := fmt.Sprintf(`{"email":%q,"password":"correct horse battery","organisation_name":"Org of %s"}`, email, email)
+	rec := f.do(t, http.MethodPost, "/v1/auth/signup", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("signing up: %d %s", rec.Code, rec.Body)
+	}
+	var signed authBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &signed); err != nil {
+		t.Fatalf("decoding signup response: %v", err)
+	}
+	issued := f.createAgent(t, sessionCookie(t, rec), "Test Agent")
+	return domain.OrgID(signed.Organisation.ID), issued.APIKey.Secret
 }
 
 func (f *authFixture) do(t *testing.T, method, path, body string, cookies ...*http.Cookie) *httptest.ResponseRecorder {

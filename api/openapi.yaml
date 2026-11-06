@@ -319,7 +319,11 @@ paths:
         reference) returns the same key and starts nothing new, however
         long after the first submission. The `reason` is recorded but is not
         part of the key, so an agent that rewords it on a retry still gets
-        the same payment.
+        the same payment. The key is scoped to the submitting agent's
+        organisation: two organisations submitting the identical intent get
+        different keys.
+      security:
+        - agentKey: []
       requestBody:
         required: true
         content:
@@ -335,6 +339,8 @@ paths:
                 $ref: "#/components/schemas/SubmitIntentResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -343,6 +349,11 @@ paths:
       tags: [Payments]
       operationId: getIntent
       summary: Get an intent's state and history
+      description: |
+        Scoped to the authenticated agent's organisation: a key belonging to
+        another organisation is `not_found`, never `forbidden`.
+      security:
+        - agentKey: []
       parameters:
         - $ref: "#/components/parameters/IntentKey"
       responses:
@@ -352,6 +363,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IntentDetail"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -367,6 +380,8 @@ paths:
         the same details again returns the same beneficiary: Airwallex's
         beneficiary create has no idempotency key, so Enquoir stores its own
         key on the rail and looks it up before ever creating one.
+      security:
+        - agentKey: []
       requestBody:
         required: true
         content:
@@ -382,6 +397,8 @@ paths:
                 $ref: "#/components/schemas/RegisterBeneficiaryResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
         "422":
           description: The rail refused the details; `detail` carries its reason. Code `rail_rejected`.
           content:
@@ -398,6 +415,10 @@ components:
       in: cookie
       name: enquoir_session
       description: The dashboard session cookie, set by sign-up and log-in.
+    agentKey:
+      type: http
+      scheme: bearer
+      description: An agent's API key, shown once at creation or rotation.
 
   headers:
     SetSessionCookie:

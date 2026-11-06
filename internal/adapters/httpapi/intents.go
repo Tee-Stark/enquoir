@@ -38,7 +38,8 @@ func (h *Handler) submitIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	intent, err := domain.NewIntent(req.Payee, amount.MinorUnits(), string(amount.Currency()), req.Reference, req.Reason)
+	org := agentFrom(r.Context()).OrgID
+	intent, err := domain.NewIntent(org, req.Payee, amount.MinorUnits(), string(amount.Currency()), req.Reference, req.Reason)
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, codeValidationFailed, err.Error())
 		return
@@ -70,8 +71,9 @@ type getIntentResponse struct {
 
 func (h *Handler) getIntent(w http.ResponseWriter, r *http.Request) {
 	key := domain.IntentKey(chi.URLParam(r, "key"))
+	org := agentFrom(r.Context()).OrgID
 
-	result, err := h.Get.Run(r.Context(), key)
+	result, err := h.Get.Run(r.Context(), org, key)
 	if errors.Is(err, app.ErrIntentNotFound) {
 		writeProblem(w, http.StatusNotFound, codeNotFound, "intent not found")
 		return

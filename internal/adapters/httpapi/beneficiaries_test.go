@@ -32,16 +32,25 @@ func (r *fakeRegistrar) Register(ctx context.Context, b domain.Beneficiary) (str
 	return "ben_" + string(b.Key)[:8], nil
 }
 
-func newBeneficiaryRouter(t *testing.T, registrar *fakeRegistrar) http.Handler {
-	return contract(t, NewRouter(&Handler{Register: &app.RegisterBeneficiary{Registrar: registrar}}))
+// newBeneficiaryFixture wires registrar into the shared auth fixture's
+// Register use case and returns a ready bearer token.
+func newBeneficiaryFixture(t *testing.T, registrar *fakeRegistrar) (*authFixture, string) {
+	t.Helper()
+	f := newAuthFixture(t, true)
+	f.handler.Register = &app.RegisterBeneficiary{Registrar: registrar}
+	_, bearer := f.newAgent(t)
+	return f, bearer
 }
 
-func postBeneficiary(t *testing.T, router http.Handler, body string) *httptest.ResponseRecorder {
+func postBeneficiaryAs(t *testing.T, f *authFixture, bearer, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/v1/beneficiaries", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
 	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
+	f.router.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -70,7 +79,8 @@ func decodeRegister(t *testing.T, rec *httptest.ResponseRecorder) registerRespon
 
 func TestRegisterBeneficiary_ValidRequestReturnsIDAndKey(t *testing.T) {
 	registrar := &fakeRegistrar{}
-	rec := postBeneficiary(t, newBeneficiaryRouter(t, registrar), validBeneficiaryBody)
+	f, bearer := newBeneficiaryFixture(t, registrar)
+	rec := postBeneficiaryAs(t, f, bearer, validBeneficiaryBody)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
@@ -84,12 +94,20 @@ func TestRegisterBeneficiary_ValidRequestReturnsIDAndKey(t *testing.T) {
 	}
 }
 
+func TestRegisterBeneficiary_WithoutAnAPIKeyIsUnauthenticated(t *testing.T) {
+	f, _ := newBeneficiaryFixture(t, &fakeRegistrar{})
+	rec := postBeneficiaryAs(t, f, "", validBeneficiaryBody)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
 func TestRegisterBeneficiary_SameDetailsTwiceReturnSameKey(t *testing.T) {
 	registrar := &fakeRegistrar{}
-	router := newBeneficiaryRouter(t, registrar)
+	f, bearer := newBeneficiaryFixture(t, registrar)
 
-	first := decodeRegister(t, postBeneficiary(t, router, validBeneficiaryBody))
-	second := decodeRegister(t, postBeneficiary(t, router, strings.Replace(validBeneficiaryBody, `"Acme Ltd"`, `"  Acme Ltd "`, 1)))
+	first := decodeRegister(t, postBeneficiaryAs(t, f, bearer, validBeneficiaryBody))
+	second := decodeRegister(t, postBeneficiaryAs(t, f, bearer, strings.Replace(validBeneficiaryBody, `"Acme Ltd"`, `"  Acme Ltd "`, 1)))
 
 	if first.Key != second.Key || first.ID != second.ID {
 		t.Errorf("same details gave different results: %+v vs %+v", first, second)
@@ -113,7 +131,8 @@ func TestRegisterBeneficiary_RejectsInvalidInputWithoutCallingRegistrar(t *testi
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registrar := &fakeRegistrar{}
-			rec := postBeneficiary(t, newBeneficiaryRouter(t, registrar), tt.body)
+			f, bearer := newBeneficiaryFixture(t, registrar)
+			rec := postBeneficiaryAs(t, f, bearer, tt.body)
 			if rec.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want 400; body %s", rec.Code, rec.Body)
 			}
@@ -137,7 +156,8 @@ func TestRegisterBeneficiary_MapsRegistrarErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rec := postBeneficiary(t, newBeneficiaryRouter(t, &fakeRegistrar{err: tt.err}), validBeneficiaryBody)
+			f, bearer := newBeneficiaryFixture(t, &fakeRegistrar{err: tt.err})
+			rec := postBeneficiaryAs(t, f, bearer, validBeneficiaryBody)
 			if rec.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d; body %s", rec.Code, tt.wantStatus, rec.Body)
 			}
