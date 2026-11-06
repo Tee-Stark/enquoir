@@ -19,6 +19,7 @@ info:
     (`403 forbidden_origin`).
 
     **Errors** are RFC 9457 problem details; branch on their `code`.
+    Request bodies are limited to 64 KiB (`413 body_too_large`).
 servers:
   - url: http://localhost:8090
     description: Local development
@@ -111,6 +112,8 @@ paths:
             schema:
               $ref: "#/components/schemas/SignUpRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
         "403":
           $ref: "#/components/responses/ForbiddenOrigin"
         "201":
@@ -145,6 +148,8 @@ paths:
             schema:
               $ref: "#/components/schemas/LogInRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
         "403":
           $ref: "#/components/responses/ForbiddenOrigin"
         "200":
@@ -223,6 +228,8 @@ paths:
                 token:
                   type: string
       responses:
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
         "403":
           $ref: "#/components/responses/ForbiddenOrigin"
         "501":
@@ -270,6 +277,8 @@ paths:
             schema:
               type: object
       responses:
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
@@ -298,6 +307,8 @@ paths:
                   minLength: 1
                   maxLength: 100
       responses:
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
         "403":
           $ref: "#/components/responses/ForbiddenOrigin"
         "201":
@@ -704,6 +715,8 @@ paths:
             schema:
               $ref: "#/components/schemas/SubmitIntentRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
         "403":
           $ref: "#/components/responses/ForbiddenOrigin"
         "200":
@@ -801,6 +814,8 @@ paths:
             schema:
               $ref: "#/components/schemas/RegisterBeneficiaryRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
         "403":
           $ref: "#/components/responses/ForbiddenOrigin"
         "200":
@@ -903,6 +918,12 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
+    BodyTooLarge:
+      description: The request body is over the 64 KiB limit (`body_too_large`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     ForbiddenOrigin:
       description: A browser sent this from an origin not in CORS_ALLOWED_ORIGINS (`forbidden_origin`).
       content:
@@ -960,6 +981,7 @@ components:
             - payee_unknown
             - forbidden_origin
             - not_implemented
+            - body_too_large
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.

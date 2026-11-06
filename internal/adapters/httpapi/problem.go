@@ -22,6 +22,7 @@ const (
 	codePayeeUnknown     = "payee_unknown"
 	codeForbiddenOrigin  = "forbidden_origin"
 	codeNotImplemented   = "not_implemented"
+	codeBodyTooLarge     = "body_too_large"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.

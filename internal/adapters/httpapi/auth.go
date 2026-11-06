@@ -3,6 +3,8 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -73,12 +75,20 @@ func (h *Handler) clearSessionCookie(w http.ResponseWriter) {
 	})
 }
 
+// decodeJSON reads a JSON request body into v, answering for the
+// caller when it can't: 413 past the body limit, 400 when not JSON.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+	err := json.NewDecoder(r.Body).Decode(v)
+	var tooLarge *http.MaxBytesError
+	switch {
+	case err == nil:
+		return true
+	case errors.As(err, &tooLarge):
+		writeProblem(w, http.StatusRequestEntityTooLarge, codeBodyTooLarge, fmt.Sprintf("the request body is over the %d-byte limit", MaxRequestBodyBytes))
+	default:
 		writeProblem(w, http.StatusBadRequest, codeInvalidJSON, "the request body is not valid JSON")
-		return false
 	}
-	return true
+	return false
 }
 
 func (h *Handler) signUp(w http.ResponseWriter, r *http.Request) {

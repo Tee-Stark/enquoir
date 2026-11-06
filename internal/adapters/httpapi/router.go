@@ -41,7 +41,7 @@ type Handler struct {
 
 func NewRouter(h *Handler) chi.Router {
 	r := chi.NewRouter()
-	r.Use(h.cors, h.checkOrigin)
+	r.Use(limitBody, h.cors, h.checkOrigin)
 	r.Get("/healthz", h.healthz)
 	r.Get("/openapi.yaml", serveSpec)
 	r.Get("/docs", serveDocs)

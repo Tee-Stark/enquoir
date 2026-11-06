@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -29,8 +28,7 @@ type registerBeneficiaryResponse struct {
 
 func (h *Handler) registerBeneficiary(w http.ResponseWriter, r *http.Request) {
 	var req registerBeneficiaryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeProblem(w, http.StatusBadRequest, codeInvalidJSON, "the request body is not valid JSON")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
