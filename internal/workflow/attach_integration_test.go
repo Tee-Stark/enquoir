@@ -14,6 +14,8 @@ import (
 	"enquoir/internal/domain"
 )
 
+const attachTestTaskQueue = "enquoir-payments-attach-test"
+
 // This behaviour depends on the real server's own workflow-ID
 // deduplication, which the lightweight test suite used everywhere
 // else in this package does not model - hence a real Temporal dev
@@ -27,7 +29,11 @@ func TestPaymentWorkflow_StartingSameIntentTwiceAttachesToRunningWorkflow(t *tes
 
 	c, err := client.Dial(client.Options{HostPort: address})
 	require.NoError(t, err)
-	defer c.Close()
+	// Cleanups run last-registered-first, so registering Close first
+	// keeps the client open for the terminate below. A deferred Close
+	// would run before any cleanup and silently break the terminate,
+	// leaving a live payment workflow behind.
+	t.Cleanup(c.Close)
 
 	intent, err := domain.NewIntent(
 		"beneficiary-1", 10050, "USD",
@@ -37,13 +43,18 @@ func TestPaymentWorkflow_StartingSameIntentTwiceAttachesToRunningWorkflow(t *tes
 	require.NoError(t, err)
 
 	input := PaymentInput{Intent: intent, MaxAmountMinorUnits: 1_000_000_00}
-	opts := client.StartWorkflowOptions{ID: string(intent.Key), TaskQueue: TaskQueue}
+	// A task queue no real worker polls: this test only needs the
+	// server's workflow-ID dedup, never an execution. On the real queue,
+	// a running `make worker` would pick the workflow up and try to pay
+	// it through the sandbox.
+	opts := client.StartWorkflowOptions{ID: string(intent.Key), TaskQueue: attachTestTaskQueue}
 
 	ctx := context.Background()
 	run1, err := c.ExecuteWorkflow(ctx, opts, PaymentWorkflow, input)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_ = c.TerminateWorkflow(context.Background(), run1.GetID(), "", "integration test cleanup")
+		err := c.TerminateWorkflow(context.Background(), run1.GetID(), "", "integration test cleanup")
+		require.NoError(t, err, "terminating the test workflow")
 	})
 
 	run2, err := c.ExecuteWorkflow(ctx, opts, PaymentWorkflow, input)
