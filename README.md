@@ -95,9 +95,12 @@ curl localhost:8090/healthz
 # ok
 ```
 
-Posting the exact same intent again (same payee, amount, currency,
-reference and reason) returns the same key, reports its recorded state,
-and starts nothing new - ever, not just while the first run is going.
+Posting the same intent again (same payee, amount, currency and
+reference) returns the same key, reports its recorded state, and starts
+nothing new - ever, not just while the first run is going. The `reason`
+is recorded but deliberately left out of the key: it is free text an
+agent writes, and an agent rewords it when it retries, so a reworded
+retry must still be the same payment.
 The event log decides, not Temporal: once anything is recorded for a
 key, a resubmission never starts another run, since Temporal forgets
 finished runs after its retention period and Airwallex forgets a
@@ -111,6 +114,21 @@ minutes, rather than failing - it settles by itself once the rail is
 back. The one thing that stops a run is the rail holding two transfers
 for one request ID: a double payment, left for a person to investigate.
 
+## The end-to-end test
+
+```sh
+make e2e
+```
+
+Runs `scripts/e2e.sh` against a running worker and API: edge validation,
+a policy block, resubmission of a finished intent, then against the real
+sandbox it registers a payee (twice, same ID), pays it (submitted twice,
+one transfer), drives the transfer to PAID through the simulator, and
+checks the intent settles to `APPLIED` with a clean history. Every step
+is a plain, copyable curl. Needs `make up`, `make sandbox-setup`, `make
+worker` and `make api`. Run only one worker: an old one still polling the
+task queue will pick up work with stale code.
+
 ## The chaos test
 
 ```sh
@@ -120,13 +138,20 @@ make chaos
 For each of four points in the money-moving call (`before_log`,
 `after_log_before_call`, `during_call`, `after_call_before_commit`), this
 submits one intent three times, runs a worker armed to exit hard at that
-exact point (`ENQUOIR_CHAOS_KILL_AT`), restarts a clean one, drives the
-resulting transfer to PAID, and asserts the intent never rested in
-`UNKNOWN`, its hash chain still verifies, and the rail still holds the
-one transfer for that request ID. Prints a results table and exits
-non-zero if anything failed. It talks to the real sandbox and runs real
-`go run ./cmd/worker` subprocesses - `make up` and `make sandbox-setup`
-must have already run.
+exact point (`ENQUOIR_CHAOS_KILL_AT`), checks it really died there (exit
+1 plus the kill switch's log line), restarts a clean one, drives the
+resulting transfer to PAID, and asserts the intent reached `APPLIED`, its
+hash chain still verifies, and the rail holds exactly one transfer for
+that request ID - the same one the workflow recorded. Prints a results
+table and exits non-zero if anything failed. It talks to the real sandbox
+and runs a freshly built worker binary as its subprocesses. `make up` and
+`make sandbox-setup` must have already run, and **no other worker may be
+running**: it would take the armed worker's work.
+
+Passed all four points against the real sandbox on 2026-11-06; see
+docs/progress.md for the results and what each point proves.
+`during_call` kills the worker inside its HTTP transport the moment the
+transfer create has fully left the process, before any response is read.
 
 ## Architecture
 
@@ -199,23 +224,19 @@ Verified directly, not just "should work":
   (checked directly with a throwaway program) - the assumption
   `cmd/chaos` depends on to know an armed worker died as expected.
 
-Not yet verified - built and believed correct, but never actually run:
+Verified against the real Airwallex sandbox (2026-11-06):
 
-- `cmd/probe`'s findings against the real sandbox (login shape,
-  idempotent-retry behaviour, the exact duplicate-request-id and
-  simulator-transition semantics) - `docs/rail-notes.md` doesn't exist
-  yet. The Airwallex adapter's own behaviour is pinned by its
-  `httptest` tests either way; what probing would add is confidence
-  that those tests model the real sandbox's actual shape, not just
-  AGENTS.md's documented facts about it.
-- `make sandbox-setup`, `make demo`, and `make chaos` against the real
-  sandbox - all three need `AWX_CLIENT_ID`/`AWX_API_KEY`, which were
-  still unset in `.env` as of this phase. Everything upstream of that
-  credential (the adapter, the workflow, the API, the kill points
-  themselves, the orchestration logic in `cmd/chaos`) has been verified
-  on its own terms, as listed above - what's left is the one end-to-end
-  run against the actual sandbox.
+- `make sandbox-setup`, `make demo`, `make e2e` (all 13 steps) and
+  `make chaos` (all four kill points). Where the real sandbox differs
+  from the documented facts is recorded in docs/rail-notes.md.
+- A retry with a reworded `reason` resolves to the same intent and
+  leaves exactly one transfer on the rail.
+- In the `during_call` and `after_call_before_commit` chaos points, the
+  worker's create really landed on Airwallex before it died (with no
+  response read, and with a response read but not recorded), the
+  retried create reused the request ID, and the rail still held one
+  transfer.
 
-If you're picking this up with real credentials in hand: `make
-sandbox-setup`, then `make demo`, then `make chaos` is the order that
-proves the whole chain, cheapest first.
+Not yet verified:
+
+- A `PAID` transfer failing afterwards (needs webhooks, out of scope).

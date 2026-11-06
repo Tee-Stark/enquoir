@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -25,32 +26,63 @@ type BeneficiaryAddress struct {
 	Postcode string
 }
 
+// AccountCategory is a US bank account's type. ACH needs the right
+// one - a payment sent as the wrong type can be returned - so it is
+// always stated, never defaulted.
+type AccountCategory string
+
+const (
+	Checking AccountCategory = "Checking"
+	Savings  AccountCategory = "Savings"
+)
+
 // Beneficiary is a payee's bank account, to be registered on the rail
 // before any Intent can pay it. Only US company accounts paid in USD
-// over the local (ACH) rail are supported for now.
+// over the local (ACH) rail are supported for now. Validation follows
+// Airwallex's live US/USD/LOCAL/ACH beneficiary form schema, so a
+// payee the rail would refuse is refused here first.
 type Beneficiary struct {
 	Name          string
 	AccountNumber string
 	RoutingNumber string
-	Address       BeneficiaryAddress
+	Category      AccountCategory
+	Address       BeneficiaryAddress // State is a two-letter code, e.g. "WA"
 	Key           BeneficiaryKey
 }
 
-// NewBeneficiary builds a Beneficiary, trimming every field and
-// validating the bank details before deriving its key.
-func NewBeneficiary(name, accountNumber, routingNumber string, addr BeneficiaryAddress) (Beneficiary, error) {
+var (
+	usStateCode = regexp.MustCompile(`^[A-Z]{2}$`)
+	usPostcode  = regexp.MustCompile(`^[0-9]{5}(-[0-9]{4})?$`)
+)
+
+// NewBeneficiary builds a Beneficiary, trimming every field,
+// normalising the account category and the state (both "WA" and
+// "US-WA" become "WA"), and validating the details before deriving
+// its key.
+func NewBeneficiary(name, accountNumber, routingNumber string, category AccountCategory, addr BeneficiaryAddress) (Beneficiary, error) {
 	name = strings.TrimSpace(name)
 	accountNumber = strings.TrimSpace(accountNumber)
 	routingNumber = strings.TrimSpace(routingNumber)
 	addr = BeneficiaryAddress{
 		Street:   strings.TrimSpace(addr.Street),
 		City:     strings.TrimSpace(addr.City),
-		State:    strings.TrimSpace(addr.State),
+		State:    strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(addr.State)), "US-"),
 		Postcode: strings.TrimSpace(addr.Postcode),
 	}
 
 	if name == "" {
 		return Beneficiary{}, errors.New("name is required")
+	}
+	if len(name) < 2 || isDigits(name) {
+		return Beneficiary{}, fmt.Errorf("invalid name %q: must be 2 to 200 characters and not only digits", name)
+	}
+	switch AccountCategory(strings.ToLower(strings.TrimSpace(string(category)))) {
+	case "checking":
+		category = Checking
+	case "savings":
+		category = Savings
+	default:
+		return Beneficiary{}, fmt.Errorf("invalid account category %q: must be Checking or Savings", category)
 	}
 	if !isDigits(accountNumber) || len(accountNumber) < 4 || len(accountNumber) > 17 {
 		return Beneficiary{}, fmt.Errorf("invalid account number %q: must be 4 to 17 digits", accountNumber)
@@ -68,11 +100,21 @@ func NewBeneficiary(name, accountNumber, routingNumber string, addr BeneficiaryA
 			return Beneficiary{}, fmt.Errorf("address %s is required", f.name)
 		}
 	}
+	if len(addr.Street) < 5 || isDigits(addr.Street) {
+		return Beneficiary{}, fmt.Errorf("invalid address street %q: must be 5 to 200 characters and not only digits", addr.Street)
+	}
+	if !usStateCode.MatchString(addr.State) {
+		return Beneficiary{}, fmt.Errorf("invalid address state %q: must be a two-letter US state code such as WA", addr.State)
+	}
+	if !usPostcode.MatchString(addr.Postcode) {
+		return Beneficiary{}, fmt.Errorf("invalid address postcode %q: must be a 5-digit ZIP or ZIP+4", addr.Postcode)
+	}
 
 	b := Beneficiary{
 		Name:          name,
 		AccountNumber: accountNumber,
 		RoutingNumber: routingNumber,
+		Category:      category,
 		Address:       addr,
 	}
 	b.Key = deriveBeneficiaryKey(b)
@@ -87,6 +129,7 @@ func deriveBeneficiaryKey(b Beneficiary) BeneficiaryKey {
 		b.Name,
 		b.AccountNumber,
 		b.RoutingNumber,
+		string(b.Category),
 		b.Address.Street,
 		b.Address.City,
 		b.Address.State,

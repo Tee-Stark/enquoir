@@ -133,7 +133,7 @@ func (c *client) login(clientID, apiKey string) string {
 		"x-client-id": clientID,
 		"x-api-key":   apiKey,
 	})
-	if status != 200 {
+	if status < 200 || status >= 300 { // the sandbox answers 201
 		log.Fatalf("login failed with status %d", status)
 	}
 

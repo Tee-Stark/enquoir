@@ -116,6 +116,38 @@ func TestSubmitIntent_SameIntentTwiceReturnsSameKeyAndStartsNothingNew(t *testin
 	}
 }
 
+// An agent retrying a payment rewords its reason. Once the first
+// submission has history, the reworded one must resolve to the same key
+// and start nothing.
+func TestSubmitIntent_RewordedReasonResolvesToSameIntentAndStartsNothingNew(t *testing.T) {
+	router, events, starter := newTestRouter()
+
+	first := postIntent(t, router, validIntentJSON)
+	var firstResp submitIntentResponse
+	if err := json.Unmarshal(first.Body.Bytes(), &firstResp); err != nil {
+		t.Fatalf("decoding first response: %v", err)
+	}
+	// The worker has picked the first run up and recorded its start.
+	events.Append(context.Background(), domain.IntentKey(firstResp.Key), string(domain.PROPOSED), "")
+
+	reworded := `{"payee":"payee-1","amount":"10.50","currency":"USD","reference":"INV-1001","reason":"retrying payment for INV-1001 after a timeout"}`
+	second := postIntent(t, router, reworded)
+	if second.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", second.Code, http.StatusOK, second.Body.String())
+	}
+	var secondResp submitIntentResponse
+	if err := json.Unmarshal(second.Body.Bytes(), &secondResp); err != nil {
+		t.Fatalf("decoding second response: %v", err)
+	}
+
+	if secondResp.Key != firstResp.Key {
+		t.Errorf("reworded reason produced a different key: %q vs %q", secondResp.Key, firstResp.Key)
+	}
+	if starter.callCount() != 1 {
+		t.Errorf("Starter called %d times, want 1: the reworded retry must not start a second payment", starter.callCount())
+	}
+}
+
 func TestSubmitIntent_RejectsInvalidInput(t *testing.T) {
 	cases := map[string]string{
 		"missing payee":        `{"amount":"10.50","currency":"USD","reference":"INV-1","reason":"x"}`,

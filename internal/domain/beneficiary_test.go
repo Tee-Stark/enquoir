@@ -14,7 +14,7 @@ var testAddress = BeneficiaryAddress{
 
 func mustBeneficiary(t *testing.T, name, accountNumber, routingNumber string, addr BeneficiaryAddress) Beneficiary {
 	t.Helper()
-	b, err := NewBeneficiary(name, accountNumber, routingNumber, addr)
+	b, err := NewBeneficiary(name, accountNumber, routingNumber, Checking, addr)
 	if err != nil {
 		t.Fatalf("NewBeneficiary(%q, %q, %q, %+v): unexpected error: %v", name, accountNumber, routingNumber, addr, err)
 	}
@@ -111,7 +111,7 @@ func TestNewBeneficiary_RejectsInvalidDetails(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewBeneficiary(tt.beneficiary, tt.accountNumber, tt.routingNumber, tt.addr)
+			_, err := NewBeneficiary(tt.beneficiary, tt.accountNumber, tt.routingNumber, Checking, tt.addr)
 			if err == nil {
 				t.Fatalf("want error containing %q, got nil", tt.wantErr)
 			}
@@ -119,5 +119,100 @@ func TestNewBeneficiary_RejectsInvalidDetails(t *testing.T) {
 				t.Errorf("error %q does not mention %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestNewBeneficiary_AccountCategory(t *testing.T) {
+	// Airwallex's US ACH schema requires Checking or Savings: the
+	// wrong one can get an ACH payment returned, so it is never guessed.
+	tests := []struct {
+		in      AccountCategory
+		want    AccountCategory
+		wantErr bool
+	}{
+		{"Checking", Checking, false},
+		{"savings", Savings, false},
+		{" CHECKING ", Checking, false},
+		{"", "", true},
+		{"Current", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.in), func(t *testing.T) {
+			b, err := NewBeneficiary("Acme Ltd", "50001121", "021000021", tt.in, testAddress)
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "account category") {
+					t.Fatalf("want an account category error, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if b.Category != tt.want {
+				t.Errorf("Category = %q, want %q", b.Category, tt.want)
+			}
+		})
+	}
+
+	checking, _ := NewBeneficiary("Acme Ltd", "50001121", "021000021", Checking, testAddress)
+	savings, _ := NewBeneficiary("Acme Ltd", "50001121", "021000021", Savings, testAddress)
+	if checking.Key == savings.Key {
+		t.Error("changing the account category must change the key")
+	}
+}
+
+func TestNewBeneficiary_NormalisesStateToTwoLetters(t *testing.T) {
+	for _, in := range []string{"WA", "wa", " US-WA ", "us-wa"} {
+		addr := testAddress
+		addr.State = in
+		b, err := NewBeneficiary("Acme Ltd", "50001121", "021000021", Checking, addr)
+		if err != nil {
+			t.Fatalf("state %q: unexpected error: %v", in, err)
+		}
+		if b.Address.State != "WA" {
+			t.Errorf("state %q normalised to %q, want WA", in, b.Address.State)
+		}
+		if b.Key != mustBeneficiary(t, "Acme Ltd", "50001121", "021000021", testAddress).Key {
+			t.Errorf("state %q keyed differently from WA", in)
+		}
+	}
+}
+
+func TestNewBeneficiary_RejectsInvalidUSAddressFormats(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*BeneficiaryAddress)
+		wantErr string
+	}{
+		{"state spelled out", func(a *BeneficiaryAddress) { a.State = "Washington" }, "state"},
+		{"state with digits", func(a *BeneficiaryAddress) { a.State = "W1" }, "state"},
+		{"short postcode", func(a *BeneficiaryAddress) { a.Postcode = "9810" }, "postcode"},
+		{"letters in postcode", func(a *BeneficiaryAddress) { a.Postcode = "ABCDE" }, "postcode"},
+		{"street too short", func(a *BeneficiaryAddress) { a.Street = "1 A" }, "street"},
+		{"street all digits", func(a *BeneficiaryAddress) { a.Street = "123456" }, "street"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			addr := testAddress
+			tt.mutate(&addr)
+			_, err := NewBeneficiary("Acme Ltd", "50001121", "021000021", Checking, addr)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("want an error mentioning %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+
+	addr := testAddress
+	addr.Postcode = "98104-1234"
+	if _, err := NewBeneficiary("Acme Ltd", "50001121", "021000021", Checking, addr); err != nil {
+		t.Errorf("ZIP+4 postcode rejected: %v", err)
+	}
+}
+
+func TestNewBeneficiary_RejectsNameTheRailWouldRefuse(t *testing.T) {
+	for _, name := range []string{"A", "12345"} {
+		if _, err := NewBeneficiary(name, "50001121", "021000021", Checking, testAddress); err == nil || !strings.Contains(err.Error(), "name") {
+			t.Errorf("name %q: want a name error, got %v", name, err)
+		}
 	}
 }

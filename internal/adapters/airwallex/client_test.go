@@ -356,3 +356,28 @@ func TestClient_FindTransferByRequestID_MatchesExactlyAndRefusesDuplicates(t *te
 		})
 	}
 }
+
+func TestClient_LoginAcceptsCreated(t *testing.T) {
+	// The real sandbox answers a successful login with 201 Created,
+	// not 200 - observed directly with curl.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/authentication/login", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"token":"test-token"}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Errorf("Authorization = %q, want the token from the 201 login", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"tr_1","status":"SENT"}`))
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	c := newTestClient(t, ts, &fakeClock{now: time.Now()})
+
+	if _, err := c.GetTransfer(t.Context(), "tr_1"); err != nil {
+		t.Fatalf("GetTransfer after a 201 login: %v", err)
+	}
+}

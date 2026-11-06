@@ -7,12 +7,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"go.temporal.io/sdk/client"
@@ -30,8 +36,18 @@ import (
 const (
 	demoAmountMinorUnits = 1000 // $10.00
 	maxMinorUnits        = 1_000_000_00
-	findTimeout          = 30 * time.Second
-	settleTimeout        = 60 * time.Second
+	// findTimeout must outlast the activity StartToCloseTimeout (30s):
+	// after a kill before the create, Temporal only redispatches the
+	// lost activity once that timeout expires, and only then is the
+	// transfer created.
+	findTimeout   = 90 * time.Second
+	settleTimeout = 60 * time.Second
+	// armedTimeout bounds an armed worker that never reaches its kill
+	// point - otherwise the run would hang forever.
+	armedTimeout = 2 * time.Minute
+	// killLogLine is what chaos.KillAt logs right before os.Exit(1). An
+	// armed worker only counts as killed at its point if this appears.
+	killLogLine = "CHAOS: killing the process now"
 )
 
 var points = []chaos.Point{
@@ -46,6 +62,7 @@ type pointResult struct {
 	Passed     bool
 	FinalState domain.State
 	TransferID string
+	History    string
 	Detail     string
 }
 
@@ -96,19 +113,126 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Build the worker once and run the binary directly. Killing a
+	// `go run` process does not kill the program it compiled and
+	// started: the real worker would be orphaned, keep polling the
+	// task queue, and steal the next kill point's work from its armed
+	// worker.
+	workerBin, cleanup, err := buildWorker()
+	if err != nil {
+		logger.Error("building the worker", "error", err)
+		os.Exit(1)
+	}
+	defer cleanup()
+
 	results := make([]pointResult, 0, len(points))
 	for _, point := range points {
 		logger.Info("chaos: running kill point", "point", point)
-		results = append(results, runKillPoint(ctx, logger, temporalClient, rail, simulator, events, beneficiaryID, point))
+		results = append(results, runKillPoint(ctx, logger, temporalClient, rail, simulator, events, workerBin, beneficiaryID, point))
 	}
 
 	printTable(results)
 
 	for _, r := range results {
 		if !r.Passed {
+			cleanup()
 			os.Exit(1)
 		}
 	}
+}
+
+func buildWorker() (bin string, cleanup func(), err error) {
+	dir, err := os.MkdirTemp("", "enquoir-chaos-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup = func() { os.RemoveAll(dir) }
+	bin = filepath.Join(dir, "worker")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/worker")
+	build.Stdout = os.Stdout
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return bin, cleanup, nil
+}
+
+// lockedBuffer collects a subprocess's output, which arrives on two
+// pipes written from separate goroutines.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// runArmed runs a worker armed to die at point and reports an error
+// unless it died there: exit code 1 with the kill switch's own log
+// line. Any other exit - a startup failure, a crash elsewhere, or
+// never reaching the point before armedTimeout - would otherwise let
+// a point pass without anything having been killed.
+func runArmed(ctx context.Context, workerBin string, point chaos.Point) error {
+	ctx, cancel := context.WithTimeout(ctx, armedTimeout)
+	defer cancel()
+
+	var out lockedBuffer
+	armed := exec.CommandContext(ctx, workerBin)
+	armed.Env = append(os.Environ(), fmt.Sprintf("%s=%s", chaos.EnvVar, point))
+	armed.Stdout = io.MultiWriter(os.Stdout, &out)
+	armed.Stderr = io.MultiWriter(os.Stderr, &out)
+	err := armed.Run()
+
+	if ctx.Err() != nil {
+		return fmt.Errorf("armed worker never reached %s within %s", point, armedTimeout)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return fmt.Errorf("armed worker did not exit with an error: %v", err)
+	}
+	if exitErr.ExitCode() != 1 {
+		return fmt.Errorf("armed worker exited %d, want 1", exitErr.ExitCode())
+	}
+	if !strings.Contains(out.String(), killLogLine) {
+		return fmt.Errorf("armed worker exited 1 without logging %q: it died somewhere other than %s", killLogLine, point)
+	}
+	return nil
+}
+
+// driveTo moves a transfer to status through the simulator and
+// confirms it by reading the transfer back. The sandbox has refused a
+// transition sent straight after the previous one, so each is retried
+// until the rail reports the new status.
+func driveTo(ctx context.Context, rail app.Rail, simulator *airwallex.Simulator, transferID string, status app.TransferStatus) error {
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(2 * time.Second)
+		}
+		if t, err := rail.GetTransfer(ctx, transferID); err == nil && t.Status == status {
+			return nil
+		}
+		if err := simulator.TransitionTransfer(ctx, transferID, status); err != nil {
+			lastErr = err
+			continue
+		}
+		t, err := rail.GetTransfer(ctx, transferID)
+		if err == nil && t.Status == status {
+			return nil
+		}
+		lastErr = fmt.Errorf("transition accepted but transfer reads %q (err %v)", t.Status, err)
+	}
+	return fmt.Errorf("transfer %s never reached %s: %w", transferID, status, lastErr)
 }
 
 func runKillPoint(
@@ -118,6 +242,7 @@ func runKillPoint(
 	rail app.Rail,
 	simulator *airwallex.Simulator,
 	events app.EventLog,
+	workerBin string,
 	beneficiaryID string,
 	point chaos.Point,
 ) pointResult {
@@ -138,18 +263,13 @@ func runKillPoint(
 	}
 
 	logger.Info("chaos: starting armed worker", "point", point)
-	armed := exec.Command("go", "run", "./cmd/worker")
-	armed.Env = append(os.Environ(), fmt.Sprintf("%s=%s", chaos.EnvVar, point))
-	armed.Stdout = os.Stdout
-	armed.Stderr = os.Stderr
-	runErr := armed.Run()
-	if _, ok := runErr.(*exec.ExitError); runErr != nil && !ok {
-		return pointResult{Point: point, Detail: fmt.Sprintf("armed worker failed to start: %v", runErr)}
+	if err := runArmed(ctx, workerBin, point); err != nil {
+		return pointResult{Point: point, Detail: err.Error()}
 	}
-	logger.Info("chaos: armed worker died as expected", "point", point)
+	logger.Info("chaos: armed worker died at its kill point", "point", point)
 
 	logger.Info("chaos: starting clean worker", "point", point)
-	clean := exec.Command("go", "run", "./cmd/worker")
+	clean := exec.Command(workerBin)
 	clean.Env = os.Environ()
 	clean.Stdout = os.Stdout
 	clean.Stderr = os.Stderr
@@ -167,11 +287,10 @@ func runKillPoint(
 	if err != nil {
 		return pointResult{Point: point, Detail: fmt.Sprintf("waiting for the transfer to exist: %v", err)}
 	}
-	if err := simulator.TransitionTransfer(ctx, transfer.ID, app.TransferSent); err != nil {
-		logger.Warn("transitioning to SENT", "point", point, "error", err)
-	}
-	if err := simulator.TransitionTransfer(ctx, transfer.ID, app.TransferPaid); err != nil {
-		logger.Warn("transitioning to PAID", "point", point, "error", err)
+	for _, status := range []app.TransferStatus{app.TransferSent, app.TransferPaid} {
+		if err := driveTo(ctx, rail, simulator, transfer.ID, status); err != nil {
+			return pointResult{Point: point, TransferID: transfer.ID, Detail: err.Error()}
+		}
 	}
 
 	resultCtx, cancel := context.WithTimeout(ctx, settleTimeout)
@@ -187,13 +306,24 @@ func runKillPoint(
 		return pointResult{Point: point, FinalState: wfResult.State, Detail: fmt.Sprintf("loading event chain: %v", err)}
 	}
 	chainErr := chain.Verify()
+	types := make([]string, len(chain))
+	for i, e := range chain {
+		types[i] = e.Type
+	}
+	history := strings.Join(types, ">")
 
-	_, found, findErr := rail.FindTransferByRequestID(ctx, string(intent.Key))
+	// FindTransferByRequestID matches request_id exactly and returns
+	// ErrDuplicateTransfers on more than one match, so found with no
+	// error means exactly one transfer for this intent on the rail.
+	onRail, found, findErr := rail.FindTransferByRequestID(ctx, string(intent.Key))
 
-	passed := wfResult.State != domain.UNKNOWN && chainErr == nil && findErr == nil && found
+	passed := wfResult.State == domain.APPLIED &&
+		chainErr == nil && findErr == nil && found &&
+		onRail.ID == wfResult.TransferID
 	detail := "ok"
 	if !passed {
-		detail = fmt.Sprintf("chain_verify_err=%v find_err=%v found=%v", chainErr, findErr, found)
+		detail = fmt.Sprintf("state=%s chain_verify_err=%v find_err=%v found=%v rail_id=%s",
+			wfResult.State, chainErr, findErr, found, onRail.ID)
 	}
 
 	return pointResult{
@@ -201,6 +331,7 @@ func runKillPoint(
 		Passed:     passed,
 		FinalState: wfResult.State,
 		TransferID: wfResult.TransferID,
+		History:    history,
 		Detail:     detail,
 	}
 }
@@ -224,13 +355,13 @@ func awaitTransfer(ctx context.Context, rail app.Rail, requestID string) (app.Tr
 
 func printTable(results []pointResult) {
 	fmt.Println()
-	fmt.Printf("%-24s %-6s %-10s %-24s %s\n", "KILL POINT", "PASS", "STATE", "TRANSFER ID", "DETAIL")
+	fmt.Printf("%-24s %-6s %-10s %-36s %-60s %s\n", "KILL POINT", "PASS", "STATE", "TRANSFER ID", "HISTORY", "DETAIL")
 	for _, r := range results {
 		status := "PASS"
 		if !r.Passed {
 			status = "FAIL"
 		}
-		fmt.Printf("%-24s %-6s %-10s %-24s %s\n", r.Point, status, r.FinalState, r.TransferID, r.Detail)
+		fmt.Printf("%-24s %-6s %-10s %-36s %-60s %s\n", r.Point, status, r.FinalState, r.TransferID, r.History, r.Detail)
 	}
 	fmt.Println()
 }

@@ -91,7 +91,9 @@ func (t *transport) ensureToken(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("airwallex: login: reading response: %v: %w", err, app.ErrAmbiguous)
 	}
-	if resp.StatusCode != http.StatusOK {
+	// The sandbox answers a successful login with 201 Created; accept
+	// any 2xx rather than one exact code.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("airwallex: login: status %d: %s: %w", resp.StatusCode, body, app.ErrAmbiguous)
 	}
 
