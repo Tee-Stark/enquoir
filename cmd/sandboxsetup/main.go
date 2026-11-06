@@ -1,6 +1,6 @@
 // Command sandboxsetup ensures the sandbox has what Enquoir's demo
-// needs: a funded USD Global Account and one US/USD/LOCAL test
-// beneficiary. Safe to run repeatedly - the account and beneficiary are
+// needs: a funded USD Global Account, the demo organisation, and its
+// US/USD/LOCAL test beneficiary. Safe to run repeatedly - the account and beneficiary are
 // looked up before being created, so re-running never duplicates them.
 package main
 
@@ -13,6 +13,8 @@ import (
 
 	"enquoir/internal/adapters/airwallex"
 	"enquoir/internal/adapters/clock"
+	"enquoir/internal/adapters/credentials"
+	"enquoir/internal/adapters/postgres"
 	"enquoir/internal/domain"
 	"enquoir/internal/sandbox"
 )
@@ -41,7 +43,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail)
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		logger.Error("DATABASE_URL must be set")
+		os.Exit(1)
+	}
+	pool, err := postgres.NewPool(ctx, databaseURL)
+	if err != nil {
+		logger.Error("connecting to Postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	org, err := sandbox.EnsureDemoOrg(ctx, postgres.NewAccountStore(pool), credentials.RandomIDs{}, clock.System{})
+	if err != nil {
+		logger.Error("ensuring demo organisation", "error", err)
+		os.Exit(1)
+	}
+
+	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail, org)
 	if err != nil {
 		logger.Error("ensuring test beneficiary", "error", err)
 		os.Exit(1)

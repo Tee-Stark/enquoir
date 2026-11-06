@@ -42,6 +42,7 @@ const (
 // Airwallex's live US/USD/LOCAL/ACH beneficiary form schema, so a
 // payee the rail would refuse is refused here first.
 type Beneficiary struct {
+	OrgID         OrgID
 	Name          string
 	AccountNumber string
 	RoutingNumber string
@@ -59,7 +60,15 @@ var (
 // normalising the account category and the state (both "WA" and
 // "US-WA" become "WA"), and validating the details before deriving
 // its key.
-func NewBeneficiary(name, accountNumber, routingNumber string, category AccountCategory, addr BeneficiaryAddress) (Beneficiary, error) {
+//
+// A beneficiary belongs to one organisation, and its key includes it:
+// every organisation pays through Enquoir's one rail account, so
+// without it two organisations registering identical details would
+// share one rail beneficiary.
+func NewBeneficiary(org OrgID, name, accountNumber, routingNumber string, category AccountCategory, addr BeneficiaryAddress) (Beneficiary, error) {
+	if strings.TrimSpace(string(org)) == "" {
+		return Beneficiary{}, errors.New("organisation is required")
+	}
 	name = strings.TrimSpace(name)
 	accountNumber = strings.TrimSpace(accountNumber)
 	routingNumber = strings.TrimSpace(routingNumber)
@@ -111,6 +120,7 @@ func NewBeneficiary(name, accountNumber, routingNumber string, category AccountC
 	}
 
 	b := Beneficiary{
+		OrgID:         org,
 		Name:          name,
 		AccountNumber: accountNumber,
 		RoutingNumber: routingNumber,
@@ -126,6 +136,7 @@ func NewBeneficiary(name, accountNumber, routingNumber string, category AccountC
 func deriveBeneficiaryKey(b Beneficiary) BeneficiaryKey {
 	const sep = "\x00"
 	canonical := strings.Join([]string{
+		string(b.OrgID),
 		b.Name,
 		b.AccountNumber,
 		b.RoutingNumber,

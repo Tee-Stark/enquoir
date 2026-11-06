@@ -11,11 +11,11 @@ import (
 	"enquoir/internal/domain"
 )
 
-// TestPayee is Enquoir's single sandbox test beneficiary: a US company
-// paid in USD over ACH. The details are fixed, so its key - and so the
+// TestPayee is org's sandbox test beneficiary: a US company paid in
+// USD over ACH. The details are fixed, so its key - and so the
 // beneficiary it registers as - stays the same across every run.
-func TestPayee() domain.Beneficiary {
-	b, err := domain.NewBeneficiary("Enquoir Sandbox Test Payee", "000123456789", "021000021", domain.Checking, domain.BeneficiaryAddress{
+func TestPayee(org domain.OrgID) domain.Beneficiary {
+	b, err := domain.NewBeneficiary(org, "Enquoir Sandbox Test Payee", "000123456789", "021000021", domain.Checking, domain.BeneficiaryAddress{
 		Street:   "412 5th Avenue",
 		City:     "Seattle",
 		State:    "WA",
@@ -33,8 +33,8 @@ func TestPayee() domain.Beneficiary {
 // rather than retried, and re-running finds the payee if the create
 // actually landed. Fine for setup tooling, never for the running
 // system.
-func EnsurePayee(ctx context.Context, registry app.BeneficiaryRegistry) (string, error) {
-	payee := TestPayee()
+func EnsurePayee(ctx context.Context, registry app.BeneficiaryRegistry, org domain.OrgID) (string, error) {
+	payee := TestPayee(org)
 
 	id, ok, err := registry.FindBeneficiary(ctx, payee.Key)
 	if err != nil {

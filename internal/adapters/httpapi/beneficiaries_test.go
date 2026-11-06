@@ -167,3 +167,17 @@ func TestRegisterBeneficiary_MapsRegistrarErrors(t *testing.T) {
 		})
 	}
 }
+
+// Two organisations registering identical details get two different
+// beneficiaries, so neither can pay, or learn of, the other's.
+func TestRegisterBeneficiary_IdenticalDetailsInTwoOrganisationsAreSeparate(t *testing.T) {
+	registrar := &fakeRegistrar{}
+	f, bearerA := newBeneficiaryFixture(t, registrar)
+	_, bearerB := f.newAgent(t)
+
+	a := decodeRegister(t, postBeneficiaryAs(t, f, bearerA, validBeneficiaryBody))
+	b := decodeRegister(t, postBeneficiaryAs(t, f, bearerB, validBeneficiaryBody))
+	if a.Key == b.Key || a.ID == b.ID {
+		t.Errorf("org A got %+v and org B got %+v: one beneficiary shared across organisations", a, b)
+	}
+}

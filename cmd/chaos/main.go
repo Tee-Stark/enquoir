@@ -108,15 +108,15 @@ func main() {
 	}
 	defer temporalClient.Close()
 
-	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail)
-	if err != nil {
-		logger.Error("ensuring test beneficiary", "error", err)
-		os.Exit(1)
-	}
-
 	org, err := sandbox.EnsureDemoOrg(ctx, postgres.NewAccountStore(pool), credentials.RandomIDs{}, clock.System{})
 	if err != nil {
 		logger.Error("ensuring demo organisation", "error", err)
+		os.Exit(1)
+	}
+
+	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail, org)
+	if err != nil {
+		logger.Error("ensuring test beneficiary", "error", err)
 		os.Exit(1)
 	}
 
