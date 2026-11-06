@@ -36,7 +36,7 @@ func TestPaymentWorkflow_StartingSameIntentTwiceAttachesToRunningWorkflow(t *tes
 	t.Cleanup(c.Close)
 
 	intent, err := domain.NewIntent(
-		"beneficiary-1", 10050, "USD",
+		testOrg, "beneficiary-1", 10050, "USD",
 		"attach-test-"+time.Now().Format("20060102150405.000000000"),
 		"attach test",
 	)

@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"enquoir/internal/app"
+	"enquoir/internal/app/apptest"
 	"enquoir/internal/domain"
 )
 
@@ -49,14 +50,14 @@ func TestPaymentWorkflow_DuplicateStormResultsInExactlyOneCreate(t *testing.T) {
 	w.RegisterWorkflow(PaymentWorkflow)
 	w.RegisterActivity(&Activities{
 		Intents: newFakeIntentRepository(),
-		Events:  newFakeEventLog(),
+		Events:  apptest.NewEventLog(),
 		Rail:    rail,
 	})
 	require.NoError(t, w.Start())
 	defer w.Stop()
 
 	intent, err := domain.NewIntent(
-		"beneficiary-1", 10050, "USD",
+		testOrg, "beneficiary-1", 10050, "USD",
 		"storm-"+time.Now().Format("20060102150405.000000000"),
 		"duplicate storm test",
 	)

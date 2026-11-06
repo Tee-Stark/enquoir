@@ -41,6 +41,7 @@ func (a *Activities) SaveIntent(ctx context.Context, intent domain.Intent) (doma
 // AppendEventInput is AppendEvent's input, since Temporal activities
 // take at most one argument that isn't a context.
 type AppendEventInput struct {
+	OrgID     domain.OrgID
 	IntentKey domain.IntentKey
 	Type      string
 	Payload   string
@@ -53,7 +54,7 @@ func (a *Activities) AppendEvent(ctx context.Context, in AppendEventInput) (doma
 	if in.Type == string(domain.IN_FLIGHT) {
 		chaos.KillAt(chaos.BeforeLog)
 	}
-	return a.Events.Append(ctx, in.IntentKey, in.Type, in.Payload)
+	return a.Events.Append(ctx, in.OrgID, in.IntentKey, in.Type, in.Payload)
 }
 
 func (a *Activities) CreateTransfer(ctx context.Context, intent domain.Intent) (app.Transfer, error) {
