@@ -33,6 +33,12 @@ tags:
       What an organisation's agents did and what happened to every payment:
       payments over a period, each payment's full history, and every attempt
       (agent submissions and Airwallex calls). Dashboard-only: needs a session.
+  - name: Analytics
+    description: |
+      Numbers for charts and trends, over any period, in any IANA time zone
+      (`tz`, default UTC). Calendar buckets follow the caller's zone: days
+      start at local midnight, also across daylight-saving changes. Money is
+      never added up across currencies. Dashboard-only.
   - name: Meta
     description: Health and the API contract itself.
 
@@ -439,6 +445,90 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/analytics/summary:
+    get:
+      tags: [Analytics]
+      operationId: analyticsSummary
+      summary: An organisation's activity over a period
+      description: Payments are counted by when they were created; attempts by when they started. Default period, the last 30 days.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/TZ"
+      responses:
+        "200":
+          description: The summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalyticsSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/analytics/timeseries:
+    get:
+      tags: [Analytics]
+      operationId: analyticsTimeSeries
+      summary: One metric over time, for a chart
+      description: |
+        Every bucket in the period is present for every group: zero for counts
+        and sums, null for time_to_applied where there is no data. At most
+        1000 buckets per request.
+
+        | metric | value | group_by |
+        |---|---|---|
+        | payments | payments created | state, agent, currency, or none |
+        | applied_volume | minor units of payments that reached APPLIED, by when they did | currency (always) |
+        | time_to_applied | median milliseconds from submission to APPLIED | none |
+        | submissions | agent submissions | outcome, agent, or none |
+        | duplicates_prevented | submissions attached or deduplicated | agent, or none |
+        | rail_calls | Airwallex calls | outcome, operation, or none |
+
+        Grouping by agent gives agent IDs (`none` for Enquoir's own tooling);
+        names are in GET /v1/agents.
+      security:
+        - session: []
+      parameters:
+        - name: metric
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [payments, applied_volume, time_to_applied, submissions, duplicates_prevented, rail_calls]
+        - name: interval
+          in: query
+          description: Bucket size. Weeks start on Monday. Default day.
+          schema:
+            type: string
+            enum: [hour, day, week, month]
+        - name: group_by
+          in: query
+          schema:
+            type: string
+            enum: [state, agent, currency, outcome, operation]
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/TZ"
+      responses:
+        "200":
+          description: The series.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimeSeries"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/attempts:
     get:
       tags: [History]
@@ -671,6 +761,13 @@ components:
       schema:
         type: string
         format: date-time
+    TZ:
+      name: tz
+      in: query
+      description: An IANA time zone, such as Africa/Lagos or America/New_York. Default UTC.
+      schema:
+        type: string
+        examples: [Africa/Lagos]
     Limit:
       name: limit
       in: query
@@ -1017,6 +1114,140 @@ components:
           format: date-time
         duration_ms:
           type: [integer, "null"]
+
+    AnalyticsPeriod:
+      type: object
+      required: [from, to, tz]
+      properties:
+        from:
+          type: string
+          format: date-time
+          description: In the requested zone, with its offset.
+        to:
+          type: string
+          format: date-time
+        tz:
+          type: string
+
+    CountsByKey:
+      type: object
+      additionalProperties:
+        type: integer
+
+    AnalyticsSummary:
+      type: object
+      required: [period, payments, volume, submissions, rail_calls, time_to_applied]
+      properties:
+        period:
+          $ref: "#/components/schemas/AnalyticsPeriod"
+        payments:
+          type: object
+          required: [total, by_state, in_progress, blocked_by_policy, success_rate, recovered_from_unknown]
+          properties:
+            total:
+              type: integer
+            by_state:
+              description: Every state, zeros included.
+              $ref: "#/components/schemas/CountsByKey"
+            in_progress:
+              type: integer
+              description: RECEIVED, PROPOSED, AUTHORIZED, IN_FLIGHT or UNKNOWN.
+            blocked_by_policy:
+              type: integer
+            success_rate:
+              type: [number, "null"]
+              description: APPLIED / (APPLIED + FAILED), 0 to 1. BLOCKED is policy, not failure, so excluded. Null when nothing settled.
+            recovered_from_unknown:
+              type: integer
+              description: Payments whose outcome was unclear (UNKNOWN) that Enquoir still resolved to APPLIED or FAILED without paying twice.
+        volume:
+          type: array
+          description: Applied volume per currency.
+          items:
+            type: object
+            required: [currency, applied_minor_units, applied_amount, applied_count]
+            properties:
+              currency:
+                type: string
+              applied_minor_units:
+                type: integer
+              applied_amount:
+                type: string
+              applied_count:
+                type: integer
+        submissions:
+          type: object
+          required: [total, by_outcome, duplicates_prevented, active_agents]
+          properties:
+            total:
+              type: integer
+            by_outcome:
+              $ref: "#/components/schemas/CountsByKey"
+            duplicates_prevented:
+              type: integer
+              description: Submissions that would have been a second payment without Enquoir (attached or deduplicated).
+            active_agents:
+              type: integer
+        rail_calls:
+          type: object
+          required: [total, by_outcome]
+          properties:
+            total:
+              type: integer
+            by_outcome:
+              $ref: "#/components/schemas/CountsByKey"
+        time_to_applied:
+          type: object
+          required: [count, p50_ms, p95_ms]
+          properties:
+            count:
+              type: integer
+            p50_ms:
+              type: [integer, "null"]
+            p95_ms:
+              type: [integer, "null"]
+
+    TimeSeries:
+      type: object
+      required: [metric, interval, group_by, unit, period, buckets, series]
+      properties:
+        metric:
+          type: string
+        interval:
+          type: string
+        group_by:
+          type: [string, "null"]
+        unit:
+          type: string
+          enum: [count, minor_units, milliseconds]
+        period:
+          $ref: "#/components/schemas/AnalyticsPeriod"
+        buckets:
+          type: array
+          description: Every bucket's start, in the requested zone - the x axis.
+          items:
+            type: string
+            format: date-time
+        series:
+          type: array
+          items:
+            type: object
+            required: [group, points]
+            properties:
+              group:
+                type: string
+                description: The group's value (e.g. APPLIED, USD, an agent ID), or "all" when ungrouped.
+              points:
+                type: array
+                items:
+                  type: object
+                  required: [start, value]
+                  properties:
+                    start:
+                      type: string
+                      format: date-time
+                    value:
+                      type: [number, "null"]
 
     Replay:
       type: object

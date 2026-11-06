@@ -8,6 +8,9 @@ import (
 	"os"
 	"strconv"
 	"time"
+	// Analytics resolve any IANA time zone, even in an image with no
+	// zone database of its own.
+	_ "time/tzdata"
 
 	"github.com/joho/godotenv"
 	"go.temporal.io/sdk/client"
@@ -87,6 +90,7 @@ func main() {
 	beneficiaries := postgres.NewBeneficiaryStore(pool)
 	attempts := postgres.NewAttemptLog(pool)
 	payments := postgres.NewPaymentReader(pool)
+	analytics := postgres.NewAnalyticsReader(pool)
 	secrets := credentials.RandomSecrets{}
 	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: sysClock, TTL: sessionTTL}
 
@@ -124,6 +128,8 @@ func main() {
 		GetPayment:        &app.GetPayment{Payments: payments, Events: events, Attempts: attempts},
 		ListAttempts:      &app.ListAttempts{Attempts: attempts},
 		ListBeneficiaries: &app.ListBeneficiaries{Beneficiaries: beneficiaries},
+		Summary:           &app.GetSummary{Analytics: analytics, Clock: sysClock},
+		TimeSeries:        &app.GetTimeSeries{Analytics: analytics, Clock: sysClock},
 		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
 	}
 

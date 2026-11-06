@@ -34,6 +34,8 @@ type Handler struct {
 	ListAttempts      *app.ListAttempts
 	ListBeneficiaries *app.ListBeneficiaries
 	ReplayPayment     *app.ReplayPayment
+	Summary           *app.GetSummary
+	TimeSeries        *app.GetTimeSeries
 }
 
 func NewRouter(h *Handler) chi.Router {
@@ -67,6 +69,9 @@ func NewRouter(h *Handler) chi.Router {
 		r.Get("/v1/payments/{key}/replay", h.replayPayment)
 		r.Get("/v1/attempts", h.listAttempts)
 		r.Get("/v1/beneficiaries", h.listBeneficiaries)
+
+		r.Get("/v1/analytics/summary", h.analyticsSummary)
+		r.Get("/v1/analytics/timeseries", h.analyticsTimeSeries)
 	})
 	return r
 }

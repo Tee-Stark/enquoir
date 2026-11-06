@@ -35,6 +35,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	events, starter, payees := apptest.NewEventLog(), &apptest.PaymentStarter{}, apptest.NewBeneficiaries()
 	attempts, payments := apptest.NewAttempts(), apptest.NewPayments()
 	events.Clock = clock
+	analytics := &fixtureAnalytics{}
 	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: clock, TTL: 7 * 24 * time.Hour}
 	h := &Handler{
 		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: clock, Issuer: issuer},
@@ -57,6 +58,8 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		GetPayment:        &app.GetPayment{Payments: payments, Events: events, Attempts: attempts},
 		ListAttempts:      &app.ListAttempts{Attempts: attempts},
 		ListBeneficiaries: &app.ListBeneficiaries{Beneficiaries: payees},
+		Summary:           &app.GetSummary{Analytics: analytics, Clock: clock},
+		TimeSeries:        &app.GetTimeSeries{Analytics: analytics, Clock: clock},
 		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
 	}
 	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments}
