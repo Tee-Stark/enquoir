@@ -21,6 +21,10 @@ unknown outcomes before anything is retried.
 The first rail is Airwallex, sandbox only. This is also a hackathon entry with
 a submission deadline, so favour a small working slice over breadth.
 
+Enquoir ships as **Enquoir Cloud** (hosted, multi-tenant; the priority) and
+later as a self-hosted edition. Cloud consumers sign up, create agents, give
+each agent an API key, and watch every payment those agents attempt.
+
 ## Stack (decided; ask before changing)
 
 - Go, current stable release
@@ -30,7 +34,9 @@ a submission deadline, so favour a small working slice over breadth.
 - Docker Compose for the whole dev environment
 - Structured logging with log/slog
 
-Keep dependencies minimal.
+Keep dependencies minimal. Approved additions: `github.com/getkin/kin-openapi`,
+test-only, to validate the OpenAPI spec and responses against it. Passwords
+are hashed with the standard library (`crypto/pbkdf2`), behind a port.
 
 ## Architecture: domain-driven design, clean architecture
 
@@ -38,6 +44,7 @@ One Go module. Dependencies point inward only: adapters depend on the
 application layer, which depends on the domain. The domain imports nothing
 outside the standard library.
 
+    api/              openapi.yaml, the API contract (embedded and served)
     cmd/api/          HTTP server (chi)
     cmd/worker/       Temporal worker
     internal/domain/  Intent, Money, IntentKey, state machine, policy types
@@ -69,6 +76,17 @@ outside the standard library.
   https://mcp.sandbox.airwallex.com/docs (no login) or the API reference.
 - **Sandbox simulation calls sit behind their own interface**, separate from
   the Rail port.
+- **Tenants are isolated.** Every intent, beneficiary, agent and attempt
+  belongs to one organisation. Reads and writes are always scoped by it; a
+  key from another organisation is "not found", never "forbidden". The
+  intent key includes the organisation, so deduplication is per
+  organisation, never across them.
+- **Credentials are stored hashed.** Passwords (slow, salted hash), session
+  tokens and API keys (SHA-256 of a high-entropy secret). Plaintext secrets
+  are shown once, at creation, and never logged.
+- **The OpenAPI spec is the contract.** Every route is in api/openapi.yaml
+  and every documented route exists; a test enforces both, and handler
+  tests validate responses against the spec. Update the spec with the route.
 
 ## Test-driven development
 
@@ -97,7 +115,7 @@ Further rules:
 - Every commit must pass `make test`. Never commit .env.
 - Do not amend, rebase or force anything. History is a record of the work.
 - At the end of a phase, update docs/progress.md, commit, and tag the commit
-  `phase-1`, `phase-2` or `phase-3`.
+  `phase-N`.
 
 ## Airwallex facts to build on
 
@@ -122,11 +140,28 @@ each one you depend on, and record differences in docs/rail-notes.md.
   FAILED. Read failure_type and failure_reason.
 - Limits: 20 requests per second overall, 10 per endpoint, 10 concurrent.
 
+## Phase 4: Enquoir Cloud (current)
+
+- An OpenAPI 3.1 spec for every endpoint, kept current with each addition.
+- Accounts: sign up, log in and log out with email and password; cookie
+  sessions for the dashboard. Email verification and onboarding are
+  placeholders (documented, 501) until their requirements arrive.
+- Agents, one API key each; agents authenticate with their key.
+- Attempts: every agent submission and every Airwallex call is recorded,
+  distinguished by kind and filterable.
+- History: payments and attempts over a period, per payment detail.
+- Replay: every step a payment went through, ordered and timed, for the
+  frontend to animate. The backend supplies data; it has no UI.
+- Analytics: a summary and time series for charts, in any IANA time zone.
+- For now every organisation pays through Enquoir's one sandbox Airwallex
+  account; per-organisation rail credentials are a later seam.
+
 ## Out of scope until told otherwise
 
-Webhooks, currency conversion, compensation, the full policy engine, the
-replayer, any UI, the MCP proxy, cards, and connected accounts. Leave clear
-seams where they will attach.
+Webhooks, currency conversion, compensation, the full policy engine, any UI,
+the MCP proxy, cards, connected accounts, per-organisation Airwallex
+credentials, sending email, and the self-hosted edition. Leave clear seams
+where they will attach.
 
 ## How to work
 

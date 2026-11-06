@@ -32,16 +32,25 @@ func (r *fakeRegistrar) Register(ctx context.Context, b domain.Beneficiary) (str
 	return "ben_" + string(b.Key)[:8], nil
 }
 
-func newBeneficiaryRouter(registrar *fakeRegistrar) http.Handler {
-	return NewRouter(&Handler{Register: &app.RegisterBeneficiary{Registrar: registrar}})
+// newBeneficiaryFixture wires registrar into the shared auth fixture's
+// Register use case and returns a ready bearer token.
+func newBeneficiaryFixture(t *testing.T, registrar *fakeRegistrar) (*authFixture, string) {
+	t.Helper()
+	f := newAuthFixture(t, true)
+	f.handler.Register = &app.RegisterBeneficiary{Registrar: registrar, Beneficiaries: f.payees, Clock: f.clock}
+	_, bearer := f.newAgent(t)
+	return f, bearer
 }
 
-func postBeneficiary(t *testing.T, router http.Handler, body string) *httptest.ResponseRecorder {
+func postBeneficiaryAs(t *testing.T, f *authFixture, bearer, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/v1/beneficiaries", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
 	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
+	f.router.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -54,9 +63,9 @@ const validBeneficiaryBody = `{
 }`
 
 type registerResponse struct {
-	ID    string `json:"id"`
-	Key   string `json:"key"`
-	Error string `json:"error"`
+	ID     string `json:"id"`
+	Key    string `json:"key"`
+	Detail string `json:"detail"`
 }
 
 func decodeRegister(t *testing.T, rec *httptest.ResponseRecorder) registerResponse {
@@ -70,7 +79,8 @@ func decodeRegister(t *testing.T, rec *httptest.ResponseRecorder) registerRespon
 
 func TestRegisterBeneficiary_ValidRequestReturnsIDAndKey(t *testing.T) {
 	registrar := &fakeRegistrar{}
-	rec := postBeneficiary(t, newBeneficiaryRouter(registrar), validBeneficiaryBody)
+	f, bearer := newBeneficiaryFixture(t, registrar)
+	rec := postBeneficiaryAs(t, f, bearer, validBeneficiaryBody)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
@@ -84,12 +94,20 @@ func TestRegisterBeneficiary_ValidRequestReturnsIDAndKey(t *testing.T) {
 	}
 }
 
+func TestRegisterBeneficiary_WithoutAnAPIKeyIsUnauthenticated(t *testing.T) {
+	f, _ := newBeneficiaryFixture(t, &fakeRegistrar{})
+	rec := postBeneficiaryAs(t, f, "", validBeneficiaryBody)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
 func TestRegisterBeneficiary_SameDetailsTwiceReturnSameKey(t *testing.T) {
 	registrar := &fakeRegistrar{}
-	router := newBeneficiaryRouter(registrar)
+	f, bearer := newBeneficiaryFixture(t, registrar)
 
-	first := decodeRegister(t, postBeneficiary(t, router, validBeneficiaryBody))
-	second := decodeRegister(t, postBeneficiary(t, router, strings.Replace(validBeneficiaryBody, `"Acme Ltd"`, `"  Acme Ltd "`, 1)))
+	first := decodeRegister(t, postBeneficiaryAs(t, f, bearer, validBeneficiaryBody))
+	second := decodeRegister(t, postBeneficiaryAs(t, f, bearer, strings.Replace(validBeneficiaryBody, `"Acme Ltd"`, `"  Acme Ltd "`, 1)))
 
 	if first.Key != second.Key || first.ID != second.ID {
 		t.Errorf("same details gave different results: %+v vs %+v", first, second)
@@ -113,7 +131,8 @@ func TestRegisterBeneficiary_RejectsInvalidInputWithoutCallingRegistrar(t *testi
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registrar := &fakeRegistrar{}
-			rec := postBeneficiary(t, newBeneficiaryRouter(registrar), tt.body)
+			f, bearer := newBeneficiaryFixture(t, registrar)
+			rec := postBeneficiaryAs(t, f, bearer, tt.body)
 			if rec.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want 400; body %s", rec.Code, rec.Body)
 			}
@@ -137,13 +156,28 @@ func TestRegisterBeneficiary_MapsRegistrarErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rec := postBeneficiary(t, newBeneficiaryRouter(&fakeRegistrar{err: tt.err}), validBeneficiaryBody)
+			f, bearer := newBeneficiaryFixture(t, &fakeRegistrar{err: tt.err})
+			rec := postBeneficiaryAs(t, f, bearer, validBeneficiaryBody)
 			if rec.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d; body %s", rec.Code, tt.wantStatus, rec.Body)
 			}
-			if resp := decodeRegister(t, rec); !strings.Contains(resp.Error, tt.wantInBody) {
-				t.Errorf("error %q does not mention %q", resp.Error, tt.wantInBody)
+			if resp := decodeRegister(t, rec); !strings.Contains(resp.Detail, tt.wantInBody) {
+				t.Errorf("error %q does not mention %q", resp.Detail, tt.wantInBody)
 			}
 		})
+	}
+}
+
+// Two organisations registering identical details get two different
+// beneficiaries, so neither can pay, or learn of, the other's.
+func TestRegisterBeneficiary_IdenticalDetailsInTwoOrganisationsAreSeparate(t *testing.T) {
+	registrar := &fakeRegistrar{}
+	f, bearerA := newBeneficiaryFixture(t, registrar)
+	_, bearerB := f.newAgent(t)
+
+	a := decodeRegister(t, postBeneficiaryAs(t, f, bearerA, validBeneficiaryBody))
+	b := decodeRegister(t, postBeneficiaryAs(t, f, bearerB, validBeneficiaryBody))
+	if a.Key == b.Key || a.ID == b.ID {
+		t.Errorf("org A got %+v and org B got %+v: one beneficiary shared across organisations", a, b)
 	}
 }

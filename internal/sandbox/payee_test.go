@@ -5,8 +5,11 @@ import (
 	"errors"
 	"testing"
 
+	"enquoir/internal/app/apptest"
 	"enquoir/internal/domain"
 )
+
+const testOrg = domain.OrgID("org_test")
 
 type fakeRegistry struct {
 	existingID string
@@ -23,15 +26,15 @@ func (r *fakeRegistry) CreateBeneficiary(ctx context.Context, b domain.Beneficia
 }
 
 func (r *fakeRegistry) FindBeneficiary(ctx context.Context, key domain.BeneficiaryKey) (string, bool, error) {
-	if key != TestPayee().Key {
+	if key != TestPayee(testOrg).Key {
 		return "", false, errors.New("looked up the wrong key")
 	}
 	return r.existingID, r.existingID != "", nil
 }
 
 func TestTestPayee_IsAValidStableBeneficiary(t *testing.T) {
-	if TestPayee().Key == "" || TestPayee().Key != TestPayee().Key {
-		t.Fatalf("TestPayee key is empty or unstable: %q", TestPayee().Key)
+	if TestPayee(testOrg).Key == "" || TestPayee(testOrg).Key != TestPayee(testOrg).Key {
+		t.Fatalf("TestPayee key is empty or unstable: %q", TestPayee(testOrg).Key)
 	}
 }
 
@@ -52,7 +55,8 @@ func TestEnsurePayee(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id, err := EnsurePayee(context.Background(), tt.registry)
+			owners := apptest.NewBeneficiaries()
+			id, err := EnsurePayee(context.Background(), tt.registry, owners, apptest.NewClock(), testOrg)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("EnsurePayee error = %v, want %v", err, tt.wantErr)
 			}
@@ -62,6 +66,16 @@ func TestEnsurePayee(t *testing.T) {
 			if tt.registry.creates != tt.wantCreates {
 				t.Errorf("creates = %d, want %d", tt.registry.creates, tt.wantCreates)
 			}
+			owned, _ := owners.Owns(context.Background(), testOrg, tt.wantID)
+			if tt.wantErr == nil && !owned {
+				t.Errorf("the organisation does not own its test payee %q", tt.wantID)
+			}
 		})
+	}
+}
+
+func TestTestPayee_IsPerOrganisation(t *testing.T) {
+	if TestPayee("org_a").Key == TestPayee("org_b").Key {
+		t.Error("two organisations share one test payee")
 	}
 }

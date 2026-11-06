@@ -18,7 +18,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-enquoir}
       POSTGRES_DB: ${POSTGRES_DB:-enquoir}
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
@@ -42,8 +42,12 @@ services:
       POSTGRES_SEEDS: postgres
       DBNAME: temporal
       VISIBILITY_DBNAME: temporal_visibility
+    # Loopback only: Temporal's frontend has no authentication, so anyone
+    # who could reach it could start a payment workflow directly,
+    # bypassing the API's keys and payee checks. Postgres and the UI
+    # are bound the same way.
     ports:
-      - "7233:7233"
+      - "127.0.0.1:7233:7233"
     healthcheck:
       # auto-setup binds the frontend to the container's own interface
       # IP, not loopback, so the healthcheck must dial it by service name.
@@ -62,7 +66,7 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_CORS_ORIGINS: http://localhost:3000
     ports:
-      - "${TEMPORAL_UI_PORT:-8080}:8080"
+      - "127.0.0.1:${TEMPORAL_UI_PORT:-8080}:8080"
     networks: [enquoir-network]
 
 networks:

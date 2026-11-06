@@ -38,7 +38,7 @@ func BeneficiaryWorkflow(ctx workflow.Context, b domain.Beneficiary) (string, er
 
 	for {
 		var found FindBeneficiaryResult
-		if err := execActivity(ctx, activities().FindBeneficiary, b.Key).Get(ctx, &found); err != nil {
+		if err := execActivity(ctx, activities().FindBeneficiary, BeneficiaryRef{OrgID: b.OrgID, Key: b.Key}).Get(ctx, &found); err != nil {
 			return "", fmt.Errorf("looking up beneficiary: %w", err)
 		}
 		if found.Found {

@@ -14,20 +14,33 @@ import (
 type IntentKey string
 
 // Intent states a single payment to make: pay this payee this amount for
-// this reference, for this reason.
+// this reference, for this reason, on behalf of one organisation.
 type Intent struct {
+	OrgID     OrgID
 	Payee     string
 	Amount    Money
 	Reference string
 	Reason    string
 	Key       IntentKey
+
+	// Agent is the agent that submitted the intent. Recorded, not part
+	// of the key: two agents of one organisation paying the same
+	// invoice are the same payment.
+	Agent AgentID
 }
 
 // NewIntent builds an Intent, normalising its reference (trimmed) and
 // currency (upper-cased) before deriving its key. The reason is kept on
 // the Intent for the record but is not part of its key: it is free text
 // an agent writes, and a reworded retry is still the same payment.
-func NewIntent(payee string, minorUnits int64, currency, reference, reason string) (Intent, error) {
+//
+// Tenants are isolated: org is part of the key, so two organisations
+// submitting the identical payment never collide into one dedup record,
+// and deduplication is always per organisation, never across them.
+func NewIntent(org OrgID, payee string, minorUnits int64, currency, reference, reason string) (Intent, error) {
+	if strings.TrimSpace(string(org)) == "" {
+		return Intent{}, errors.New("organisation is required")
+	}
 	if strings.TrimSpace(payee) == "" {
 		return Intent{}, errors.New("payee is required")
 	}
@@ -43,21 +56,23 @@ func NewIntent(payee string, minorUnits int64, currency, reference, reason strin
 	}
 
 	return Intent{
+		OrgID:     org,
 		Payee:     payee,
 		Amount:    amount,
 		Reference: reference,
 		Reason:    reason,
-		Key:       deriveIntentKey(payee, amount, reference),
+		Key:       deriveIntentKey(org, payee, amount, reference),
 	}, nil
 }
 
-// deriveIntentKey hashes the fields that identify a payment - who is
-// paid, how much, in what currency, against which reference - with a
-// separator byte between them so no combination of field values can
-// collide by shifting a boundary.
-func deriveIntentKey(payee string, amount Money, reference string) IntentKey {
+// deriveIntentKey hashes the fields that identify a payment - which
+// organisation, who is paid, how much, in what currency, against which
+// reference - with a separator byte between them so no combination of
+// field values can collide by shifting a boundary.
+func deriveIntentKey(org OrgID, payee string, amount Money, reference string) IntentKey {
 	const sep = "\x00"
 	canonical := strings.Join([]string{
+		string(org),
 		payee,
 		strconv.FormatInt(amount.MinorUnits(), 10),
 		string(amount.Currency()),

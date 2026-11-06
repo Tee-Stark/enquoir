@@ -65,19 +65,19 @@ func PaymentWorkflow(ctx workflow.Context, in PaymentInput) (PaymentResult, erro
 	}
 
 	state := domain.PROPOSED
-	if err := appendEvent(ctx, intent.Key, string(state), ""); err != nil {
+	if err := appendEvent(ctx, intent.OrgID, intent.Key, string(state), ""); err != nil {
 		return PaymentResult{}, err
 	}
 
 	if intent.Amount.MinorUnits() > in.MaxAmountMinorUnits {
 		reason := fmt.Sprintf("amount %d exceeds maximum %d minor units", intent.Amount.MinorUnits(), in.MaxAmountMinorUnits)
-		if err := moveTo(ctx, &state, intent.Key, domain.BLOCKED, reason); err != nil {
+		if err := moveTo(ctx, &state, intent.OrgID, intent.Key, domain.BLOCKED, reason); err != nil {
 			return PaymentResult{}, err
 		}
 		return PaymentResult{State: domain.BLOCKED}, nil
 	}
 
-	if err := moveTo(ctx, &state, intent.Key, domain.AUTHORIZED, ""); err != nil {
+	if err := moveTo(ctx, &state, intent.OrgID, intent.Key, domain.AUTHORIZED, ""); err != nil {
 		return PaymentResult{}, err
 	}
 
@@ -89,7 +89,7 @@ func PaymentWorkflow(ctx workflow.Context, in PaymentInput) (PaymentResult, erro
 // called, from either AUTHORIZED (first attempt) or UNKNOWN (retrying
 // after confirming the previous attempt never reached the rail).
 func authorize(ctx workflow.Context, state *domain.State, intent domain.Intent) (PaymentResult, error) {
-	if err := moveTo(ctx, state, intent.Key, domain.IN_FLIGHT, ""); err != nil {
+	if err := moveTo(ctx, state, intent.OrgID, intent.Key, domain.IN_FLIGHT, ""); err != nil {
 		return PaymentResult{}, err
 	}
 
@@ -117,25 +117,25 @@ func authorize(ctx workflow.Context, state *domain.State, intent domain.Intent) 
 func handleCreateError(ctx workflow.Context, state *domain.State, intent domain.Intent, err error) (PaymentResult, error) {
 	var appErr *temporal.ApplicationError
 	if errors.As(err, &appErr) && appErr.Type() == ErrTypeRejected {
-		if err := moveTo(ctx, state, intent.Key, domain.FAILED, appErr.Error()); err != nil {
+		if err := moveTo(ctx, state, intent.OrgID, intent.Key, domain.FAILED, appErr.Error()); err != nil {
 			return PaymentResult{}, err
 		}
 		return PaymentResult{State: domain.FAILED, FailureReason: appErr.Error()}, nil
 	}
 
-	if err := moveTo(ctx, state, intent.Key, domain.UNKNOWN, err.Error()); err != nil {
+	if err := moveTo(ctx, state, intent.OrgID, intent.Key, domain.UNKNOWN, err.Error()); err != nil {
 		return PaymentResult{}, err
 	}
 
 	var found FindTransferResult
-	if err := readUntilClear(ctx, activities().FindTransferByRequestID, string(intent.Key), &found); err != nil {
+	if err := readUntilClear(ctx, activities().FindTransferByRequestID, IntentRef{OrgID: intent.OrgID, IntentKey: intent.Key}, &found); err != nil {
 		return PaymentResult{}, err
 	}
 	if !found.Found {
 		return authorize(ctx, state, intent)
 	}
 
-	if err := moveTo(ctx, state, intent.Key, domain.IN_FLIGHT, "resolved via lookup after an ambiguous create"); err != nil {
+	if err := moveTo(ctx, state, intent.OrgID, intent.Key, domain.IN_FLIGHT, "resolved via lookup after an ambiguous create"); err != nil {
 		return PaymentResult{}, err
 	}
 	return pollUntilTerminal(ctx, state, intent, found.Transfer)
@@ -148,13 +148,13 @@ func pollUntilTerminal(ctx workflow.Context, state *domain.State, intent domain.
 	for {
 		switch transfer.Status {
 		case app.TransferPaid:
-			if err := moveTo(ctx, state, intent.Key, domain.APPLIED, transfer.ID); err != nil {
+			if err := moveTo(ctx, state, intent.OrgID, intent.Key, domain.APPLIED, transfer.ID); err != nil {
 				return PaymentResult{}, err
 			}
 			return PaymentResult{State: domain.APPLIED, TransferID: transfer.ID}, nil
 
 		case app.TransferCancelled:
-			if err := moveTo(ctx, state, intent.Key, domain.FAILED, transfer.FailureReason); err != nil {
+			if err := moveTo(ctx, state, intent.OrgID, intent.Key, domain.FAILED, transfer.FailureReason); err != nil {
 				return PaymentResult{}, err
 			}
 			return PaymentResult{State: domain.FAILED, TransferID: transfer.ID, FailureReason: transfer.FailureReason}, nil
@@ -163,7 +163,7 @@ func pollUntilTerminal(ctx workflow.Context, state *domain.State, intent domain.
 			if err := workflow.Sleep(ctx, pollInterval); err != nil {
 				return PaymentResult{}, err
 			}
-			if err := readUntilClear(ctx, activities().GetTransfer, transfer.ID, &transfer); err != nil {
+			if err := readUntilClear(ctx, activities().GetTransfer, TransferRef{OrgID: intent.OrgID, IntentKey: intent.Key, TransferID: transfer.ID}, &transfer); err != nil {
 				return PaymentResult{}, err
 			}
 		}
@@ -198,19 +198,19 @@ func readUntilClear(ctx workflow.Context, activity any, arg any, result any) err
 // moveTo validates the transition through the domain's own state
 // machine before recording it, so the workflow can never emit an
 // event for a move the domain itself would reject.
-func moveTo(ctx workflow.Context, state *domain.State, key domain.IntentKey, next domain.State, payload string) error {
+func moveTo(ctx workflow.Context, state *domain.State, org domain.OrgID, key domain.IntentKey, next domain.State, payload string) error {
 	if err := state.Transition(next); err != nil {
 		return fmt.Errorf("workflow: %w", err)
 	}
-	if err := appendEvent(ctx, key, string(next), payload); err != nil {
+	if err := appendEvent(ctx, org, key, string(next), payload); err != nil {
 		return err
 	}
 	*state = next
 	return nil
 }
 
-func appendEvent(ctx workflow.Context, key domain.IntentKey, eventType, payload string) error {
-	in := AppendEventInput{IntentKey: key, Type: eventType, Payload: payload}
+func appendEvent(ctx workflow.Context, org domain.OrgID, key domain.IntentKey, eventType, payload string) error {
+	in := AppendEventInput{OrgID: org, IntentKey: key, Type: eventType, Payload: payload}
 	return execActivity(ctx, activities().AppendEvent, in).Get(ctx, nil)
 }
 

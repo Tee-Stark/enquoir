@@ -3,14 +3,23 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
+	"time"
+	// Analytics resolve any IANA time zone, even in an image with no
+	// zone database of its own.
+	_ "time/tzdata"
 
 	"github.com/joho/godotenv"
 	"go.temporal.io/sdk/client"
 
+	"enquoir/internal/adapters/clock"
+	"enquoir/internal/adapters/credentials"
 	"enquoir/internal/adapters/httpapi"
 	"enquoir/internal/adapters/postgres"
 	"enquoir/internal/app"
@@ -61,20 +70,92 @@ func main() {
 	}
 	defer temporalClient.Close()
 
-	handler := &httpapi.Handler{
-		Submit: &app.SubmitIntent{
-			Starter: &httpapi.TemporalPaymentStarter{Client: temporalClient, MaxAmountMinorUnits: maxMinorUnits},
-			Events:  events,
-		},
-		Get:      &app.GetIntent{Events: events},
-		Register: &app.RegisterBeneficiary{Registrar: &httpapi.TemporalBeneficiaryRegistrar{Client: temporalClient}},
+	sessionTTL := 7 * 24 * time.Hour
+	if v := os.Getenv("SESSION_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			logger.Error("invalid SESSION_TTL", "value", v)
+			os.Exit(1)
+		}
+		sessionTTL = d
+	}
+	secureCookies := os.Getenv("SESSION_COOKIE_SECURE") != "false"
+	if !secureCookies {
+		logger.Warn("session cookies are not Secure: only for plain-HTTP local development")
 	}
 
+	sysClock := clock.System{}
+	accounts := postgres.NewAccountStore(pool)
+	sessions := postgres.NewSessionStore(pool)
+	hasher := &credentials.PBKDF2Hasher{}
+	ids := credentials.RandomIDs{}
+	agents := postgres.NewAgentStore(pool)
+	beneficiaries := postgres.NewBeneficiaryStore(pool)
+	attempts := postgres.NewAttemptLog(pool)
+	payments := postgres.NewPaymentReader(pool)
+	analytics := postgres.NewAnalyticsReader(pool)
+	secrets := credentials.RandomSecrets{}
+	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: sysClock, TTL: sessionTTL}
+
+	handler := &httpapi.Handler{
+		Submit: &app.SubmitIntent{
+			Starter:  &httpapi.TemporalPaymentStarter{Client: temporalClient, MaxAmountMinorUnits: maxMinorUnits},
+			Events:   events,
+			Payees:   beneficiaries,
+			Intents:  postgres.NewIntentRepository(pool),
+			Attempts: attempts,
+			IDs:      ids,
+			Clock:    sysClock,
+		},
+		Get: &app.GetIntent{Events: events},
+		Register: &app.RegisterBeneficiary{
+			Registrar:     &httpapi.TemporalBeneficiaryRegistrar{Client: temporalClient},
+			Beneficiaries: beneficiaries,
+			Clock:         sysClock,
+		},
+
+		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: sysClock, Issuer: issuer},
+		LogIn:          &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
+		LogOut:         &app.LogOut{Sessions: sessions, Clock: sysClock},
+		ResolveSession: &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: sysClock},
+		Cookies:        httpapi.CookieSettings{Secure: secureCookies},
+		Origins:        httpapi.ParseAllowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
+
+		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock},
+		ListAgents:        &app.ListAgents{Agents: agents},
+		GetAgent:          &app.GetAgent{Agents: agents},
+		RotateAgentKey:    &app.RotateAgentKey{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock},
+		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: sysClock},
+		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: sysClock},
+
+		ListPayments:      &app.ListPayments{Payments: payments},
+		GetPayment:        &app.GetPayment{Payments: payments, Events: events, Attempts: attempts},
+		ListAttempts:      &app.ListAttempts{Attempts: attempts},
+		ListBeneficiaries: &app.ListBeneficiaries{Beneficiaries: beneficiaries},
+		Summary:           &app.GetSummary{Analytics: analytics, Clock: sysClock},
+		TimeSeries:        &app.GetTimeSeries{Analytics: analytics, Clock: sysClock},
+		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
+	}
+
+	srv := httpapi.NewServer(httpAddr, httpapi.NewRouter(handler))
+	stop, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	go func() {
+		<-stop.Done()
+		// Let requests in flight finish; refuse new ones.
+		shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdown); err != nil {
+			logger.Error("shutting down", "error", err)
+		}
+	}()
+
 	logger.Info("api listening", "addr", httpAddr)
-	if err := http.ListenAndServe(httpAddr, httpapi.NewRouter(handler)); err != nil {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+	logger.Info("api stopped")
 }
 
 func requireEnv(logger *slog.Logger, name string) string {

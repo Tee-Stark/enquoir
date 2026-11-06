@@ -89,7 +89,7 @@ func (c *Client) CreateTransfer(ctx context.Context, intent domain.Intent) (app.
 	}
 
 	if status >= 500 {
-		return app.Transfer{}, fmt.Errorf("airwallex: create transfer: status %d: %s: %w", status, body, app.ErrAmbiguous)
+		return app.Transfer{}, railError(fmt.Sprintf("airwallex: create transfer: status %d: %s", status, body), status, body, app.ErrAmbiguous)
 	}
 
 	var errResp errorDTO
@@ -106,7 +106,7 @@ func (c *Client) CreateTransfer(ctx context.Context, intent domain.Intent) (app.
 		return transfer, nil
 	}
 
-	return app.Transfer{}, fmt.Errorf("airwallex: create transfer: rejected, status %d: %s: %w", status, body, app.ErrRejected)
+	return app.Transfer{}, railError(fmt.Sprintf("airwallex: create transfer: rejected, status %d: %s", status, body), status, body, app.ErrRejected)
 }
 
 // GetTransfer fetches a transfer by the rail's own ID.
@@ -116,7 +116,7 @@ func (c *Client) GetTransfer(ctx context.Context, transferID string) (app.Transf
 		return app.Transfer{}, err
 	}
 	if status != http.StatusOK {
-		return app.Transfer{}, fmt.Errorf("airwallex: get transfer %s: status %d: %s: %w", transferID, status, body, app.ErrAmbiguous)
+		return app.Transfer{}, railError(fmt.Sprintf("airwallex: get transfer %s: status %d: %s", transferID, status, body), status, body, app.ErrAmbiguous)
 	}
 
 	var dto transferDTO
@@ -136,7 +136,7 @@ func (c *Client) FindTransferByRequestID(ctx context.Context, requestID string) 
 		return app.Transfer{}, false, err
 	}
 	if status != http.StatusOK {
-		return app.Transfer{}, false, fmt.Errorf("airwallex: find transfer by request id %s: status %d: %s: %w", requestID, status, body, app.ErrAmbiguous)
+		return app.Transfer{}, false, railError(fmt.Sprintf("airwallex: find transfer by request id %s: status %d: %s", requestID, status, body), status, body, app.ErrAmbiguous)
 	}
 
 	var list struct {

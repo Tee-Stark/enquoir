@@ -96,3 +96,17 @@ type Simulator interface {
 type Clock interface {
 	Now() time.Time
 }
+
+// RailError is a failed call the rail answered: its HTTP status and
+// the rail's own error code, alongside the text. It matches Kind -
+// ErrRejected or ErrAmbiguous - under errors.Is, so callers branch on
+// the outcome as before and the attempt log can show the specifics.
+type RailError struct {
+	Kind       error
+	HTTPStatus int
+	Code       string
+	Message    string
+}
+
+func (e *RailError) Error() string { return e.Message + ": " + e.Kind.Error() }
+func (e *RailError) Unwrap() error { return e.Kind }

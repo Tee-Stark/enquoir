@@ -7,7 +7,9 @@ package workflow
 import (
 	"context"
 	"errors"
+	"fmt"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 
 	"enquoir/internal/app"
@@ -27,20 +29,102 @@ const (
 )
 
 // Activities wraps the ports that must run as Temporal activities.
+// Every rail call is recorded as a rail_call attempt in Attempts:
+// started before the call leaves, finished when it returns, so a call
+// whose worker dies mid-flight is still on the record.
 type Activities struct {
 	Intents       app.IntentRepository
 	Events        app.EventLog
 	Rail          app.Rail
 	Beneficiaries app.BeneficiaryRegistry
+
+	Attempts app.AttemptLog
+	IDs      app.IDGenerator
+	Clock    app.Clock
+}
+
+// TransferRef names a transfer and the intent it pays.
+type TransferRef struct {
+	OrgID      domain.OrgID
+	IntentKey  domain.IntentKey
+	TransferID string
+}
+
+// IntentRef names an intent.
+type IntentRef struct {
+	OrgID     domain.OrgID
+	IntentKey domain.IntentKey
+}
+
+// BeneficiaryRef names a beneficiary.
+type BeneficiaryRef struct {
+	OrgID domain.OrgID
+	Key   domain.BeneficiaryKey
+}
+
+// maxRecordedMessage bounds an error message kept on an attempt.
+const maxRecordedMessage = 1000
+
+// track records one rail call around call: started before, finished
+// after. Failing to record the start fails the activity before the
+// rail is called - safe, since nothing was sent. Failing to record the
+// finish is logged and ignored: the call happened, and the event log,
+// not the attempt log, is what money safety rests on.
+func (a *Activities) track(ctx context.Context, base app.Attempt, call func() (app.AttemptFinish, error)) error {
+	base.ID = a.IDs.NewID("att")
+	base.Kind = app.KindRailCall
+	base.StartedAt = a.Clock.Now()
+	if activity.IsActivity(ctx) {
+		base.ActivityAttempt = int(activity.GetInfo(ctx).Attempt)
+	}
+	if err := a.Attempts.Start(ctx, base); err != nil {
+		return fmt.Errorf("recording the %s attempt: %w", base.Operation, err)
+	}
+
+	finish, err := call()
+	if err != nil {
+		finish = failedFinish(err)
+	}
+	finish.FinishedAt = a.Clock.Now()
+	if ferr := a.Attempts.Finish(ctx, base.OrgID, base.ID, finish); ferr != nil && activity.IsActivity(ctx) {
+		activity.GetLogger(ctx).Warn("could not record a rail call's outcome", "attempt", base.ID, "error", ferr)
+	}
+	return err
+}
+
+func failedFinish(err error) app.AttemptFinish {
+	f := app.AttemptFinish{Outcome: app.OutcomeError, ErrorMessage: err.Error()}
+	if len(f.ErrorMessage) > maxRecordedMessage {
+		f.ErrorMessage = f.ErrorMessage[:maxRecordedMessage]
+	}
+	var re *app.RailError
+	if errors.As(err, &re) {
+		f.HTTPStatus, f.ErrorCode = re.HTTPStatus, re.Code
+	}
+	switch {
+	case errors.Is(err, app.ErrRejected):
+		f.Outcome = app.OutcomeRejected
+	case errors.Is(err, app.ErrAmbiguous):
+		f.Outcome = app.OutcomeAmbiguous
+	case errors.Is(err, app.ErrDuplicateTransfers):
+		f.Outcome = app.OutcomeDuplicateTransfers
+	}
+	return f
+}
+
+func transferFinish(t app.Transfer) app.AttemptFinish {
+	return app.AttemptFinish{Outcome: app.OutcomeOK, TransferID: t.ID, TransferStatus: string(t.Status)}
 }
 
 func (a *Activities) SaveIntent(ctx context.Context, intent domain.Intent) (domain.Intent, error) {
-	return a.Intents.Save(ctx, intent)
+	stored, _, err := a.Intents.Save(ctx, intent)
+	return stored, err
 }
 
 // AppendEventInput is AppendEvent's input, since Temporal activities
 // take at most one argument that isn't a context.
 type AppendEventInput struct {
+	OrgID     domain.OrgID
 	IntentKey domain.IntentKey
 	Type      string
 	Payload   string
@@ -53,26 +137,38 @@ func (a *Activities) AppendEvent(ctx context.Context, in AppendEventInput) (doma
 	if in.Type == string(domain.IN_FLIGHT) {
 		chaos.KillAt(chaos.BeforeLog)
 	}
-	return a.Events.Append(ctx, in.IntentKey, in.Type, in.Payload)
+	return a.Events.Append(ctx, in.OrgID, in.IntentKey, in.Type, in.Payload)
 }
 
 func (a *Activities) CreateTransfer(ctx context.Context, intent domain.Intent) (app.Transfer, error) {
 	chaos.KillAt(chaos.AfterLogBeforeCall)
 
-	// during_call fires inside the rail's HTTP transport (see
-	// chaos.ArmTransport, wired in cmd/worker): the moment the create
-	// request has fully left the process, before any response is read.
-	transfer, err := a.Rail.CreateTransfer(ctx, intent)
-	chaos.KillAt(chaos.AfterCallBeforeCommit)
-
+	var transfer app.Transfer
+	err := a.track(ctx, app.Attempt{OrgID: intent.OrgID, Operation: app.OpCreateTransfer, IntentKey: intent.Key, RequestID: string(intent.Key)},
+		func() (app.AttemptFinish, error) {
+			// during_call fires inside the rail's HTTP transport (see
+			// chaos.ArmTransport, wired in cmd/worker): the moment the
+			// create request has fully left the process, before any
+			// response is read.
+			var err error
+			transfer, err = a.Rail.CreateTransfer(ctx, intent)
+			chaos.KillAt(chaos.AfterCallBeforeCommit)
+			return transferFinish(transfer), err
+		})
 	if err != nil {
 		return app.Transfer{}, toApplicationError(err)
 	}
 	return transfer, nil
 }
 
-func (a *Activities) GetTransfer(ctx context.Context, transferID string) (app.Transfer, error) {
-	transfer, err := a.Rail.GetTransfer(ctx, transferID)
+func (a *Activities) GetTransfer(ctx context.Context, ref TransferRef) (app.Transfer, error) {
+	var transfer app.Transfer
+	err := a.track(ctx, app.Attempt{OrgID: ref.OrgID, Operation: app.OpGetTransfer, IntentKey: ref.IntentKey},
+		func() (app.AttemptFinish, error) {
+			var err error
+			transfer, err = a.Rail.GetTransfer(ctx, ref.TransferID)
+			return transferFinish(transfer), err
+		})
 	if err != nil {
 		return app.Transfer{}, toApplicationError(err)
 	}
@@ -86,16 +182,31 @@ type FindTransferResult struct {
 	Found    bool
 }
 
-func (a *Activities) FindTransferByRequestID(ctx context.Context, requestID string) (FindTransferResult, error) {
-	transfer, ok, err := a.Rail.FindTransferByRequestID(ctx, requestID)
+func (a *Activities) FindTransferByRequestID(ctx context.Context, ref IntentRef) (FindTransferResult, error) {
+	var result FindTransferResult
+	err := a.track(ctx, app.Attempt{OrgID: ref.OrgID, Operation: app.OpFindTransfer, IntentKey: ref.IntentKey, RequestID: string(ref.IntentKey)},
+		func() (app.AttemptFinish, error) {
+			transfer, ok, err := a.Rail.FindTransferByRequestID(ctx, string(ref.IntentKey))
+			result = FindTransferResult{Transfer: transfer, Found: ok}
+			if !ok {
+				return app.AttemptFinish{Outcome: app.OutcomeNotFound}, err
+			}
+			return transferFinish(transfer), err
+		})
 	if err != nil {
 		return FindTransferResult{}, toApplicationError(err)
 	}
-	return FindTransferResult{Transfer: transfer, Found: ok}, nil
+	return result, nil
 }
 
 func (a *Activities) CreateBeneficiary(ctx context.Context, b domain.Beneficiary) (string, error) {
-	id, err := a.Beneficiaries.CreateBeneficiary(ctx, b)
+	var id string
+	err := a.track(ctx, app.Attempt{OrgID: b.OrgID, Operation: app.OpCreateBeneficiary, BeneficiaryKey: b.Key},
+		func() (app.AttemptFinish, error) {
+			var err error
+			id, err = a.Beneficiaries.CreateBeneficiary(ctx, b)
+			return app.AttemptFinish{Outcome: app.OutcomeOK}, err
+		})
 	if err != nil {
 		return "", toApplicationError(err)
 	}
@@ -109,12 +220,21 @@ type FindBeneficiaryResult struct {
 	Found bool
 }
 
-func (a *Activities) FindBeneficiary(ctx context.Context, key domain.BeneficiaryKey) (FindBeneficiaryResult, error) {
-	id, ok, err := a.Beneficiaries.FindBeneficiary(ctx, key)
+func (a *Activities) FindBeneficiary(ctx context.Context, ref BeneficiaryRef) (FindBeneficiaryResult, error) {
+	var result FindBeneficiaryResult
+	err := a.track(ctx, app.Attempt{OrgID: ref.OrgID, Operation: app.OpFindBeneficiary, BeneficiaryKey: ref.Key},
+		func() (app.AttemptFinish, error) {
+			id, ok, err := a.Beneficiaries.FindBeneficiary(ctx, ref.Key)
+			result = FindBeneficiaryResult{ID: id, Found: ok}
+			if !ok {
+				return app.AttemptFinish{Outcome: app.OutcomeNotFound}, err
+			}
+			return app.AttemptFinish{Outcome: app.OutcomeOK}, err
+		})
 	if err != nil {
 		return FindBeneficiaryResult{}, toApplicationError(err)
 	}
-	return FindBeneficiaryResult{ID: id, Found: ok}, nil
+	return result, nil
 }
 
 // toApplicationError tags the outcomes the workflow must branch on

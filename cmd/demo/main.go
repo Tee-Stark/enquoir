@@ -18,6 +18,7 @@ import (
 
 	"enquoir/internal/adapters/airwallex"
 	"enquoir/internal/adapters/clock"
+	"enquoir/internal/adapters/credentials"
 	"enquoir/internal/adapters/postgres"
 	"enquoir/internal/app"
 	"enquoir/internal/domain"
@@ -85,21 +86,30 @@ func main() {
 
 	w := worker.New(temporalClient, enquoirworkflow.TaskQueue, worker.Options{})
 	w.RegisterWorkflow(enquoirworkflow.PaymentWorkflow)
-	w.RegisterActivity(&enquoirworkflow.Activities{Intents: intents, Events: events, Rail: rail})
+	w.RegisterActivity(&enquoirworkflow.Activities{
+		Intents: intents, Events: events, Rail: rail,
+		Attempts: postgres.NewAttemptLog(pool), IDs: credentials.RandomIDs{}, Clock: clock.System{},
+	})
 	if err := w.Start(); err != nil {
 		logger.Error("starting in-process worker", "error", err)
 		os.Exit(1)
 	}
 	defer w.Stop()
 
-	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail)
+	org, err := sandbox.EnsureDemoOrg(ctx, postgres.NewAccountStore(pool), credentials.RandomIDs{}, clock.System{})
+	if err != nil {
+		logger.Error("ensuring demo organisation", "error", err)
+		os.Exit(1)
+	}
+
+	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail, postgres.NewBeneficiaryStore(pool), clock.System{}, org)
 	if err != nil {
 		logger.Error("ensuring test beneficiary", "error", err)
 		os.Exit(1)
 	}
 
 	reference := fmt.Sprintf("demo-%d", time.Now().UnixNano())
-	intent, err := domain.NewIntent(beneficiaryID, demoAmountMinorUnits, "USD", reference, "enquoir demo")
+	intent, err := domain.NewIntent(org, beneficiaryID, demoAmountMinorUnits, "USD", reference, "enquoir demo")
 	if err != nil {
 		logger.Error("building intent", "error", err)
 		os.Exit(1)
@@ -141,7 +151,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	chain, err := events.Load(ctx, intent.Key)
+	chain, err := events.Load(ctx, intent.OrgID, intent.Key)
 	if err != nil {
 		logger.Error("loading event history", "error", err)
 		os.Exit(1)

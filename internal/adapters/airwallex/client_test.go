@@ -21,7 +21,7 @@ func (f *fakeClock) Now() time.Time { return f.now }
 
 func testIntent(t *testing.T) domain.Intent {
 	t.Helper()
-	intent, err := domain.NewIntent("beneficiary-123", 10050, "USD", "INV-1001", "test payment")
+	intent, err := domain.NewIntent("org_test", "beneficiary-123", 10050, "USD", "INV-1001", "test payment")
 	if err != nil {
 		t.Fatalf("building test intent: %v", err)
 	}
@@ -379,5 +379,50 @@ func TestClient_LoginAcceptsCreated(t *testing.T) {
 
 	if _, err := c.GetTransfer(t.Context(), "tr_1"); err != nil {
 		t.Fatalf("GetTransfer after a 201 login: %v", err)
+	}
+}
+
+// A rate limit that never clears says nothing about the request: the
+// rail declined to look at it. That is an unclear outcome to look up
+// and retry, never a rejection - a rejection ends a good payment at
+// FAILED for good.
+func TestClient_PersistentRateLimitIsAmbiguousNotRejected(t *testing.T) {
+	var calls int32
+	ts, _ := server(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"code":"too_many_requests","message":"slow down"}`))
+	})
+	c := newTestClient(t, ts, &fakeClock{now: time.Now()})
+	c.t.sleep = func(time.Duration) {}
+
+	_, createErr := c.CreateTransfer(t.Context(), testIntent(t))
+	_, getErr := c.GetTransfer(t.Context(), "tr_1")
+	_, _, findErr := c.FindTransferByRequestID(t.Context(), "req_1234567")
+	for name, err := range map[string]error{"create": createErr, "get": getErr, "find": findErr} {
+		if !errors.Is(err, app.ErrAmbiguous) || errors.Is(err, app.ErrRejected) {
+			t.Errorf("%s under a persistent 429: err = %v, want ErrAmbiguous and never ErrRejected", name, err)
+		}
+		var re *app.RailError
+		if !errors.As(err, &re) || re.HTTPStatus != http.StatusTooManyRequests || re.Code != "too_many_requests" {
+			t.Errorf("%s: want a RailError carrying the 429 and its code, got %v", name, err)
+		}
+	}
+	if n := atomic.LoadInt32(&calls); n != 3*maxRequestAttempts {
+		t.Errorf("%d calls, want %d per operation", n, maxRequestAttempts)
+	}
+}
+
+func TestBeneficiary_PersistentRateLimitIsAmbiguous(t *testing.T) {
+	ts, _ := server(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	c := newTestClient(t, ts, &fakeClock{now: time.Now()})
+	c.t.sleep = func(time.Duration) {}
+	b, _ := domain.NewBeneficiary("org_test", "Acme Ltd", "50001121", "021000021", domain.Checking, domain.BeneficiaryAddress{
+		Street: "412 5th Avenue", City: "Seattle", State: "WA", Postcode: "98104",
+	})
+	if _, err := c.CreateBeneficiary(t.Context(), b); !errors.Is(err, app.ErrAmbiguous) {
+		t.Errorf("create beneficiary under a persistent 429: err = %v, want ErrAmbiguous", err)
 	}
 }

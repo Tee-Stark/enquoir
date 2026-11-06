@@ -11,19 +11,23 @@ import (
 	"go.temporal.io/sdk/testsuite"
 
 	"enquoir/internal/app"
+	"enquoir/internal/app/apptest"
 	"enquoir/internal/domain"
 )
 
+const testOrg domain.OrgID = "org_test"
+
 func testIntent(t *testing.T, minorUnits int64) domain.Intent {
 	t.Helper()
-	intent, err := domain.NewIntent("beneficiary-1", minorUnits, "USD", fmt.Sprintf("ref-%s", t.Name()), "test")
+	intent, err := domain.NewIntent(testOrg, "beneficiary-1", minorUnits, "USD", fmt.Sprintf("ref-%s", t.Name()), "test")
 	require.NoError(t, err)
 	return intent
 }
 
 type testEnv struct {
-	env    *testsuite.TestWorkflowEnvironment
-	events *fakeEventLog
+	env      *testsuite.TestWorkflowEnvironment
+	events   *apptest.EventLog
+	attempts *apptest.Attempts
 }
 
 func newEnv(t *testing.T, rail app.Rail) *testEnv {
@@ -31,22 +35,25 @@ func newEnv(t *testing.T, rail app.Rail) *testEnv {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 
-	events := newFakeEventLog()
+	events, attempts := apptest.NewEventLog(), apptest.NewAttempts()
 	a := &Activities{
-		Intents: newFakeIntentRepository(),
-		Events:  events,
-		Rail:    rail,
+		Intents:  newFakeIntentRepository(),
+		Events:   events,
+		Rail:     rail,
+		Attempts: attempts,
+		IDs:      &apptest.IDs{},
+		Clock:    apptest.NewClock(),
 	}
 
 	env.RegisterWorkflow(PaymentWorkflow)
 	env.RegisterActivity(a)
 
-	return &testEnv{env: env, events: events}
+	return &testEnv{env: env, events: events, attempts: attempts}
 }
 
 func (e *testEnv) eventTypes(t *testing.T, key domain.IntentKey) []string {
 	t.Helper()
-	chain, err := e.events.Load(context.Background(), key)
+	chain, err := e.events.Load(context.Background(), testOrg, key)
 	require.NoError(t, err)
 	require.NoError(t, chain.Verify())
 
@@ -110,12 +117,12 @@ func TestPaymentWorkflow_OverMaxEndsBlockedWithoutCallingRail(t *testing.T) {
 
 func TestPaymentWorkflow_RecordsInFlightBeforeCallingRail(t *testing.T) {
 	intent := testIntent(t, 10050)
-	events := newFakeEventLog()
+	events := apptest.NewEventLog()
 
 	rail := &fakeRail{
 		createFunc: func(ctx context.Context, intent domain.Intent, callNum int) (app.Transfer, error) {
 			types := []string{}
-			chain, _ := events.Load(ctx, intent.Key)
+			chain, _ := events.Load(ctx, testOrg, intent.Key)
 			for _, ev := range chain {
 				types = append(types, ev.Type)
 			}
@@ -126,7 +133,7 @@ func TestPaymentWorkflow_RecordsInFlightBeforeCallingRail(t *testing.T) {
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
-	a := &Activities{Intents: newFakeIntentRepository(), Events: events, Rail: rail}
+	a := &Activities{Intents: newFakeIntentRepository(), Events: events, Rail: rail, Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 	env.RegisterWorkflow(PaymentWorkflow)
 	env.RegisterActivity(a)
 
@@ -266,7 +273,7 @@ func TestPaymentWorkflow_CancelledTransferEndsFailedWithReason(t *testing.T) {
 	require.Equal(t, domain.FAILED, result.State)
 	require.Equal(t, "account closed", result.FailureReason)
 
-	chain, err := te.events.Load(context.Background(), intent.Key)
+	chain, err := te.events.Load(context.Background(), testOrg, intent.Key)
 	require.NoError(t, err)
 	require.Equal(t, "account closed", chain[len(chain)-1].Payload)
 }

@@ -16,6 +16,7 @@ import (
 
 	"enquoir/internal/adapters/airwallex"
 	"enquoir/internal/adapters/clock"
+	"enquoir/internal/adapters/credentials"
 	"enquoir/internal/adapters/postgres"
 	"enquoir/internal/chaos"
 	enquoirworkflow "enquoir/internal/workflow"
@@ -67,6 +68,9 @@ func main() {
 		Events:        postgres.NewEventLog(pool),
 		Rail:          rail,
 		Beneficiaries: rail,
+		Attempts:      postgres.NewAttemptLog(pool),
+		IDs:           credentials.RandomIDs{},
+		Clock:         clock.System{},
 	}
 
 	w := worker.New(temporalClient, enquoirworkflow.TaskQueue, worker.Options{})

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // genesisHash is the PrevHash of the first event in any chain.
@@ -21,6 +22,10 @@ type Event struct {
 	Payload        string
 	PrevHash       string
 	Hash           string
+
+	// RecordedAt is when the event was stored. It is not part of the
+	// hash: the chain proves order and content, not wall-clock time.
+	RecordedAt time.Time
 }
 
 func hashEvent(seq int, intentKey IntentKey, eventType, payload, prevHash string) string {
@@ -42,15 +47,24 @@ func hashEvent(seq int, intentKey IntentKey, eventType, payload, prevHash string
 // tampering or a missing step.
 type Chain []Event
 
-// Append adds the next event to the chain, linking it to the previous
-// event's hash.
+// Append adds the next event to the chain, linking it to the
+// previous event's hash.
 func (c Chain) Append(intentKey IntentKey, eventType, payload string) Chain {
-	seq := len(c)
-	prevHash := genesisHash
-	if seq > 0 {
-		prevHash = c[seq-1].Hash
+	var last *Event
+	if len(c) > 0 {
+		last = &c[len(c)-1]
 	}
-	event := Event{
+	return append(c, NextEvent(intentKey, last, eventType, payload))
+}
+
+// NextEvent builds the event that follows last (nil for the first),
+// from last alone: a store can append without reading the whole chain.
+func NextEvent(intentKey IntentKey, last *Event, eventType, payload string) Event {
+	seq, prevHash := 0, genesisHash
+	if last != nil {
+		seq, prevHash = last.SequenceNumber+1, last.Hash
+	}
+	return Event{
 		SequenceNumber: seq,
 		IntentKey:      intentKey,
 		Type:           eventType,
@@ -58,7 +72,6 @@ func (c Chain) Append(intentKey IntentKey, eventType, payload string) Chain {
 		PrevHash:       prevHash,
 		Hash:           hashEvent(seq, intentKey, eventType, payload, prevHash),
 	}
-	return append(c, event)
 }
 
 // Verify walks the chain from its start, confirming sequence numbers are

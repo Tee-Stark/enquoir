@@ -8,6 +8,10 @@ import (
 	"enquoir/internal/domain"
 )
 
+// Tests in this package use apptest.EventLog directly; see
+// payment_workflow_test.go and the duplicate-storm/attach integration
+// tests for where it is constructed.
+
 type fakeIntentRepository struct {
 	mu     sync.Mutex
 	stored map[domain.IntentKey]domain.Intent
@@ -17,37 +21,14 @@ func newFakeIntentRepository() *fakeIntentRepository {
 	return &fakeIntentRepository{stored: map[domain.IntentKey]domain.Intent{}}
 }
 
-func (r *fakeIntentRepository) Save(ctx context.Context, intent domain.Intent) (domain.Intent, error) {
+func (r *fakeIntentRepository) Save(ctx context.Context, intent domain.Intent) (domain.Intent, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if existing, ok := r.stored[intent.Key]; ok {
-		return existing, nil
+		return existing, false, nil
 	}
 	r.stored[intent.Key] = intent
-	return intent, nil
-}
-
-type fakeEventLog struct {
-	mu     sync.Mutex
-	chains map[domain.IntentKey]domain.Chain
-}
-
-func newFakeEventLog() *fakeEventLog {
-	return &fakeEventLog{chains: map[domain.IntentKey]domain.Chain{}}
-}
-
-func (l *fakeEventLog) Append(ctx context.Context, key domain.IntentKey, eventType, payload string) (domain.Event, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	chain := l.chains[key].Append(key, eventType, payload)
-	l.chains[key] = chain
-	return chain[len(chain)-1], nil
-}
-
-func (l *fakeEventLog) Load(ctx context.Context, key domain.IntentKey) (domain.Chain, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.chains[key], nil
+	return intent, true, nil
 }
 
 // fakeRail lets each test script exactly what the rail does, since the

@@ -65,13 +65,27 @@ make demo   # submits one intent, runs its own in-process worker, pays it
 make api    # listens on :8090 (HTTP_ADDR)
 ```
 
-Register the payee first. Airwallex only pays a beneficiary it already
-holds, so an intent's `payee` is the `id` this returns:
+Enquoir Cloud is multi-tenant. A person signs up (which creates their
+organisation), then creates an agent; the agent pays with its API key.
+API reference: `http://localhost:8090/docs` (spec at `/openapi.yaml`).
 
 ```sh
-curl -X POST localhost:8090/v1/beneficiaries \
+curl -c cookies -X POST localhost:8090/v1/auth/signup -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"correct horse battery","organisation_name":"Acme Treasury"}'
+
+curl -b cookies -X POST localhost:8090/v1/agents -H 'Content-Type: application/json' -d '{"name":"Invoice bot"}'
+# {"agent":{...},"api_key":{"secret":"enq_sk_...", ...}}   <- shown once; store it
+KEY=enq_sk_...
+```
+
+The agent registers the payee first. Airwallex only pays a beneficiary it
+already holds, so an intent's `payee` is the `id` this returns, and only
+the organisation that registered a payee can pay it:
+
+```sh
+curl -X POST localhost:8090/v1/beneficiaries -H "Authorization: Bearer $KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"name":"Acme Ltd","account_number":"50001121","routing_number":"021000021",
+  -d '{"name":"Acme Ltd","account_number":"50001121","routing_number":"021000021","account_category":"Checking",
        "address":{"street":"412 5th Avenue","city":"Seattle","state":"WA","postcode":"98104"}}'
 # {"id":"<beneficiary id>","key":"..."}
 ```
@@ -80,23 +94,43 @@ Only US company accounts paid in USD over ACH are supported for now.
 Registering the same details again returns the same `id`: Airwallex's
 beneficiary create has no idempotency key, so Enquoir stores its own key
 as the beneficiary's nickname and looks it up before ever creating one.
-A rail rejection comes back as a 422 carrying Airwallex's reason.
+The key includes the organisation, so another organisation registering
+the same details gets its own beneficiary. A rail rejection comes back as
+a 422 carrying Airwallex's reason.
 
 ```sh
-curl -X POST localhost:8090/v1/intents \
+curl -X POST localhost:8090/v1/intents -H "Authorization: Bearer $KEY" \
   -H 'Content-Type: application/json' \
   -d '{"payee":"<beneficiary id>","amount":"10.50","currency":"USD","reference":"INV-1001","reason":"invoice settlement"}'
 # {"key":"...","state":"PROPOSED"}
 
-curl localhost:8090/v1/intents/<key>
+curl localhost:8090/v1/intents/<key> -H "Authorization: Bearer $KEY"
 # {"key":"...","state":"APPLIED","events":[...]}
 
 curl localhost:8090/healthz
 # ok
 ```
 
-Posting the same intent again (same payee, amount, currency and
-reference) returns the same key, reports its recorded state, and starts
+Errors are RFC 9457 problem details with a stable `code`: for example a
+payee the organisation never registered is `422 payee_unknown`, and a
+missing or revoked key is `401 unauthenticated`.
+
+The dashboard (signed in, with the session cookie) sees everything the
+organisation's agents did:
+
+```sh
+curl -b cookies 'localhost:8090/v1/payments?state=APPLIED,FAILED&from=2026-11-01T00:00:00Z'
+curl -b cookies localhost:8090/v1/payments/<key>           # events, chain verdict, every attempt
+curl -b cookies localhost:8090/v1/payments/<key>/replay    # every step, ordered and timed
+curl -b cookies 'localhost:8090/v1/attempts?kind=rail_call&outcome=interrupted,ambiguous'
+curl -b cookies 'localhost:8090/v1/analytics/summary?tz=Africa/Lagos'
+curl -b cookies 'localhost:8090/v1/analytics/timeseries?metric=payments&interval=day&group_by=state&tz=Africa/Lagos'
+```
+
+A frontend on another origin must be listed in `CORS_ALLOWED_ORIGINS`.
+
+Posting the same intent again (same organisation, payee, amount,
+currency and reference) returns the same key, reports its recorded state, and starts
 nothing new - ever, not just while the first run is going. The `reason`
 is recorded but deliberately left out of the key: it is free text an
 agent writes, and an agent rewords it when it retries, so a reworded
@@ -120,11 +154,18 @@ for one request ID: a double payment, left for a person to investigate.
 make e2e
 ```
 
-Runs `scripts/e2e.sh` against a running worker and API: edge validation,
-a policy block, resubmission of a finished intent, then against the real
-sandbox it registers a payee (twice, same ID), pays it (submitted twice,
-one transfer), drives the transfer to PAID through the simulator, and
-checks the intent settles to `APPLIED` with a clean history. Every step
+Runs `scripts/e2e.sh` against a running worker and API, as a Cloud
+consumer: signs up, creates an agent, checks the payment routes refuse a
+missing or made-up key, then with the agent's key against the real
+sandbox: edge validation, registers a payee (twice, same ID), a policy
+block and its resubmission, pays the payee (submitted twice, the second
+with a reworded reason: one key, one transfer), drives the transfer to
+PAID through the simulator, and checks the intent settles to `APPLIED`
+with a clean history. Then a second organisation proves it can neither
+pay nor see the first's payee or payment, and gets its own beneficiary
+for the same details. In between, the signed-in owner checks the
+dashboard: the payment in history, its detail and verifying chain, its
+attempts, its replay, and analytics in Lagos time. 22 steps. Every step
 is a plain, copyable curl. Needs `make up`, `make sandbox-setup`, `make
 worker` and `make api`. Run only one worker: an old one still polling the
 task queue will pick up work with stale code.
@@ -226,7 +267,7 @@ Verified directly, not just "should work":
 
 Verified against the real Airwallex sandbox (2026-11-06):
 
-- `make sandbox-setup`, `make demo`, `make e2e` (all 13 steps) and
+- `make sandbox-setup`, `make demo`, `make e2e` (all 22 steps) and
   `make chaos` (all four kill points). Where the real sandbox differs
   from the documented facts is recorded in docs/rail-notes.md.
 - A retry with a reworded `reason` resolves to the same intent and

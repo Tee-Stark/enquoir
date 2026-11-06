@@ -1,10 +1,8 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -21,38 +19,31 @@ type submitIntentRequest struct {
 }
 
 type submitIntentResponse struct {
-	Key   string `json:"key"`
-	State string `json:"state"`
+	Key     string `json:"key"`
+	State   string `json:"state"`
+	Outcome string `json:"outcome"`
 }
 
 func (h *Handler) submitIntent(w http.ResponseWriter, r *http.Request) {
 	var req submitIntentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
-	amount, err := domain.ParseMajorUnits(req.Amount, domain.Currency(strings.ToUpper(strings.TrimSpace(req.Currency))))
+	agent := agentFrom(r.Context())
+	result, err := h.Submit.Run(r.Context(), app.SubmitIntentCommand{
+		OrgID: agent.OrgID, Agent: agent.AgentID,
+		Payee: req.Payee, Amount: req.Amount, Currency: req.Currency, Reference: req.Reference, Reason: req.Reason,
+	})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	intent, err := domain.NewIntent(req.Payee, amount.MinorUnits(), string(amount.Currency()), req.Reference, req.Reason)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	result, err := h.Submit.Run(r.Context(), intent)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not submit intent")
+		writeAppError(w, err, "could not submit intent")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, submitIntentResponse{
-		Key:   string(result.Key),
-		State: string(result.State),
+		Key:     string(result.Key),
+		State:   string(result.State),
+		Outcome: string(result.Outcome),
 	})
 }
 
@@ -70,14 +61,15 @@ type getIntentResponse struct {
 
 func (h *Handler) getIntent(w http.ResponseWriter, r *http.Request) {
 	key := domain.IntentKey(chi.URLParam(r, "key"))
+	org := agentFrom(r.Context()).OrgID
 
-	result, err := h.Get.Run(r.Context(), key)
+	result, err := h.Get.Run(r.Context(), org, key)
 	if errors.Is(err, app.ErrIntentNotFound) {
-		writeError(w, http.StatusNotFound, "intent not found")
+		writeProblem(w, http.StatusNotFound, codeNotFound, "intent not found")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not load intent")
+		writeProblem(w, http.StatusInternalServerError, codeInternal, "could not load intent")
 		return
 	}
 
@@ -91,14 +83,4 @@ func (h *Handler) getIntent(w http.ResponseWriter, r *http.Request) {
 		State:  string(result.State),
 		Events: events,
 	})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
 }

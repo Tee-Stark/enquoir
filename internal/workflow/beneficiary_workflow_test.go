@@ -11,12 +11,13 @@ import (
 	"go.temporal.io/sdk/testsuite"
 
 	"enquoir/internal/app"
+	"enquoir/internal/app/apptest"
 	"enquoir/internal/domain"
 )
 
 func testBeneficiary(t *testing.T) domain.Beneficiary {
 	t.Helper()
-	b, err := domain.NewBeneficiary("Acme Ltd", "50001121", "021000021", domain.Checking, domain.BeneficiaryAddress{
+	b, err := domain.NewBeneficiary("org_test", "Acme Ltd", "50001121", "021000021", domain.Checking, domain.BeneficiaryAddress{
 		Street: "412 5th Avenue", City: "Seattle", State: "WA", Postcode: "98104",
 	})
 	require.NoError(t, err)
@@ -28,7 +29,7 @@ func runBeneficiaryWorkflow(t *testing.T, registry *fakeBeneficiaryRegistry, b d
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(BeneficiaryWorkflow)
-	env.RegisterActivity(&Activities{Beneficiaries: registry})
+	env.RegisterActivity(&Activities{Beneficiaries: registry, Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()})
 
 	env.ExecuteWorkflow(BeneficiaryWorkflow, b)
 	require.True(t, env.IsWorkflowCompleted())

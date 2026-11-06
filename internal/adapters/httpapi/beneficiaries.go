@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -29,30 +28,29 @@ type registerBeneficiaryResponse struct {
 
 func (h *Handler) registerBeneficiary(w http.ResponseWriter, r *http.Request) {
 	var req registerBeneficiaryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
-	b, err := domain.NewBeneficiary(req.Name, req.AccountNumber, req.RoutingNumber, domain.AccountCategory(req.Category), domain.BeneficiaryAddress{
+	b, err := domain.NewBeneficiary(agentFrom(r.Context()).OrgID, req.Name, req.AccountNumber, req.RoutingNumber, domain.AccountCategory(req.Category), domain.BeneficiaryAddress{
 		Street:   req.Address.Street,
 		City:     req.Address.City,
 		State:    req.Address.State,
 		Postcode: req.Address.Postcode,
 	})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeProblem(w, http.StatusBadRequest, codeValidationFailed, err.Error())
 		return
 	}
 
 	result, err := h.Register.Run(r.Context(), b)
 	if errors.Is(err, app.ErrRejected) {
 		// The rail's own reason, so the caller can see which field to fix.
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		writeProblem(w, http.StatusUnprocessableEntity, codeRailRejected, err.Error())
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not register beneficiary")
+		writeProblem(w, http.StatusInternalServerError, codeInternal, "could not register beneficiary")
 		return
 	}
 

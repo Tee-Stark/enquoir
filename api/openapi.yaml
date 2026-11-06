@@ -1,0 +1,1695 @@
+openapi: 3.1.0
+info:
+  title: Enquoir API
+  version: 0.4.0
+  summary: The safe control and observability layer for agentic finance.
+  description: |
+    Enquoir sits between an AI agent and a payment rail. The agent states an
+    intent; Enquoir derives a stable key from it, checks policy, executes it
+    through a durable workflow, records every step before it acts, and
+    reconciles unclear outcomes before anything is retried.
+
+    The rail is Airwallex, **sandbox only**. No real money can move.
+
+    **Authentication.** Agents send their API key as `Authorization: Bearer
+    <key>` on the payment routes. The dashboard uses the `enquoir_session`
+    cookie set by sign-up and log-in. Dashboard frontends on another origin
+    must be listed in the server's `CORS_ALLOWED_ORIGINS`; a state-changing
+    request a browser sends from any other origin is refused
+    (`403 forbidden_origin`).
+
+    **Errors** are RFC 9457 problem details; branch on their `code`.
+    Request bodies are limited to 64 KiB (`413 body_too_large`).
+servers:
+  - url: http://localhost:8090
+    description: Local development
+tags:
+  - name: Accounts
+    description: |
+      Sign up, log in and out of the dashboard. Sessions are an HttpOnly
+      cookie, `enquoir_session`, SameSite=Lax. Email verification and
+      onboarding are placeholders until their requirements arrive.
+  - name: Agents
+    description: |
+      The AI agents that submit payments. Each agent has one API key,
+      shown once when created or rotated; agents send it as
+      `Authorization: Bearer <key>`. Managing agents needs a dashboard session.
+  - name: Payments
+    description: Payment intents submitted by agents.
+  - name: Beneficiaries
+    description: Payees registered on the rail before they can be paid.
+  - name: History
+    description: |
+      What an organisation's agents did and what happened to every payment:
+      payments over a period, each payment's full history, and every attempt
+      (agent submissions and Airwallex calls). Dashboard-only: needs a session.
+  - name: Analytics
+    description: |
+      Numbers for charts and trends, over any period, in any IANA time zone
+      (`tz`, default UTC). Calendar buckets follow the caller's zone: days
+      start at local midnight, also across daylight-saving changes. Money is
+      never added up across currencies. Dashboard-only.
+  - name: Meta
+    description: Health and the API contract itself.
+
+paths:
+  /healthz:
+    get:
+      tags: [Meta]
+      operationId: healthz
+      summary: Liveness check
+      responses:
+        "200":
+          description: The server is up.
+          content:
+            text/plain:
+              schema:
+                type: string
+                const: ok
+
+  /openapi.yaml:
+    get:
+      tags: [Meta]
+      operationId: getOpenAPISpec
+      summary: This OpenAPI document
+      responses:
+        "200":
+          description: The OpenAPI 3.1 description of every route.
+          content:
+            application/yaml:
+              schema:
+                type: object
+                description: An OpenAPI 3.1 document.
+                required: [openapi, info, paths]
+
+  /docs:
+    get:
+      tags: [Meta]
+      operationId: getAPIDocs
+      summary: Human-readable API reference
+      description: An HTML page that renders /openapi.yaml.
+      responses:
+        "200":
+          description: The API reference page.
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /v1/auth/signup:
+    post:
+      tags: [Accounts]
+      operationId: signUp
+      summary: Create an organisation and its owner
+      description: |
+        Creates a new organisation with the signing-up user as its owner, and
+        signs them in (sets the session cookie). The email starts unverified;
+        nothing is gated on verification yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignUpRequest"
+      responses:
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
+        "201":
+          description: Signed up and signed in.
+          headers:
+            Set-Cookie:
+              $ref: "#/components/headers/SetSessionCookie"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: An account already uses this email (`email_taken`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/login:
+    post:
+      tags: [Accounts]
+      operationId: logIn
+      summary: Log in with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogInRequest"
+      responses:
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
+        "200":
+          description: Signed in.
+          headers:
+            Set-Cookie:
+              $ref: "#/components/headers/SetSessionCookie"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: |
+            The email and password don't match an account
+            (`invalid_credentials`). The same answer whether or not the email
+            is registered.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/logout:
+    post:
+      tags: [Accounts]
+      operationId: logOut
+      summary: Log out
+      description: Revokes the current session and clears the cookie. Succeeds without a session too.
+      responses:
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
+        "204":
+          description: Logged out.
+          headers:
+            Set-Cookie:
+              description: Clears `enquoir_session`.
+              schema:
+                type: string
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/session:
+    get:
+      tags: [Accounts]
+      operationId: getSession
+      summary: The signed-in user, their organisation and session
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The current session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/verify-email:
+    post:
+      tags: [Accounts]
+      operationId: verifyEmail
+      summary: Verify an email address (placeholder)
+      description: Not built yet - returns 501 until its requirements arrive. Will take the token from the verification email.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+      responses:
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
+  /v1/auth/verify-email/resend:
+    post:
+      tags: [Accounts]
+      operationId: resendVerificationEmail
+      summary: Resend the verification email (placeholder)
+      description: Not built yet - returns 501 until its requirements arrive.
+      security:
+        - session: []
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
+  /v1/onboarding:
+    get:
+      tags: [Accounts]
+      operationId: getOnboarding
+      summary: Onboarding progress (placeholder)
+      description: Not built yet - returns 501 until its requirements arrive.
+      security:
+        - session: []
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    put:
+      tags: [Accounts]
+      operationId: updateOnboarding
+      summary: Update onboarding progress (placeholder)
+      description: Not built yet - returns 501 until its requirements arrive.
+      security:
+        - session: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
+  /v1/agents:
+    post:
+      tags: [Agents]
+      operationId: createAgent
+      summary: Create an agent and its API key
+      description: The response is the only time the key's secret is shown. Store it then.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+      responses:
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedAgent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Agents]
+      operationId: listAgents
+      summary: List the organisation's agents
+      description: Oldest first, revoked agents included.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The agents.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Agent"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/agents/{id}:
+    parameters:
+      - $ref: "#/components/parameters/AgentID"
+    get:
+      tags: [Agents]
+      operationId: getAgent
+      summary: Get an agent
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Agents]
+      operationId: revokeAgent
+      summary: Revoke an agent
+      description: |
+        Its key stops working at once. The agent stays listed, marked revoked,
+        so its payment history keeps its name. Revoking twice succeeds.
+      security:
+        - session: []
+      responses:
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
+        "204":
+          description: Revoked.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/agents/{id}/rotate-key:
+    parameters:
+      - $ref: "#/components/parameters/AgentID"
+    post:
+      tags: [Agents]
+      operationId: rotateAgentKey
+      summary: Replace an agent's API key
+      description: The old key stops working at once. The new secret is shown only in this response.
+      security:
+        - session: []
+      responses:
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
+        "200":
+          description: Rotated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedAgent"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: No such agent in this organisation, or it is revoked (`not_found`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/payments:
+    get:
+      tags: [History]
+      operationId: listPayments
+      summary: List payments over a period
+      description: Newest first. Every filter is optional.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - name: state
+          in: query
+          description: Repeat the parameter, or separate values with commas.
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/PaymentState"
+          style: form
+          explode: true
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: payee
+          in: query
+          description: A beneficiary ID.
+          schema:
+            type: string
+        - name: currency
+          in: query
+          schema:
+            type: string
+            enum: [USD, EUR, GBP]
+        - name: reference
+          in: query
+          description: Exact match.
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of payments.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Payment"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/payments/{key}:
+    get:
+      tags: [History]
+      operationId: getPayment
+      summary: One payment in full
+      description: |
+        The payment, its hash-chained event history (each event with its
+        recorded time and hashes), whether the chain verifies, and every
+        attempt made for it - agent submissions and Airwallex calls - oldest
+        first.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/IntentKey"
+      responses:
+        "200":
+          description: The payment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentDetail"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/payments/{key}/replay:
+    get:
+      tags: [History]
+      operationId: replayPayment
+      summary: Every step a payment went through, for a replay animation
+      description: |
+        The payment's state transitions (its hash-chained events), the agent
+        submissions and every Airwallex call, merged into one timeline in the
+        order they happened. Each step says when it happened (absolute, offset
+        from the first step, and gap since the previous one), how long it took,
+        who acted, the state it moved from and to, and a ready-to-show title.
+        The frontend plays the steps in order, spacing them by `delta_ms` (or
+        any scale it likes); the backend supplies data only.
+
+        Events and attempts are stamped by the same database clock, so the
+        order does not depend on the clocks of the machines involved.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/IntentKey"
+      responses:
+        "200":
+          description: The replay.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Replay"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/analytics/summary:
+    get:
+      tags: [Analytics]
+      operationId: analyticsSummary
+      summary: An organisation's activity over a period
+      description: Payments are counted by when they were created; attempts by when they started. Default period, the last 30 days.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/TZ"
+      responses:
+        "200":
+          description: The summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalyticsSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/analytics/timeseries:
+    get:
+      tags: [Analytics]
+      operationId: analyticsTimeSeries
+      summary: One metric over time, for a chart
+      description: |
+        Every bucket in the period is present for every group: zero for counts
+        and sums, null for time_to_applied where there is no data. At most
+        1000 buckets per request.
+
+        | metric | value | group_by |
+        |---|---|---|
+        | payments | payments created | state, agent, currency, or none |
+        | applied_volume | minor units of payments that reached APPLIED, by when they did | currency (always) |
+        | time_to_applied | median milliseconds from submission to APPLIED | none |
+        | submissions | agent submissions | outcome, agent, or none |
+        | duplicates_prevented | submissions attached or deduplicated | agent, or none |
+        | rail_calls | Airwallex calls | outcome, operation, or none |
+
+        Grouping by agent gives agent IDs (`none` for Enquoir's own tooling);
+        names are in GET /v1/agents.
+      security:
+        - session: []
+      parameters:
+        - name: metric
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [payments, applied_volume, time_to_applied, submissions, duplicates_prevented, rail_calls]
+        - name: interval
+          in: query
+          description: Bucket size. Weeks start on Monday. Default day.
+          schema:
+            type: string
+            enum: [hour, day, week, month]
+        - name: group_by
+          in: query
+          schema:
+            type: string
+            enum: [state, agent, currency, outcome, operation]
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/TZ"
+      responses:
+        "200":
+          description: The series.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimeSeries"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/attempts:
+    get:
+      tags: [History]
+      operationId: listAttempts
+      summary: List attempts
+      description: |
+        Every agent submission (`kind=agent_submission`) and every Airwallex
+        call Enquoir made (`kind=rail_call`), newest first. Every filter is
+        optional.
+      security:
+        - session: []
+      parameters:
+        - name: kind
+          in: query
+          schema:
+            $ref: "#/components/schemas/AttemptKind"
+        - name: operation
+          in: query
+          schema:
+            $ref: "#/components/schemas/AttemptOperation"
+        - name: outcome
+          in: query
+          description: Repeat the parameter, or separate values with commas.
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/AttemptOutcome"
+          style: form
+          explode: true
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: intent_key
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of attempts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Attempt"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/intents:
+    post:
+      tags: [Payments]
+      operationId: submitIntent
+      summary: Submit a payment intent
+      description: |
+        Submitting the same intent again (same payee, amount, currency and
+        reference) returns the same key and starts nothing new, however
+        long after the first submission. The `reason` is recorded but is not
+        part of the key, so an agent that rewords it on a retry still gets
+        the same payment. The key is scoped to the submitting agent's
+        organisation: two organisations submitting the identical intent get
+        different keys.
+      security:
+        - agentKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitIntentRequest"
+      responses:
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
+        "200":
+          description: Accepted, or recognised as an intent already submitted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmitIntentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "422":
+          description: |
+            The payee is not a beneficiary this organisation registered
+            (`payee_unknown`). Register it with POST /v1/beneficiaries first.
+            Nothing is started.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/intents/{key}:
+    get:
+      tags: [Payments]
+      operationId: getIntent
+      summary: Get an intent's state and history
+      description: |
+        Scoped to the authenticated agent's organisation: a key belonging to
+        another organisation is `not_found`, never `forbidden`.
+      security:
+        - agentKey: []
+      parameters:
+        - $ref: "#/components/parameters/IntentKey"
+      responses:
+        "200":
+          description: The intent's recorded state and hash-chained history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntentDetail"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/beneficiaries:
+    get:
+      tags: [Beneficiaries]
+      operationId: listBeneficiaries
+      summary: List the organisation's payees
+      description: Newest first. Dashboard-only.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The payees.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Beneficiary"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [Beneficiaries]
+      operationId: registerBeneficiary
+      summary: Register a payee
+      description: |
+        Registers a US company bank account paid in USD over ACH. Registering
+        the same details again returns the same beneficiary: Airwallex's
+        beneficiary create has no idempotency key, so Enquoir stores its own
+        key on the rail and looks it up before ever creating one.
+
+        The payee belongs to the registering organisation: only its agents can
+        pay it. The same details registered by another organisation are a
+        separate beneficiary.
+      security:
+        - agentKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterBeneficiaryRequest"
+      responses:
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
+        "200":
+          description: Registered, or found already registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisterBeneficiaryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "422":
+          description: The rail refused the details; `detail` carries its reason. Code `rail_rejected`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: enquoir_session
+      description: The dashboard session cookie, set by sign-up and log-in.
+    agentKey:
+      type: http
+      scheme: bearer
+      description: An agent's API key, shown once at creation or rotation.
+
+  headers:
+    SetSessionCookie:
+      description: "`enquoir_session=<token>; Path=/; Max-Age=<ttl>; HttpOnly; SameSite=Lax` (plus `Secure` outside local development)."
+      schema:
+        type: string
+
+  parameters:
+    From:
+      name: from
+      in: query
+      description: Start of the period, inclusive (RFC 3339).
+      schema:
+        type: string
+        format: date-time
+    To:
+      name: to
+      in: query
+      description: End of the period, exclusive (RFC 3339).
+      schema:
+        type: string
+        format: date-time
+    TZ:
+      name: tz
+      in: query
+      description: An IANA time zone, such as Africa/Lagos or America/New_York. Default UTC.
+      schema:
+        type: string
+        examples: [Africa/Lagos]
+    Limit:
+      name: limit
+      in: query
+      description: Page size, 1 to 200. Default 50.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+    Cursor:
+      name: cursor
+      in: query
+      description: The `next_cursor` of the previous page.
+      schema:
+        type: string
+    AgentID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    IntentKey:
+      name: key
+      in: path
+      required: true
+      description: The intent key returned on submission.
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: The body is not valid JSON (`invalid_json`) or failed validation (`validation_failed`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: No such resource (`not_found`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    BodyTooLarge:
+      description: The request body is over the 64 KiB limit (`body_too_large`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ForbiddenOrigin:
+      description: A browser sent this from an origin not in CORS_ALLOWED_ORIGINS (`forbidden_origin`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotImplemented:
+      description: A placeholder; not built yet (`not_implemented`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unauthenticated:
+      description: No valid session or API key (`unauthenticated`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InternalError:
+      description: Something failed on Enquoir's side (`internal_error`). Safe to retry.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+  schemas:
+    Problem:
+      type: object
+      description: |
+        An RFC 9457 problem details object. Branch on `code`, which is
+        stable; `detail` is for people and may change.
+      required: [type, title, status, detail, code]
+      properties:
+        type:
+          type: string
+          const: about:blank
+        title:
+          type: string
+          description: The HTTP status text.
+        status:
+          type: integer
+        detail:
+          type: string
+        code:
+          type: string
+          enum:
+            - invalid_json
+            - validation_failed
+            - not_found
+            - rail_rejected
+            - internal_error
+            - unauthenticated
+            - invalid_credentials
+            - email_taken
+            - payee_unknown
+            - forbidden_origin
+            - not_implemented
+            - body_too_large
+        field:
+          type: string
+          description: For `validation_failed`, the request field at fault, when known.
+
+    SignUpRequest:
+      type: object
+      required: [email, password, organisation_name]
+      properties:
+        email:
+          type: string
+          format: email
+          description: Compared case-insensitively.
+        password:
+          type: string
+          minLength: 12
+          maxLength: 128
+          description: 12 to 128 characters, not only whitespace.
+        organisation_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+
+    LogInRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+
+    User:
+      type: object
+      required: [id, email, email_verified, created_at]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        email_verified:
+          type: boolean
+          description: Always false until email verification is built.
+        created_at:
+          type: string
+          format: date-time
+
+    Organisation:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    NextCursor:
+      type: [string, "null"]
+      description: Pass as `cursor` for the next page; null on the last page.
+
+    Money:
+      type: object
+      required: [minor_units, currency, amount]
+      properties:
+        minor_units:
+          type: integer
+          description: Integer minor units (cents). Use this for arithmetic.
+        currency:
+          type: string
+          enum: [USD, EUR, GBP]
+        amount:
+          type: string
+          description: Major units as a decimal string, for display.
+          examples: ["10.50"]
+
+    Ref:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: [string, "null"]
+
+    PaymentState:
+      type: string
+      description: |
+        A State, or RECEIVED: accepted by the API, not yet picked up by a
+        worker (nothing has happened to it yet).
+      enum: [RECEIVED, PROPOSED, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED]
+
+    Payment:
+      type: object
+      required: [key, state, terminal, amount, payee, reference, reason, agent, transfer_id, failure_reason,
+                 created_at, state_changed_at, submissions, rail_calls]
+      properties:
+        key:
+          type: string
+        state:
+          $ref: "#/components/schemas/PaymentState"
+        terminal:
+          type: boolean
+          description: True once nothing more will happen (APPLIED or BLOCKED).
+        amount:
+          $ref: "#/components/schemas/Money"
+        payee:
+          $ref: "#/components/schemas/Ref"
+        reference:
+          type: string
+        reason:
+          type: string
+        agent:
+          description: The agent that first submitted it. Null for payments submitted by Enquoir's own tooling.
+          oneOf:
+            - $ref: "#/components/schemas/Ref"
+            - type: "null"
+        transfer_id:
+          type: [string, "null"]
+          description: The Airwallex transfer, once APPLIED.
+        failure_reason:
+          type: [string, "null"]
+          description: Why it is FAILED or BLOCKED.
+        created_at:
+          type: string
+          format: date-time
+        state_changed_at:
+          type: [string, "null"]
+          format: date-time
+        submissions:
+          type: integer
+          description: How many times agents submitted it.
+        rail_calls:
+          type: integer
+          description: How many Airwallex calls Enquoir made for it.
+
+    PaymentDetail:
+      allOf:
+        - $ref: "#/components/schemas/Payment"
+        - type: object
+          required: [events, chain, attempts]
+          properties:
+            events:
+              type: array
+              items:
+                $ref: "#/components/schemas/RecordedEvent"
+            chain:
+              type: object
+              required: [valid, error]
+              properties:
+                valid:
+                  type: boolean
+                  description: Whether the hash chain verifies end to end.
+                error:
+                  type: [string, "null"]
+                  description: Where it breaks, if it does.
+            attempts:
+              type: array
+              description: Oldest first.
+              items:
+                $ref: "#/components/schemas/Attempt"
+
+    RecordedEvent:
+      type: object
+      required: [sequence_number, type, payload, recorded_at, hash, prev_hash]
+      properties:
+        sequence_number:
+          type: integer
+        type:
+          $ref: "#/components/schemas/State"
+        payload:
+          type: string
+        recorded_at:
+          type: string
+          format: date-time
+          description: When it was stored. Not covered by the hash.
+        hash:
+          type: string
+        prev_hash:
+          type: string
+
+    AttemptKind:
+      type: string
+      description: |
+        - agent_submission: an agent called POST /v1/intents.
+        - rail_call: Enquoir called Airwallex.
+      enum: [agent_submission, rail_call]
+
+    AttemptOperation:
+      type: string
+      enum: [submit_intent, create_transfer, get_transfer, find_transfer, create_beneficiary, find_beneficiary]
+
+    AttemptOutcome:
+      type: string
+      description: |
+        Agent submissions: started (a new payment began), attached (joined a
+        run already starting), deduplicated (already had history; nothing
+        started), invalid, payee_unknown, error.
+        Rail calls: ok, not_found (a lookup found nothing), rejected (a clear
+        no), ambiguous (outcome unclear: timeout, 5xx, network),
+        duplicate_transfers, error, in_progress (under way), interrupted
+        (started but never finished - the worker likely died mid-call).
+      enum: [started, attached, deduplicated, invalid, payee_unknown, error,
+             ok, not_found, rejected, ambiguous, duplicate_transfers, in_progress, interrupted]
+
+    Attempt:
+      type: object
+      required: [id, kind, operation, outcome, intent_key, beneficiary_key, agent, request_id, transfer_id,
+                 transfer_status, http_status, error_code, error_message, activity_attempt, details,
+                 started_at, finished_at, duration_ms]
+      properties:
+        id:
+          type: string
+        kind:
+          $ref: "#/components/schemas/AttemptKind"
+        operation:
+          $ref: "#/components/schemas/AttemptOperation"
+        outcome:
+          $ref: "#/components/schemas/AttemptOutcome"
+        intent_key:
+          type: [string, "null"]
+          description: Null for a submission too invalid to derive a key, or a beneficiary call.
+        beneficiary_key:
+          type: [string, "null"]
+        agent:
+          description: For agent submissions.
+          oneOf:
+            - $ref: "#/components/schemas/Ref"
+            - type: "null"
+        request_id:
+          type: [string, "null"]
+          description: The Airwallex request_id sent (the intent key).
+        transfer_id:
+          type: [string, "null"]
+        transfer_status:
+          type: [string, "null"]
+          description: The transfer's status as Airwallex reported it in this call.
+        http_status:
+          type: [integer, "null"]
+          description: Airwallex's HTTP status, on a failed call it answered.
+        error_code:
+          type: [string, "null"]
+          description: Airwallex's error code, such as fee_unknown.
+        error_message:
+          type: [string, "null"]
+        activity_attempt:
+          type: [integer, "null"]
+          description: For rail calls, the durable workflow's attempt number for this call (2+ means a retry).
+        details:
+          type: object
+          description: For submissions, what the agent sent (payee, amount, currency, reference, reason) and the state reported back.
+          additionalProperties:
+            type: string
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+        duration_ms:
+          type: [integer, "null"]
+
+    AnalyticsPeriod:
+      type: object
+      required: [from, to, tz]
+      properties:
+        from:
+          type: string
+          format: date-time
+          description: In the requested zone, with its offset.
+        to:
+          type: string
+          format: date-time
+        tz:
+          type: string
+
+    CountsByKey:
+      type: object
+      additionalProperties:
+        type: integer
+
+    AnalyticsSummary:
+      type: object
+      required: [period, payments, volume, submissions, rail_calls, time_to_applied]
+      properties:
+        period:
+          $ref: "#/components/schemas/AnalyticsPeriod"
+        payments:
+          type: object
+          required: [total, by_state, in_progress, blocked_by_policy, success_rate, recovered_from_unknown]
+          properties:
+            total:
+              type: integer
+            by_state:
+              description: Every state, zeros included.
+              $ref: "#/components/schemas/CountsByKey"
+            in_progress:
+              type: integer
+              description: RECEIVED, PROPOSED, AUTHORIZED, IN_FLIGHT or UNKNOWN.
+            blocked_by_policy:
+              type: integer
+            success_rate:
+              type: [number, "null"]
+              description: APPLIED / (APPLIED + FAILED), 0 to 1. BLOCKED is policy, not failure, so excluded. Null when nothing settled.
+            recovered_from_unknown:
+              type: integer
+              description: Payments whose outcome was unclear (UNKNOWN) that Enquoir still resolved to APPLIED or FAILED without paying twice.
+        volume:
+          type: array
+          description: Applied volume per currency.
+          items:
+            type: object
+            required: [currency, applied_minor_units, applied_amount, applied_count]
+            properties:
+              currency:
+                type: string
+              applied_minor_units:
+                type: integer
+              applied_amount:
+                type: string
+              applied_count:
+                type: integer
+        submissions:
+          type: object
+          required: [total, by_outcome, duplicates_prevented, active_agents]
+          properties:
+            total:
+              type: integer
+            by_outcome:
+              $ref: "#/components/schemas/CountsByKey"
+            duplicates_prevented:
+              type: integer
+              description: Submissions that would have been a second payment without Enquoir (attached or deduplicated).
+            active_agents:
+              type: integer
+        rail_calls:
+          type: object
+          required: [total, by_outcome]
+          properties:
+            total:
+              type: integer
+            by_outcome:
+              $ref: "#/components/schemas/CountsByKey"
+        time_to_applied:
+          type: object
+          required: [count, p50_ms, p95_ms]
+          properties:
+            count:
+              type: integer
+            p50_ms:
+              type: [integer, "null"]
+            p95_ms:
+              type: [integer, "null"]
+
+    TimeSeries:
+      type: object
+      required: [metric, interval, group_by, unit, period, buckets, series]
+      properties:
+        metric:
+          type: string
+        interval:
+          type: string
+        group_by:
+          type: [string, "null"]
+        unit:
+          type: string
+          enum: [count, minor_units, milliseconds]
+        period:
+          $ref: "#/components/schemas/AnalyticsPeriod"
+        buckets:
+          type: array
+          description: Every bucket's start, in the requested zone - the x axis.
+          items:
+            type: string
+            format: date-time
+        series:
+          type: array
+          items:
+            type: object
+            required: [group, points]
+            properties:
+              group:
+                type: string
+                description: The group's value (e.g. APPLIED, USD, an agent ID), or "all" when ungrouped.
+              points:
+                type: array
+                items:
+                  type: object
+                  required: [start, value]
+                  properties:
+                    start:
+                      type: string
+                      format: date-time
+                    value:
+                      type: [number, "null"]
+
+    Replay:
+      type: object
+      required: [payment, started_at, ended_at, duration_ms, states, chain, steps]
+      properties:
+        payment:
+          $ref: "#/components/schemas/Payment"
+        started_at:
+          type: [string, "null"]
+          format: date-time
+          description: The first step's time; null when there are no steps.
+        ended_at:
+          type: [string, "null"]
+          format: date-time
+        duration_ms:
+          type: integer
+          description: From the first step to the last.
+        states:
+          type: array
+          description: The state path, in order, e.g. PROPOSED, AUTHORIZED, IN_FLIGHT, APPLIED.
+          items:
+            $ref: "#/components/schemas/State"
+        chain:
+          type: object
+          required: [valid, error]
+          properties:
+            valid:
+              type: boolean
+            error:
+              type: [string, "null"]
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplayStep"
+
+    ReplayStep:
+      type: object
+      required: [index, at, offset_ms, delta_ms, duration_ms, type, actor, from_state, to_state, outcome, title, event, attempt]
+      properties:
+        index:
+          type: integer
+        at:
+          type: string
+          format: date-time
+        offset_ms:
+          type: integer
+          description: Milliseconds since the first step.
+        delta_ms:
+          type: integer
+          description: Milliseconds since the previous step.
+        duration_ms:
+          type: [integer, "null"]
+          description: How long an attempt took; null for transitions and unfinished calls.
+        type:
+          type: string
+          description: |
+            - submission: an agent submitted the intent.
+            - transition: the payment moved state (a recorded event).
+            - rail_call: Enquoir called Airwallex.
+          enum: [submission, transition, rail_call]
+        actor:
+          type: string
+          description: Who acted. policy decides AUTHORIZED/BLOCKED; workflow is Enquoir's durable execution; rail is Airwallex.
+          enum: [agent, policy, workflow, rail]
+        from_state:
+          type: [string, "null"]
+          description: For transitions, the state before (null for the first).
+        to_state:
+          type: [string, "null"]
+          description: For transitions, the state after.
+        outcome:
+          description: For submissions and rail calls.
+          oneOf:
+            - $ref: "#/components/schemas/AttemptOutcome"
+            - type: "null"
+        title:
+          type: string
+          description: A one-line description, ready to show.
+        event:
+          description: For transitions, the recorded event.
+          oneOf:
+            - type: object
+              required: [sequence_number, payload, hash]
+              properties:
+                sequence_number:
+                  type: integer
+                payload:
+                  type: string
+                hash:
+                  type: string
+            - type: "null"
+        attempt:
+          description: For submissions and rail calls, the full attempt.
+          oneOf:
+            - $ref: "#/components/schemas/Attempt"
+            - type: "null"
+
+    Beneficiary:
+      type: object
+      required: [id, key, name, account_last4, routing_number, account_category, created_at]
+      properties:
+        id:
+          type: string
+          description: The rail's beneficiary ID; an intent's payee.
+        key:
+          type: string
+        name:
+          type: string
+        account_last4:
+          type: string
+        routing_number:
+          type: string
+        account_category:
+          type: string
+          enum: [Checking, Savings]
+        created_at:
+          type: string
+          format: date-time
+
+    Agent:
+      type: object
+      required: [id, name, status, created_at, revoked_at, api_key]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, revoked]
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: [string, "null"]
+          format: date-time
+        api_key:
+          description: The active key, without its secret. Null once revoked.
+          oneOf:
+            - $ref: "#/components/schemas/APIKey"
+            - type: "null"
+
+    APIKey:
+      type: object
+      required: [id, prefix, created_at, last_used_at]
+      properties:
+        id:
+          type: string
+        prefix:
+          type: string
+          description: The first 12 characters of the secret, to recognise it by.
+          examples: [enq_sk_Ab3dE]
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: [string, "null"]
+          format: date-time
+          description: Updated at most once a minute.
+
+    IssuedAgent:
+      type: object
+      required: [agent, api_key]
+      properties:
+        agent:
+          $ref: "#/components/schemas/Agent"
+        api_key:
+          type: object
+          required: [id, prefix, secret, created_at]
+          properties:
+            id:
+              type: string
+            prefix:
+              type: string
+            secret:
+              type: string
+              description: The API key. Shown only in this response; Enquoir stores only its hash.
+            created_at:
+              type: string
+              format: date-time
+
+    AuthSession:
+      type: object
+      required: [user, organisation, session]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        organisation:
+          $ref: "#/components/schemas/Organisation"
+        session:
+          type: object
+          required: [expires_at]
+          properties:
+            expires_at:
+              type: string
+              format: date-time
+
+    State:
+      type: string
+      description: |
+        Where an intent is in its lifecycle. APPLIED and BLOCKED are final.
+        - PROPOSED: received by the workflow.
+        - AUTHORIZED: policy passed.
+        - IN_FLIGHT: recorded, then sent to the rail.
+        - UNKNOWN: the outcome is unclear; Enquoir looks it up before anything else.
+        - APPLIED: the rail confirmed the transfer PAID.
+        - FAILED: the rail rejected or cancelled it.
+        - BLOCKED: policy refused it; the rail was never called.
+      enum: [PROPOSED, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED]
+
+    SubmitIntentRequest:
+      type: object
+      required: [payee, amount, currency, reference]
+      properties:
+        payee:
+          type: string
+          description: |
+            The beneficiary ID returned by POST /v1/beneficiaries. It must be a
+            payee this organisation registered.
+        amount:
+          type: string
+          description: Major units as a decimal string with at most two decimals.
+          examples: ["10.50"]
+        currency:
+          type: string
+          enum: [USD, EUR, GBP, usd, eur, gbp]
+        reference:
+          type: string
+          description: Your reference for the payment, such as an invoice number.
+        reason:
+          type: string
+          description: Free text, recorded but not part of the intent key.
+
+    SubmitIntentResponse:
+      type: object
+      required: [key, state, outcome]
+      properties:
+        key:
+          type: string
+          description: The intent key. Same intent, same key.
+        state:
+          $ref: "#/components/schemas/State"
+        outcome:
+          type: string
+          description: |
+            What this submission did.
+            - started: a new payment began.
+            - attached: the same intent was submitted moments ago and its run is starting; this joined it.
+            - deduplicated: the intent already has a recorded history; nothing new started, `state` is where it stands.
+          enum: [started, attached, deduplicated]
+
+    Event:
+      type: object
+      required: [sequence_number, type, payload]
+      properties:
+        sequence_number:
+          type: integer
+        type:
+          $ref: "#/components/schemas/State"
+        payload:
+          type: string
+
+    IntentDetail:
+      type: object
+      required: [key, state, events]
+      properties:
+        key:
+          type: string
+        state:
+          $ref: "#/components/schemas/State"
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/Event"
+
+    RegisterBeneficiaryRequest:
+      type: object
+      required: [name, account_number, routing_number, account_category, address]
+      properties:
+        name:
+          type: string
+        account_number:
+          type: string
+          description: 4 to 17 digits.
+        routing_number:
+          type: string
+          description: A 9-digit ABA routing number with a valid checksum.
+        account_category:
+          type: string
+          enum: [Checking, Savings, checking, savings]
+        address:
+          type: object
+          required: [street, city, state, postcode]
+          properties:
+            street:
+              type: string
+            city:
+              type: string
+            state:
+              type: string
+              description: A two-letter US state code, such as WA (US-WA is also accepted).
+            postcode:
+              type: string
+              description: A 5-digit ZIP or ZIP+4.
+
+    RegisterBeneficiaryResponse:
+      type: object
+      required: [id, key]
+      properties:
+        id:
+          type: string
+          description: The rail's beneficiary ID. Use it as an intent's payee.
+        key:
+          type: string
+          description: Enquoir's key for these details.

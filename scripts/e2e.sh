@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-# End-to-end test of Enquoir through its HTTP API, against the real
-# Airwallex sandbox. Every request is a plain curl, so any step can be
-# copied out and run by hand.
+# End-to-end test of Enquoir Cloud through its HTTP API, against the
+# real Airwallex sandbox. Every request is a plain curl, so any step can
+# be copied out and run by hand.
 #
 # Prerequisites (see README.md):
 #   make up              Postgres + Temporal
 #   make sandbox-setup   funds the sandbox USD account
-#   make worker          in one terminal
+#   make worker          in one terminal (only one worker)
 #   make api             in another
 #
 # Usage: scripts/e2e.sh        (or: make e2e)
 #   API=http://host:port overrides the API address (default :8090).
 #
-# Steps 1-4 need only Enquoir itself. Steps 5 onward talk to the
-# sandbox: registering the payee, paying it, and driving the transfer
-# to PAID through the simulation endpoint. The bearer token is never
-# printed.
+# The flow: a person signs up and creates an agent; the agent, with its
+# API key, registers a payee and pays it (twice, as agents retry); the
+# sandbox simulator settles the transfer; the person's dashboard shows
+# the history, attempts, replay and analytics; then a second
+# organisation proves it can neither pay nor see the first one's payee
+# or payment.
+# Neither API keys nor the sandbox bearer token are ever printed in full.
 
 set -euo pipefail
 
@@ -27,14 +30,16 @@ set +a
 
 API="${API:-http://localhost:8090}"
 AWX="${AWX_BASE_URL:?AWX_BASE_URL must be set in .env}"
-RUN="$(date +%s)" # makes this run's references unique
+RUN="$(date +%s)" # makes this run's emails and references unique
 WAIT_SECONDS=60
 
 # Each request leaves its status in $STATUS and its body in $BODY.
 STATUS=""
 BODY=""
 TMP="$(mktemp)"
-trap 'rm -f "$TMP"' EXIT
+JAR_A="$(mktemp)"
+JAR_B="$(mktemp)"
+trap 'rm -f "$TMP" "$JAR_A" "$JAR_B"' EXIT
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 pass() { printf '   \033[32mPASS\033[0m %s\n' "$*"; }
@@ -53,12 +58,28 @@ expect_status() {
 
 json() { jq -r "$1" <<<"$BODY"; }
 
-# wait_for_state KEY STATE: polls GET /v1/intents/KEY until it reports STATE.
+# req METHOD PATH [BODY] [curl args...]: sends one JSON request to the API.
+req() {
+	local method="$1" path="$2" data="${3:-}"
+	shift 3 || shift $#
+	local args=(-s -o "$TMP" -w '%{http_code}' -X "$method" "$API$path" "$@")
+	[ -n "$data" ] && args+=(-H 'Content-Type: application/json' -d "$data")
+	STATUS=$(curl "${args[@]}")
+	BODY=$(cat "$TMP")
+}
+
+# as_agent KEY METHOD PATH [BODY]: a request authenticated with an agent key.
+as_agent() {
+	local key="$1"
+	shift
+	req "$1" "$2" "${3:-}" -H "Authorization: Bearer $key"
+}
+
+# wait_for_state KEY STATE: polls GET /v1/intents/KEY as agent A until it reports STATE.
 wait_for_state() {
 	local key="$1" want="$2" state=""
 	for _ in $(seq 1 "$WAIT_SECONDS"); do
-		STATUS=$(curl -s -o "$TMP" -w '%{http_code}' "$API/v1/intents/$key")
-		BODY=$(cat "$TMP")
+		as_agent "$KEY_A" GET "/v1/intents/$key"
 		if [ "$STATUS" = 200 ]; then
 			state=$(json .state)
 			[ "$state" = "$want" ] && { pass "intent reached $want"; return; }
@@ -68,66 +89,74 @@ wait_for_state() {
 	fail "intent $key did not reach $want within ${WAIT_SECONDS}s (last state: ${state:-none})"
 }
 
+# sign_up JAR EMAIL ORG: signs up, keeping the session cookie in JAR.
+sign_up() {
+	req POST /v1/auth/signup "{\"email\":\"$2\",\"password\":\"correct horse battery\",\"organisation_name\":\"$3\"}" -c "$1"
+}
+
+# create_agent JAR NAME: creates an agent with the session in JAR; leaves its key in $NEW_KEY.
+create_agent() {
+	req POST /v1/agents "{\"name\":\"$2\"}" -b "$1"
+	NEW_KEY=$(json .api_key.secret)
+	BODY=$(jq -c '.api_key.secret = (.api_key.secret[0:12] + "…<shown once, redacted here>")' "$TMP")
+}
+
+PAYEE='{"name":"Enquoir E2E Payee","account_number":"50001121","routing_number":"021000021",
+        "account_category":"Checking",
+        "address":{"street":"412 5th Avenue","city":"Seattle","state":"WA","postcode":"98104"}}'
+
 # ---------------------------------------------------------------------
 step "1. Health check"
 show "curl -s $API/healthz"
-STATUS=$(curl -s -o "$TMP" -w '%{http_code}' "$API/healthz")
-BODY=$(cat "$TMP")
+req GET /healthz ""
 got
 expect_status 200
 
 # ---------------------------------------------------------------------
-step "2. Invalid input is rejected at the edge, before anything starts"
+step "2. Sign up an organisation (sets the dashboard session cookie)"
+EMAIL_A="e2e-a-$RUN@example.com"
+show "curl -s -c cookies -X POST $API/v1/auth/signup -d '{\"email\":\"$EMAIL_A\",\"password\":\"…\",\"organisation_name\":\"E2E Org A\"}'"
+sign_up "$JAR_A" "$EMAIL_A" "E2E Org A"
+got
+expect_status 201
+grep -q enquoir_session "$JAR_A" || fail "no session cookie set"
+pass "session cookie set"
 
-show "curl -s -X POST $API/v1/beneficiaries -H 'Content-Type: application/json' -d '{... \"routing_number\":\"021000022\" ...}'"
-STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$API/v1/beneficiaries" \
-	-H 'Content-Type: application/json' \
-	-d '{"name":"Acme Ltd","account_number":"50001121","routing_number":"021000022","account_category":"Checking",
-	     "address":{"street":"412 5th Avenue","city":"Seattle","state":"WA","postcode":"98104"}}')
-BODY=$(cat "$TMP")
+# ---------------------------------------------------------------------
+step "3. Create an agent; its API key is shown once"
+show "curl -s -b cookies -X POST $API/v1/agents -d '{\"name\":\"Invoice bot\"}'"
+create_agent "$JAR_A" "Invoice bot"
+got
+expect_status 201
+KEY_A="$NEW_KEY"
+[[ "$KEY_A" == enq_sk_* ]] || fail "no API key returned"
+pass "agent key issued (${KEY_A:0:12}…)"
+
+# ---------------------------------------------------------------------
+step "4. The payment routes refuse a request without a valid agent key"
+show "curl -s -X POST $API/v1/intents -d '{...}'   (no Authorization header)"
+req POST /v1/intents '{"payee":"x","amount":"1.00","currency":"USD","reference":"NOAUTH"}'
+got
+expect_status 401
+show "curl -s -X POST $API/v1/intents -H 'Authorization: Bearer enq_sk_made_up' -d '{...}'"
+as_agent enq_sk_made_up POST /v1/intents '{"payee":"x","amount":"1.00","currency":"USD","reference":"NOAUTH"}'
+got
+expect_status 401
+
+# ---------------------------------------------------------------------
+step "5. Invalid input is rejected at the edge, before anything starts"
+show "curl -s -X POST $API/v1/beneficiaries -H 'Authorization: Bearer \$KEY_A' -d '{... \"routing_number\":\"021000022\" ...}'"
+as_agent "$KEY_A" POST /v1/beneficiaries '{"name":"Acme Ltd","account_number":"50001121","routing_number":"021000022","account_category":"Checking",
+     "address":{"street":"412 5th Avenue","city":"Seattle","state":"WA","postcode":"98104"}}'
+got
+expect_status 400
+show "curl -s -X POST $API/v1/intents -H 'Authorization: Bearer \$KEY_A' -d '{... \"amount\":\"10.505\" ...}'"
+as_agent "$KEY_A" POST /v1/intents '{"payee":"any","amount":"10.505","currency":"USD","reference":"E2E-BAD"}'
 got
 expect_status 400
 
-show "curl -s -X POST $API/v1/intents -H 'Content-Type: application/json' -d '{... \"amount\":\"10.505\" ...}'"
-STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$API/v1/intents" \
-	-H 'Content-Type: application/json' \
-	-d '{"payee":"any","amount":"10.505","currency":"USD","reference":"E2E-BAD","reason":"bad amount"}')
-BODY=$(cat "$TMP")
-got
-expect_status 400
-
 # ---------------------------------------------------------------------
-step "3. Over-limit intent is BLOCKED by policy, without touching the rail"
-BLOCKED_INTENT="{\"payee\":\"any\",\"amount\":\"2000000.00\",\"currency\":\"USD\",\"reference\":\"E2E-BLOCK-$RUN\",\"reason\":\"over limit\"}"
-show "curl -s -X POST $API/v1/intents -H 'Content-Type: application/json' -d '$BLOCKED_INTENT'"
-STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$API/v1/intents" \
-	-H 'Content-Type: application/json' -d "$BLOCKED_INTENT")
-BODY=$(cat "$TMP")
-got
-expect_status 200
-BLOCKED_KEY=$(json .key)
-show "curl -s $API/v1/intents/$BLOCKED_KEY   (polled)"
-wait_for_state "$BLOCKED_KEY" BLOCKED
-
-# ---------------------------------------------------------------------
-step "4. Resubmitting a finished intent starts nothing new"
-show "curl -s -X POST $API/v1/intents -H 'Content-Type: application/json' -d '$BLOCKED_INTENT'"
-STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$API/v1/intents" \
-	-H 'Content-Type: application/json' -d "$BLOCKED_INTENT")
-BODY=$(cat "$TMP")
-got
-expect_status 200
-[ "$(json .key)" = "$BLOCKED_KEY" ] || fail "resubmission returned a different key"
-[ "$(json .state)" = BLOCKED ] || fail "resubmission reported $(json .state), want BLOCKED"
-pass "same key, reports BLOCKED"
-sleep 2
-STATUS=$(curl -s -o "$TMP" -w '%{http_code}' "$API/v1/intents/$BLOCKED_KEY")
-BODY=$(cat "$TMP")
-[ "$(json '[.events[].type] | join(",")')" = "PROPOSED,BLOCKED" ] || fail "history changed after resubmission"
-pass "history is still PROPOSED,BLOCKED"
-
-# ---------------------------------------------------------------------
-step "5. Log in to the Airwallex sandbox (for the simulation calls below)"
+step "6. Log in to the Airwallex sandbox (for the simulation calls below)"
 show "curl -s -X POST $AWX/api/v1/authentication/login -H 'x-client-id: \$AWX_CLIENT_ID' -H 'x-api-key: \$AWX_API_KEY'"
 STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$AWX/api/v1/authentication/login" \
 	-H "x-client-id: $AWX_CLIENT_ID" -H "x-api-key: $AWX_API_KEY")
@@ -135,50 +164,65 @@ TOKEN=$(jq -r '.token // empty' "$TMP")
 BODY=$(jq -c 'if .token then .token = "<redacted>" else . end' "$TMP")
 got
 # The sandbox answers a successful login with 201 Created.
-[[ "$STATUS" == 2?? ]] && [ -n "$TOKEN" ] || fail "sandbox login refused - check AWX_CLIENT_ID/AWX_API_KEY are sandbox keys"
+[[ "$STATUS" == 2?? ]] && [ -n "$TOKEN" ] || fail "sandbox login refused - check the keys, and that this IP is allowlisted for them"
 pass "HTTP $STATUS, token received"
 
 # ---------------------------------------------------------------------
-step "6. Register the payee"
-PAYEE='{"name":"Enquoir E2E Payee","account_number":"50001121","routing_number":"021000021",
-        "account_category":"Checking",
-        "address":{"street":"412 5th Avenue","city":"Seattle","state":"WA","postcode":"98104"}}'
-show "curl -s -X POST $API/v1/beneficiaries -H 'Content-Type: application/json' -d '$(jq -c . <<<"$PAYEE")'"
-STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$API/v1/beneficiaries" \
-	-H 'Content-Type: application/json' -d "$PAYEE")
-BODY=$(cat "$TMP")
+step "7. The agent registers the payee"
+show "curl -s -X POST $API/v1/beneficiaries -H 'Authorization: Bearer \$KEY_A' -d '$(jq -c . <<<"$PAYEE")'"
+as_agent "$KEY_A" POST /v1/beneficiaries "$PAYEE"
 got
 expect_status 200
 PAYEE_ID=$(json .id)
 
 # ---------------------------------------------------------------------
-step "7. Registering the same payee again returns the same beneficiary"
-show "curl -s -X POST $API/v1/beneficiaries -H 'Content-Type: application/json' -d '$(jq -c . <<<"$PAYEE")'"
-STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$API/v1/beneficiaries" \
-	-H 'Content-Type: application/json' -d "$PAYEE")
-BODY=$(cat "$TMP")
+step "8. Registering the same payee again returns the same beneficiary"
+as_agent "$KEY_A" POST /v1/beneficiaries "$PAYEE"
 got
 expect_status 200
 [ "$(json .id)" = "$PAYEE_ID" ] || fail "second registration returned a different id"
 pass "same id: $PAYEE_ID"
 
 # ---------------------------------------------------------------------
-step "8. Submit a payment intent, then the same intent again (an agent retrying)"
+step "9. An over-limit intent is BLOCKED by policy, without touching the rail"
+BLOCKED_INTENT="{\"payee\":\"$PAYEE_ID\",\"amount\":\"2000000.00\",\"currency\":\"USD\",\"reference\":\"E2E-BLOCK-$RUN\",\"reason\":\"over limit\"}"
+show "curl -s -X POST $API/v1/intents -H 'Authorization: Bearer \$KEY_A' -d '$BLOCKED_INTENT'"
+as_agent "$KEY_A" POST /v1/intents "$BLOCKED_INTENT"
+got
+expect_status 200
+BLOCKED_KEY=$(json .key)
+show "curl -s $API/v1/intents/$BLOCKED_KEY -H 'Authorization: Bearer \$KEY_A'   (polled)"
+wait_for_state "$BLOCKED_KEY" BLOCKED
+
+# ---------------------------------------------------------------------
+step "10. Resubmitting a finished intent starts nothing new"
+as_agent "$KEY_A" POST /v1/intents "$BLOCKED_INTENT"
+got
+expect_status 200
+[ "$(json .key)" = "$BLOCKED_KEY" ] || fail "resubmission returned a different key"
+[ "$(json .state)" = BLOCKED ] || fail "resubmission reported $(json .state), want BLOCKED"
+pass "same key, reports BLOCKED"
+sleep 2
+as_agent "$KEY_A" GET "/v1/intents/$BLOCKED_KEY"
+[ "$(json '[.events[].type] | join(",")')" = "PROPOSED,BLOCKED" ] || fail "history changed after resubmission"
+pass "history is still PROPOSED,BLOCKED"
+
+# ---------------------------------------------------------------------
+step "11. Pay the payee, then send the same intent again, reason reworded (an agent retrying)"
 INTENT="{\"payee\":\"$PAYEE_ID\",\"amount\":\"10.50\",\"currency\":\"USD\",\"reference\":\"E2E-PAY-$RUN\",\"reason\":\"e2e test payment\"}"
-for attempt in 1 2; do
-	show "curl -s -X POST $API/v1/intents -H 'Content-Type: application/json' -d '$INTENT'"
-	STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$API/v1/intents" \
-		-H 'Content-Type: application/json' -d "$INTENT")
-	BODY=$(cat "$TMP")
+RETRY="{\"payee\":\"$PAYEE_ID\",\"amount\":\"10.50\",\"currency\":\"USD\",\"reference\":\"E2E-PAY-$RUN\",\"reason\":\"retrying E2E-PAY-$RUN after a timeout\"}"
+for body in "$INTENT" "$RETRY"; do
+	show "curl -s -X POST $API/v1/intents -H 'Authorization: Bearer \$KEY_A' -d '$body'"
+	as_agent "$KEY_A" POST /v1/intents "$body"
 	got
 	expect_status 200
-	if [ "$attempt" = 1 ]; then KEY=$(json .key); fi
+	if [ "$body" = "$INTENT" ]; then KEY=$(json .key); fi
 	[ "$(json .key)" = "$KEY" ] || fail "retry returned a different key"
 done
 pass "both submissions share key $KEY"
 
 # ---------------------------------------------------------------------
-step "9. Find the transfer on the rail by its request ID (the intent key)"
+step "12. Find the transfer on the rail by its request ID (the intent key)"
 show "curl -s '$AWX/api/v1/transfers?request_id=$KEY' -H 'Authorization: Bearer \$TOKEN'   (polled)"
 TRANSFER_ID=""
 for _ in $(seq 1 "$WAIT_SECONDS"); do
@@ -201,42 +245,153 @@ got
 pass "exactly one transfer: $TRANSFER_ID"
 
 # ---------------------------------------------------------------------
-step "10. Drive the transfer to PAID through the sandbox simulator (SENT first)"
+step "13. Drive the transfer to PAID through the sandbox simulator (SENT first)"
+# The simulator can answer 500 yet apply the transition moments later,
+# so each transition is confirmed by reading the transfer back.
 for to in SENT PAID; do
-	show "curl -s -X POST $AWX/api/v1/simulation/transfers/$TRANSFER_ID/transition -H 'Authorization: Bearer \$TOKEN' -H 'Content-Type: application/json' -d '{\"next_status\":\"$to\"}'"
-	STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$AWX/api/v1/simulation/transfers/$TRANSFER_ID/transition" \
-		-H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "{\"next_status\":\"$to\"}")
-	# Show id and status on success; the whole body (the error) otherwise.
-	if [ "$STATUS" = 200 ]; then BODY=$(jq -c '{id, status}' "$TMP"); else BODY=$(cat "$TMP"); fi
-	got
-	expect_status 200
+	show "curl -s -X POST $AWX/api/v1/simulation/transfers/$TRANSFER_ID/transition -H 'Authorization: Bearer \$TOKEN' -d '{\"next_status\":\"$to\"}'"
+	reached=""
+	for attempt in 1 2 3 4 5 6; do
+		STATUS=$(curl -s -o "$TMP" -w '%{http_code}' "$AWX/api/v1/transfers/$TRANSFER_ID" -H "Authorization: Bearer $TOKEN")
+		now=$(jq -r .status "$TMP")
+		if [ "$now" = "$to" ] || { [ "$to" = SENT ] && [ "$now" = PAID ]; }; then reached=1; break; fi
+		if [ "$attempt" = 1 ] || [ $((attempt % 2)) = 1 ]; then
+			STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$AWX/api/v1/simulation/transfers/$TRANSFER_ID/transition" \
+				-H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "{\"next_status\":\"$to\"}")
+			if [ "$STATUS" = 200 ]; then BODY=$(jq -c '{id, status}' "$TMP"); else BODY=$(cat "$TMP"); fi
+			got
+		fi
+		sleep 3
+	done
+	[ -n "$reached" ] || fail "transfer never reached $to"
+	pass "transfer is $to"
 done
 
 # ---------------------------------------------------------------------
-step "11. The intent settles to APPLIED"
-show "curl -s $API/v1/intents/$KEY   (polled)"
+step "14. The intent settles to APPLIED"
+show "curl -s $API/v1/intents/$KEY -H 'Authorization: Bearer \$KEY_A'   (polled)"
 wait_for_state "$KEY" APPLIED
 
 # ---------------------------------------------------------------------
-step "12. Resubmitting the paid intent starts nothing new"
-show "curl -s -X POST $API/v1/intents -H 'Content-Type: application/json' -d '$INTENT'"
-STATUS=$(curl -s -o "$TMP" -w '%{http_code}' -X POST "$API/v1/intents" \
-	-H 'Content-Type: application/json' -d "$INTENT")
-BODY=$(cat "$TMP")
+step "15. Resubmitting the paid intent starts nothing new"
+as_agent "$KEY_A" POST /v1/intents "$INTENT"
 got
 expect_status 200
 [ "$(json .state)" = APPLIED ] || fail "resubmission reported $(json .state), want APPLIED"
 pass "reports APPLIED"
 
 # ---------------------------------------------------------------------
-step "13. Full recorded history"
-show "curl -s $API/v1/intents/$KEY"
+step "16. Full recorded history"
+show "curl -s $API/v1/intents/$KEY -H 'Authorization: Bearer \$KEY_A'"
 sleep 2
-STATUS=$(curl -s -o "$TMP" -w '%{http_code}' "$API/v1/intents/$KEY")
-BODY=$(cat "$TMP")
+as_agent "$KEY_A" GET "/v1/intents/$KEY"
 jq -r '.events[] | "   \(.sequence_number). \(.type)\t\(.payload)"' <<<"$BODY"
 [ "$(json '[.events[].type] | join(",")')" = "PROPOSED,AUTHORIZED,IN_FLIGHT,APPLIED" ] ||
 	fail "unexpected history"
 pass "PROPOSED -> AUTHORIZED -> IN_FLIGHT -> APPLIED, nothing repeated"
+
+# ---------------------------------------------------------------------
+step "17. The dashboard: the payment in history, with its agent and payee"
+as_user() { req "$1" "$2" "${3:-}" -b "$JAR_A"; }
+show "curl -s -b cookies '$API/v1/payments?reference=E2E-PAY-$RUN'"
+as_user GET "/v1/payments?reference=E2E-PAY-$RUN"
+expect_status 200
+BODY=$(jq -c '.data[0] | {state, amount: .amount.amount, payee: .payee.name, agent: .agent.name, submissions, rail_calls, transfer_id}' "$TMP")
+got
+[ "$(json .state)" = APPLIED ] && [ "$(json .agent)" = "Invoice bot" ] && [ "$(json .payee)" = "Enquoir E2E Payee" ] ||
+	fail "history does not show the applied payment with its agent and payee"
+[ "$(json .submissions)" = 3 ] || fail "submissions = $(json .submissions), want 3 (sent twice, then resubmitted)"
+[ "$(json .transfer_id)" = "$TRANSFER_ID" ] || fail "history shows a different transfer"
+pass "APPLIED, by Invoice bot, to Enquoir E2E Payee, 3 submissions, transfer $TRANSFER_ID"
+
+# ---------------------------------------------------------------------
+step "18. The payment in full: verified chain and every attempt"
+show "curl -s -b cookies $API/v1/payments/$KEY"
+as_user GET "/v1/payments/$KEY"
+expect_status 200
+BODY=$(jq -c '{chain, events: [.events[].type], attempts: [.attempts[] | "\(.kind):\(.operation):\(.outcome)"]}' "$TMP")
+got
+[ "$(json .chain.valid)" = true ] || fail "the hash chain does not verify"
+jq -e '.attempts | map(select(.operation == "create_transfer" and .outcome == "ok")) | length == 1' "$TMP" >/dev/null ||
+	fail "want exactly one successful create_transfer call recorded"
+pass "chain verifies; one create_transfer call, recorded with its outcome"
+
+# ---------------------------------------------------------------------
+step "19. Attempts, filtered: this payment's agent submissions"
+show "curl -s -b cookies '$API/v1/attempts?intent_key=$KEY&kind=agent_submission'"
+as_user GET "/v1/attempts?intent_key=$KEY&kind=agent_submission"
+expect_status 200
+BODY=$(jq -c '[.data | reverse | .[].outcome]' "$TMP")
+got
+[ "$(json '.[0]')" = started ] && [ "$(json '[.[1:][] | select(. == "attached" or . == "deduplicated")] | length')" = 2 ] ||
+	fail "want started, then two retries recognised as attached or deduplicated"
+pass "the first submission started the payment; both retries were recognised, not paid again"
+
+# ---------------------------------------------------------------------
+step "20. Replay: every step, ordered and timed"
+show "curl -s -b cookies $API/v1/payments/$KEY/replay"
+as_user GET "/v1/payments/$KEY/replay"
+expect_status 200
+jq -r '.steps[] | "   +\(.offset_ms)ms\t\(.actor)\t\(.title)"' "$TMP"
+BODY=$(jq -c '{states, steps: (.steps | length), duration_ms}' "$TMP")
+[ "$(json '.states | join(",")')" = "PROPOSED,AUTHORIZED,IN_FLIGHT,APPLIED" ] || fail "replay states are wrong"
+jq -e '.steps[0].type == "submission" and ([.steps[] | select(.to_state == "APPLIED")] | length == 1)' "$TMP" >/dev/null ||
+	fail "replay should open with the submission and reach APPLIED once"
+pass "replay opens with the agent's submission and ends APPLIED"
+
+# ---------------------------------------------------------------------
+step "21. Analytics, in Lagos time"
+show "curl -s -b cookies '$API/v1/analytics/summary?tz=Africa/Lagos'"
+as_user GET "/v1/analytics/summary?tz=Africa/Lagos"
+expect_status 200
+BODY=$(jq -c '{tz: .period.tz, payments: .payments.total, applied: .payments.by_state.APPLIED, blocked: .payments.blocked_by_policy, success_rate: .payments.success_rate, duplicates_prevented: .submissions.duplicates_prevented, invalid: .submissions.by_outcome.invalid, volume: .volume}' "$TMP")
+got
+[ "$(json .payments)" = 2 ] && [ "$(json .applied)" = 1 ] && [ "$(json .blocked)" = 1 ] && [ "$(json .success_rate)" = 1 ] ||
+	fail "summary counts are wrong"
+[ "$(json .duplicates_prevented)" = 3 ] && [ "$(json .invalid)" = 1 ] || fail "submission counts are wrong"
+pass "2 payments (1 applied, 1 blocked), 3 duplicates prevented, 1 invalid submission"
+show "curl -s -b cookies '$API/v1/analytics/timeseries?metric=payments&interval=hour&group_by=state&tz=Africa/Lagos'"
+as_user GET "/v1/analytics/timeseries?metric=payments&interval=hour&group_by=state&tz=Africa/Lagos"
+expect_status 200
+BODY=$(jq -c '{unit, buckets: (.buckets | length), last_bucket: .buckets[-1], series: [.series[] | {group, total: ([.points[].value] | add)}]}' "$TMP")
+got
+[[ "$(json .last_bucket)" == *"+01:00" ]] || fail "buckets are not in Lagos time"
+pass "hourly buckets in Lagos time (+01:00), one series per state"
+
+# ---------------------------------------------------------------------
+step "22. A second organisation is isolated from the first"
+EMAIL_B="e2e-b-$RUN@example.com"
+sign_up "$JAR_B" "$EMAIL_B" "E2E Org B"
+expect_status 201
+create_agent "$JAR_B" "Other bot"
+expect_status 201
+KEY_B="$NEW_KEY"
+pass "org B signed up with its own agent"
+
+show "curl -s -X POST $API/v1/intents -H 'Authorization: Bearer \$KEY_B' -d '{\"payee\":\"$PAYEE_ID\", ...}'   (org A's payee)"
+as_agent "$KEY_B" POST /v1/intents "{\"payee\":\"$PAYEE_ID\",\"amount\":\"10.50\",\"currency\":\"USD\",\"reference\":\"E2E-STEAL-$RUN\"}"
+got
+expect_status 422
+[ "$(json .code)" = payee_unknown ] || fail "code = $(json .code), want payee_unknown"
+pass "org B cannot pay org A's payee"
+
+show "curl -s $API/v1/intents/$KEY -H 'Authorization: Bearer \$KEY_B'   (org A's intent)"
+as_agent "$KEY_B" GET "/v1/intents/$KEY"
+got
+expect_status 404
+pass "org B cannot see org A's payment"
+
+show "curl -s -b cookies-b $API/v1/payments/$KEY   (org A's payment, from org B's dashboard)"
+req GET "/v1/payments/$KEY" "" -b "$JAR_B"
+got
+expect_status 404
+pass "org B's dashboard cannot see org A's payment either"
+
+show "curl -s -X POST $API/v1/beneficiaries -H 'Authorization: Bearer \$KEY_B' -d '<the same payee details>'"
+as_agent "$KEY_B" POST /v1/beneficiaries "$PAYEE"
+got
+expect_status 200
+[ "$(json .id)" != "$PAYEE_ID" ] || fail "org B was handed org A's beneficiary"
+pass "the same details are a separate beneficiary for org B: $(json .id)"
 
 printf '\n\033[32mEnd-to-end run passed.\033[0m intent %s paid by transfer %s\n' "$KEY" "$TRANSFER_ID"
