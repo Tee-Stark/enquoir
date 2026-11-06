@@ -25,6 +25,7 @@ import (
 
 	"enquoir/internal/adapters/airwallex"
 	"enquoir/internal/adapters/clock"
+	"enquoir/internal/adapters/credentials"
 	"enquoir/internal/adapters/postgres"
 	"enquoir/internal/app"
 	"enquoir/internal/chaos"
@@ -113,6 +114,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	org, err := sandbox.EnsureDemoOrg(ctx, postgres.NewAccountStore(pool), credentials.RandomIDs{}, clock.System{})
+	if err != nil {
+		logger.Error("ensuring demo organisation", "error", err)
+		os.Exit(1)
+	}
+
 	// Build the worker once and run the binary directly. Killing a
 	// `go run` process does not kill the program it compiled and
 	// started: the real worker would be orphaned, keep polling the
@@ -128,7 +135,7 @@ func main() {
 	results := make([]pointResult, 0, len(points))
 	for _, point := range points {
 		logger.Info("chaos: running kill point", "point", point)
-		results = append(results, runKillPoint(ctx, logger, temporalClient, rail, simulator, events, workerBin, beneficiaryID, point))
+		results = append(results, runKillPoint(ctx, logger, temporalClient, rail, simulator, events, workerBin, org, beneficiaryID, point))
 	}
 
 	printTable(results)
@@ -243,11 +250,12 @@ func runKillPoint(
 	simulator *airwallex.Simulator,
 	events app.EventLog,
 	workerBin string,
+	org domain.OrgID,
 	beneficiaryID string,
 	point chaos.Point,
 ) pointResult {
 	reference := fmt.Sprintf("chaos-%s-%d", point, time.Now().UnixNano())
-	intent, err := domain.NewIntent(beneficiaryID, demoAmountMinorUnits, "USD", reference, "chaos test: "+string(point))
+	intent, err := domain.NewIntent(org, beneficiaryID, demoAmountMinorUnits, "USD", reference, "chaos test: "+string(point))
 	if err != nil {
 		return pointResult{Point: point, Detail: fmt.Sprintf("building intent: %v", err)}
 	}
@@ -301,7 +309,7 @@ func runKillPoint(
 		return pointResult{Point: point, Detail: fmt.Sprintf("waiting for workflow to settle: %v", err)}
 	}
 
-	chain, err := events.Load(ctx, intent.Key)
+	chain, err := events.Load(ctx, intent.OrgID, intent.Key)
 	if err != nil {
 		return pointResult{Point: point, FinalState: wfResult.State, Detail: fmt.Sprintf("loading event chain: %v", err)}
 	}
