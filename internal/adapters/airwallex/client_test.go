@@ -21,7 +21,7 @@ func (f *fakeClock) Now() time.Time { return f.now }
 
 func testIntent(t *testing.T) domain.Intent {
 	t.Helper()
-	intent, err := domain.NewIntent("beneficiary-123", 10050, "USD", "INV-1001", "test payment")
+	intent, err := domain.NewIntent("org_test", "beneficiary-123", 10050, "USD", "INV-1001", "test payment")
 	if err != nil {
 		t.Fatalf("building test intent: %v", err)
 	}
