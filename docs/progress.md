@@ -635,3 +635,93 @@ correct, and the following not in order.
   the final run); the verdict is covered by a unit test.
 - Phase 4's remaining scope - attempts, history, replay, analytics, and
   the email-verification and onboarding placeholders - is not built yet.
+
+## Phase 4: Enquoir Cloud - done (2026-11-06)
+
+What a Cloud consumer now gets, all in `api/openapi.yaml` (served at
+`/openapi.yaml`, rendered at `/docs`) and enforced by tests both ways:
+
+- **Accounts**: sign up (creates the organisation), log in, log out,
+  `GET /v1/auth/session`; an HttpOnly, SameSite=Lax session cookie.
+  Email verification and onboarding are placeholders that answer
+  `501 not_implemented` (`POST /v1/auth/verify-email`,
+  `POST /v1/auth/verify-email/resend`, `GET`/`PUT /v1/onboarding`).
+- **Agents**, one API key each (create, list, get, rotate, revoke).
+- **Tenancy**: intent and beneficiary keys include the organisation;
+  every read and write is scoped; an organisation can only pay payees it
+  registered (`422 payee_unknown`).
+- **Attempts**: every agent submission (`started`, `attached`,
+  `deduplicated`, `invalid`, `payee_unknown`, `error`) and every
+  Airwallex call (`ok`, `not_found`, `rejected`, `ambiguous`,
+  `duplicate_transfers`, `error`, `in_progress`, `interrupted`), with
+  HTTP status, Airwallex error code, transfer status and the durable
+  attempt number. Rail calls are recorded before they leave, so a call
+  whose worker died stays visible and reads `interrupted` after two
+  minutes.
+- **History**: `GET /v1/payments` (period, state incl. `RECEIVED`,
+  agent, payee, currency, reference; cursor-paged), `GET
+  /v1/payments/{key}` (events with times and hashes, chain verdict,
+  every attempt), `GET /v1/attempts` (kind, operation, outcome, agent,
+  intent, period), `GET /v1/beneficiaries`.
+- **Replay**: `GET /v1/payments/{key}/replay` - every step, ordered and
+  timed (offset, delta, duration), with actor, state change, a
+  ready-to-show title and the event or attempt behind it.
+- **Analytics**: `GET /v1/analytics/summary` and
+  `GET /v1/analytics/timeseries` in any IANA zone; buckets made by
+  Postgres in that zone (local midnight across DST).
+- **CORS** for dashboard origins (`CORS_ALLOWED_ORIGINS`), and a 403
+  for state-changing browser requests from any other origin.
+
+### Design choices
+
+- **The event log stays the source of truth.** `intents` carries a read
+  model (agent, state, transfer, failure reason) moved by
+  `EventLog.Append` in the same transaction as each event, under a row
+  lock that also closes Phase 1's concurrent-append question.
+- **The API records the intent at submission**, so a payment shows as
+  `RECEIVED` before a worker picks it up. `GET /v1/intents/{key}` (the
+  agent's route) still 404s until an event exists, as before.
+- **Attempts are observability, not money safety.** A failed start
+  record fails the activity before anything is sent; a failed finish
+  record is logged and ignored.
+- **One clock for the timeline.** Attempt and event times both come from
+  the database, so replay order never depends on API, worker or
+  container clock drift. Event times are outside the hash chain: it
+  proves order and content, not wall-clock time.
+- **Validation moved into `SubmitIntent`** so invalid submissions are
+  recorded too; errors name their field. The submit response gained
+  `outcome`, so an agent can see its retry was recognised.
+- **Dashboard reads are session-only**; agents keep `POST /v1/intents`,
+  `GET /v1/intents/{key}` and `POST /v1/beneficiaries`.
+- **Analytics**: success rate is APPLIED / (APPLIED + FAILED) - a policy
+  block is not a failure. Money is never summed across currencies.
+  `applied_volume` and `time_to_applied` are bucketed by when the
+  payment was applied; everything else by when it was created or the
+  attempt started. Grouping by agent gives IDs, names come from
+  `/v1/agents`.
+- Adapters' code and their integration tests were written together
+  (the Phase 1 exemption, again); the app and HTTP layers were test-first,
+  and mutation checks confirmed the tests catch what they claim.
+
+### Verified
+
+- `make test` offline and `make test-integration` (no workflows left
+  running) after every commit; every commit builds on its own.
+- Against the real sandbox: `make demo`; `make e2e`, all 22 steps
+  (including the dashboard: history, detail with a verifying chain,
+  filtered attempts, replay, analytics in Lagos time, and org B unable
+  to see org A's payment); `make chaos`, all four points, each showing
+  its recorded create calls (`during_call` and
+  `after_call_before_commit`: `#1:in_progress #2:ok`; the older run's
+  `#1` later read `interrupted`).
+- Analytics SQL against Postgres across New York's 25-hour 1 Nov 2026
+  and Kolkata's +05:30.
+
+### Not verified / open
+
+- Login has no rate limiting or lockout yet.
+- Webhooks (a `PAID` transfer failing later) remain out of scope; such a
+  payment shows `APPLIED` in history and analytics.
+- Submission attempts record what the agent sent, including free-text
+  `reason`; nothing redacts it.
+- `GET /v1/payments/{key}` returns at most 500 attempts.

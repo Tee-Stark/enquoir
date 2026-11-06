@@ -93,3 +93,8 @@ on this fee corridor, not anything in the request Enquoir sent.
   api.sandbox.airwallex.com: no such host`). Enquoir recovered through
   UNKNOWN and the lookup (itself retried with backoff), found the
   transfer the killed worker had created, and sent no second create.
+- **A new transfer can start `SCHEDULED`.** On 2026-11-06 a freshly
+  created transfer came back `SCHEDULED`, then read `PROCESSING`, `SENT`
+  and `PAID` (on 2026-10-23 they started `PROCESSING`). The workflow
+  treats every non-final status as in flight, so nothing changed; the
+  replay shows each status as Airwallex reported it.
