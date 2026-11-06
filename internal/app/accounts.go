@@ -88,6 +88,9 @@ type SessionStore interface {
 	// Revoke marks a session revoked; revoking an unknown or already
 	// revoked session is not an error.
 	Revoke(ctx context.Context, tokenHash string, at time.Time) error
+	// RevokeAllForUser revokes every session of user, in every
+	// organisation, except the one with ID except ("" for none).
+	RevokeAllForUser(ctx context.Context, user domain.UserID, except string, at time.Time) error
 }
 
 // IssuedSession is a new session: the plaintext token, returned once,

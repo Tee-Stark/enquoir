@@ -319,6 +319,117 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/auth/password/forgot:
+    post:
+      tags: [Accounts]
+      operationId: forgotPassword
+      summary: Email a password-reset link
+      description: |
+        Always 202, whether or not the address has an account, so the answer
+        never reveals which do. If it does, a link to the frontend's
+        `/reset-password?token=...` is emailed; it works once and expires in
+        1 hour.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+      responses:
+        "202":
+          description: Accepted.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/password/reset:
+    post:
+      tags: [Accounts]
+      operationId: resetPassword
+      summary: Set a new password with a reset link's token
+      description: |
+        Signs the account out everywhere and emails a notice that the password
+        changed. A password that fails the policy is rejected before the link
+        is spent, so the user can try again with the same link.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token:
+                  type: string
+                password:
+                  type: string
+                  minLength: 12
+                  maxLength: 128
+      responses:
+        "204":
+          description: Password set.
+        "400":
+          description: The password fails the policy (`validation_failed`), or the link is invalid, used or expired (`token_invalid`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/password/change:
+    post:
+      tags: [Accounts]
+      operationId: changePassword
+      summary: Change your password
+      description: Needs the current password. Signs out every other session and emails a notice.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password:
+                  type: string
+                new_password:
+                  type: string
+                  minLength: 12
+                  maxLength: 128
+      responses:
+        "204":
+          description: Changed.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Not signed in (`unauthenticated`), or the current password is wrong (`invalid_credentials`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/onboarding:
     get:
       tags: [Accounts]

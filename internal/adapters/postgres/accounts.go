@@ -185,3 +185,12 @@ func (s *AccountStore) SetPassword(ctx context.Context, user domain.UserID, hash
 	}
 	return err
 }
+
+func (s *SessionStore) RevokeAllForUser(ctx context.Context, user domain.UserID, except string, at time.Time) error {
+	_, err := s.pool.Exec(ctx, `UPDATE sessions SET revoked_at = $3 WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL`,
+		string(user), except, at)
+	if err != nil {
+		return fmt.Errorf("revoking sessions: %w", err)
+	}
+	return nil
+}

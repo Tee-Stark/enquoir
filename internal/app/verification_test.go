@@ -19,6 +19,7 @@ func (f *accountsFixture) withEmail() *apptest.Mailer {
 	f.emails = &app.Emails{Outbox: outbox, Dispatcher: &apptest.Dispatcher{Deliver: deliver.Run}, IDs: &apptest.IDs{}, Clock: f.clock}
 	f.tokens = tokens
 	f.signUp.Emails = f.emails
+	f.mailer = mailer
 	return mailer
 }
 

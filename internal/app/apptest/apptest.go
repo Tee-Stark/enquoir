@@ -828,3 +828,15 @@ func (a *Accounts) SetPassword(ctx context.Context, user domain.UserID, hash str
 	a.users[user] = u
 	return nil
 }
+
+func (s *Sessions) RevokeAllForUser(ctx context.Context, user domain.UserID, except string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for h, sess := range s.sessions {
+		if sess.UserID == user && sess.ID != except && sess.RevokedAt == nil {
+			sess.RevokedAt = &at
+			s.sessions[h] = sess
+		}
+	}
+	return nil
+}

@@ -23,6 +23,7 @@ type accountsFixture struct {
 	issuer   *app.SessionIssuer
 	emails   *app.Emails
 	tokens   *apptest.Tokens
+	mailer   *apptest.Mailer
 }
 
 func newAccountsFixture() *accountsFixture {

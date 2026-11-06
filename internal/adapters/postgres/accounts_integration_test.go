@@ -128,3 +128,28 @@ func TestAccountStore_VerifyAndSetPassword(t *testing.T) {
 		t.Errorf("unknown user: %v", err)
 	}
 }
+
+func TestSessionStore_RevokeAllForUserKeepsOne(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	org, user := newTestOrg(t, NewAccountStore(pool))
+	sessions := NewSessionStore(pool)
+	now := time.Now()
+	var hashes []string
+	var keep string
+	for i := 0; i < 3; i++ {
+		s := app.Session{ID: ids.NewID("ses"), TokenHash: app.HashSecret(ids.NewID("t")), UserID: user.ID, OrgID: org.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+		sessions.Create(ctx, s)
+		hashes = append(hashes, s.TokenHash)
+		keep = s.ID
+	}
+	if err := sessions.RevokeAllForUser(ctx, user.ID, keep, now); err != nil {
+		t.Fatal(err)
+	}
+	for i, h := range hashes {
+		s, _ := sessions.Get(ctx, h)
+		if (s.RevokedAt == nil) != (i == 2) {
+			t.Errorf("session %d revoked = %v", i, s.RevokedAt != nil)
+		}
+	}
+}

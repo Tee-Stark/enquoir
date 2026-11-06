@@ -25,6 +25,9 @@ type Handler struct {
 	MyOrgs         *app.ListMyOrganisations
 	VerifyEmail    *app.VerifyEmail
 	ResendVerify   *app.ResendVerification
+	ForgotPassword *app.ForgotPassword
+	ResetPassword  *app.ResetPassword
+	ChangePassword *app.ChangePassword
 	Cookies        CookieSettings
 	Origins        AllowedOrigins
 
@@ -66,6 +69,9 @@ func NewRouter(h *Handler) chi.Router {
 
 	r.Post("/v1/auth/verify-email", h.verifyEmail)
 	r.With(h.requireUser).Post("/v1/auth/verify-email/resend", h.resendVerification)
+	r.Post("/v1/auth/password/forgot", h.forgotPassword)
+	r.Post("/v1/auth/password/reset", h.resetPassword)
+	r.With(h.requireUser).Post("/v1/auth/password/change", h.changePassword)
 
 	// Placeholders until their requirements arrive.
 	r.With(h.requireUser).Get("/v1/onboarding", notImplemented("Onboarding"))

@@ -1,0 +1,49 @@
+package httpapi
+
+import (
+	"fmt"
+	"net/http"
+	"testing"
+)
+
+func TestPassword_ForgotAndReset(t *testing.T) {
+	f := newAuthFixture(t, true)
+	old := sessionCookie(t, f.do(t, http.MethodPost, "/v1/auth/signup", signUpBody))
+
+	for _, email := range []string{"ada@example.com", "nobody@example.com"} {
+		if rec := f.do(t, http.MethodPost, "/v1/auth/password/forgot", fmt.Sprintf(`{"email":%q}`, email)); rec.Code != http.StatusAccepted {
+			t.Errorf("forgot %s: %d, want 202 whether or not the account exists", email, rec.Code)
+		}
+	}
+	token := f.mailer.TokenTo("ada@example.com")
+
+	weak := f.do(t, http.MethodPost, "/v1/auth/password/reset", fmt.Sprintf(`{"token":%q,"password":"short"}`, token))
+	if p := decodeProblem(t, weak); weak.Code != 400 || p.Code != "validation_failed" {
+		t.Errorf("weak password: %d %q", weak.Code, p.Code)
+	}
+	if rec := f.do(t, http.MethodPost, "/v1/auth/password/reset", fmt.Sprintf(`{"token":%q,"password":"a brand new passphrase"}`, token)); rec.Code != http.StatusNoContent {
+		t.Fatalf("reset: %d %s", rec.Code, rec.Body)
+	}
+	if rec := f.do(t, http.MethodGet, "/v1/auth/session", "", old); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a session from before the reset: %d, want 401", rec.Code)
+	}
+	if rec := f.do(t, http.MethodPost, "/v1/auth/login", `{"email":"ada@example.com","password":"a brand new passphrase"}`); rec.Code != http.StatusOK {
+		t.Errorf("log in with the new password: %d", rec.Code)
+	}
+}
+
+func TestPassword_Change(t *testing.T) {
+	f := newAuthFixture(t, true)
+	cookie := sessionCookie(t, f.do(t, http.MethodPost, "/v1/auth/signup", signUpBody))
+
+	wrong := f.do(t, http.MethodPost, "/v1/auth/password/change", `{"current_password":"wrong wrong wrong","new_password":"a brand new passphrase"}`, cookie)
+	if p := decodeProblem(t, wrong); wrong.Code != 401 || p.Code != "invalid_credentials" {
+		t.Errorf("wrong current password: %d %q", wrong.Code, p.Code)
+	}
+	if rec := f.do(t, http.MethodPost, "/v1/auth/password/change", `{"current_password":"correct horse battery","new_password":"a brand new passphrase"}`, cookie); rec.Code != http.StatusNoContent {
+		t.Fatalf("change: %d %s", rec.Code, rec.Body)
+	}
+	if rec := f.do(t, http.MethodGet, "/v1/auth/session", "", cookie); rec.Code != http.StatusOK {
+		t.Errorf("the session that changed the password: %d, want it kept", rec.Code)
+	}
+}

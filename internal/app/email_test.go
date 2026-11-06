@@ -143,4 +143,3 @@ func TestDeliver_TemplatesWithoutALinkMintNoToken(t *testing.T) {
 		t.Error("a token was minted for an email with no link")
 	}
 }
-

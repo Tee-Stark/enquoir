@@ -288,3 +288,47 @@ func (h *Handler) resendVerification(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusAccepted)
 }
+
+func (h *Handler) forgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := h.ForgotPassword.Run(r.Context(), req.Email); err != nil {
+		writeAppError(w, err, "could not start a password reset")
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (h *Handler) resetPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := h.ResetPassword.Run(r.Context(), req.Token, req.Password); err != nil {
+		writeAppError(w, err, "could not reset the password")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Current string `json:"current_password"`
+		New     string `json:"new_password"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := h.ChangePassword.Run(r.Context(), userFrom(r.Context()), req.Current, req.New); err != nil {
+		writeAppError(w, err, "could not change the password")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
