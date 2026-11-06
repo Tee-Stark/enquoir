@@ -189,15 +189,29 @@ func (s *SignUp) Run(ctx context.Context, cmd SignUpCommand) (SignedIn, error) {
 // login for an unknown email costs the same as a wrong password.
 const DummyPasswordHash = "pbkdf2-sha256$600000$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
-// LogIn exchanges an email and password for a new session.
+// LogIn exchanges an email and password for a new session. Attempts
+// per email are rate limited, and LockoutThreshold failures lock the
+// email for LockoutDuration - whether or not it has an account, so the
+// lock reveals nothing.
 type LogIn struct {
 	Accounts AccountStore
 	Hasher   PasswordHasher
 	Issuer   *SessionIssuer
+	Throttle *Throttle
 }
 
-func (l *LogIn) Run(ctx context.Context, email, password string) (SignedIn, error) {
-	user, err := l.findUser(ctx, email)
+func (l *LogIn) Run(ctx context.Context, rawEmail, password string) (SignedIn, error) {
+	email, _ := domain.NewEmail(rawEmail)
+	if email != "" {
+		if err := l.Throttle.Check(ctx, RuleLoginPerEmail, string(email)); err != nil {
+			return SignedIn{}, err
+		}
+		if left := l.Throttle.lockedFor(ctx, email); left > 0 {
+			return SignedIn{}, &AccountLockedError{RetryAfter: left}
+		}
+	}
+
+	user, err := l.findUser(ctx, rawEmail)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return SignedIn{}, err
 	}
@@ -207,8 +221,12 @@ func (l *LogIn) Run(ctx context.Context, email, password string) (SignedIn, erro
 	}
 	ok, verr := l.Hasher.Verify(password, encoded)
 	if errors.Is(err, ErrNotFound) || verr != nil || !ok {
+		if email != "" && l.Throttle.failedLogIn(ctx, email) {
+			return SignedIn{}, &AccountLockedError{RetryAfter: LockoutDuration}
+		}
 		return SignedIn{}, ErrInvalidCredentials
 	}
+	l.Throttle.succeededLogIn(ctx, email)
 
 	// The session binds to the oldest membership; switching
 	// organisation is explicit.
@@ -240,12 +258,14 @@ func (l *LogIn) findUser(ctx context.Context, raw string) (User, error) {
 type LogOut struct {
 	Sessions SessionStore
 	Clock    Clock
+	Cache    *Cache
 }
 
 func (l *LogOut) Run(ctx context.Context, token string) error {
 	if token == "" {
 		return nil
 	}
+	l.Cache.ForgetSession(ctx, token)
 	return l.Sessions.Revoke(ctx, HashSecret(token), l.Clock.Now())
 }
 
@@ -264,18 +284,34 @@ func (p UserPrincipal) Can(perm domain.Permission) bool { return p.Role.Can(perm
 
 // ResolveSession turns a session token into the signed-in user. A
 // session whose membership is gone (the member was removed) no longer
-// resolves.
+// resolves. Resolved sessions are cached briefly; every change to
+// access invalidates them. A cached principal has no password hash.
 type ResolveSession struct {
 	Sessions SessionStore
 	Accounts AccountStore
 	Clock    Clock
+	Cache    *Cache
 }
 
 func (r *ResolveSession) Run(ctx context.Context, token string) (UserPrincipal, error) {
 	if token == "" {
 		return UserPrincipal{}, ErrUnauthenticated
 	}
-	s, err := r.Sessions.Get(ctx, HashSecret(token))
+	hash, now := HashSecret(token), r.Clock.Now()
+	if p, ok := r.Cache.session(ctx, hash, now); ok {
+		return p, nil
+	}
+	p, err := r.resolve(ctx, hash)
+	if err != nil {
+		return UserPrincipal{}, err
+	}
+	r.Cache.putSession(ctx, hash, p, now)
+	p.User.PasswordHash = ""
+	return p, nil
+}
+
+func (r *ResolveSession) resolve(ctx context.Context, hash string) (UserPrincipal, error) {
+	s, err := r.Sessions.Get(ctx, hash)
 	if errors.Is(err, ErrNotFound) {
 		return UserPrincipal{}, ErrUnauthenticated
 	}
@@ -309,6 +345,7 @@ type SwitchOrganisation struct {
 	Accounts AccountStore
 	Sessions SessionStore
 	Issuer   *SessionIssuer
+	Cache    *Cache
 }
 
 func (s *SwitchOrganisation) Run(ctx context.Context, p UserPrincipal, currentToken string, to domain.OrgID) (SignedIn, error) {
@@ -320,6 +357,7 @@ func (s *SwitchOrganisation) Run(ctx context.Context, p UserPrincipal, currentTo
 	if err != nil {
 		return SignedIn{}, err
 	}
+	s.Cache.ForgetSession(ctx, currentToken)
 	if err := s.Sessions.Revoke(ctx, HashSecret(currentToken), s.Issuer.Clock.Now()); err != nil {
 		return SignedIn{}, err
 	}

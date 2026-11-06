@@ -29,6 +29,20 @@ services:
       retries: 10
     networks: [enquoir-network]
 
+
+  # A cache and rate limiter, never a record (AGENTS.md): if it is
+  # down, authentication falls back to Postgres.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6380}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [enquoir-network]
   temporal:
     image: temporalio/auto-setup:1.29.1
     depends_on:

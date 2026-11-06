@@ -19,6 +19,11 @@ info:
     (`403 forbidden_origin`).
 
     **Errors** are RFC 9457 problem details; branch on their `code`.
+
+    **Limits.** Log-in: 5 a minute per email, 30 a minute per IP; 10 failures
+    lock the email for an hour. Sign-up: 5 an hour per IP. Verification
+    resends: 1 a minute, 5 a day. Password reset requests: 3 an hour per
+    email. Over a limit: 429 with Retry-After.
     Request bodies are limited to 64 KiB (`413 body_too_large`).
 servers:
   - url: http://localhost:8090
@@ -140,6 +145,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -179,6 +186,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -322,6 +331,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -354,6 +365,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "413":
           $ref: "#/components/responses/BodyTooLarge"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1408,6 +1421,19 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
+    TooManyRequests:
+      description: |
+        Rate limited (`rate_limited`), or, on log-in, the account is locked
+        for an hour after 10 failed log-ins (`account_locked`). Retry-After
+        says when to try again, in seconds.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     LastOwner:
       description: The change would leave the organisation without an owner (`last_owner`).
       content:
@@ -1467,6 +1493,8 @@ components:
             - token_invalid
             - last_owner
             - already_member
+            - rate_limited
+            - account_locked
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.

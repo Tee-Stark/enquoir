@@ -3,7 +3,10 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
+	"strconv"
+	"time"
 
 	"enquoir/internal/app"
 	"enquoir/internal/domain"
@@ -31,6 +34,8 @@ const (
 	codeTokenInvalid     = "token_invalid"
 	codeLastOwner        = "last_owner"
 	codeAlreadyMember    = "already_member"
+	codeRateLimited      = "rate_limited"
+	codeAccountLocked    = "account_locked"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.
@@ -60,7 +65,15 @@ func writeProblemBody(w http.ResponseWriter, p problem) {
 // error text, which may carry internals.
 func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 	var verr *app.ValidationError
+	var limited *app.RateLimitedError
+	var locked *app.AccountLockedError
 	switch {
+	case errors.As(err, &limited):
+		w.Header().Set("Retry-After", retryAfter(limited.RetryAfter))
+		writeProblem(w, http.StatusTooManyRequests, codeRateLimited, limited.Error())
+	case errors.As(err, &locked):
+		w.Header().Set("Retry-After", retryAfter(locked.RetryAfter))
+		writeProblem(w, http.StatusTooManyRequests, codeAccountLocked, locked.Error()+"; reset your password to unlock it sooner")
 	case errors.As(err, &verr):
 		writeProblemBody(w, problem{Status: http.StatusBadRequest, Code: codeValidationFailed, Detail: verr.Error(), Field: verr.Field})
 	case errors.Is(err, app.ErrUnauthenticated):
@@ -99,4 +112,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+func retryAfter(d time.Duration) string {
+	secs := int(math.Ceil(d.Seconds()))
+	if secs < 1 {
+		secs = 1
+	}
+	return strconv.Itoa(secs)
 }

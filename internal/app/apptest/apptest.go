@@ -5,6 +5,7 @@ package apptest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -996,4 +997,139 @@ func (s *Invitations) AcceptInvitation(ctx context.Context, id string, user doma
 	inv.AcceptedAt = &at
 	s.invs[id] = inv
 	return nil
+}
+
+// Counter is an in-memory app.Counter driven by a Clock.
+type Counter struct {
+	mu    sync.Mutex
+	Clock *Clock
+	hits  map[string]counterEntry
+	locks map[string]time.Time
+	// Err, if set, fails every call: a counter that is down.
+	Err error
+}
+
+type counterEntry struct {
+	n     int64
+	until time.Time
+}
+
+func NewCounter(c *Clock) *Counter {
+	return &Counter{Clock: c, hits: map[string]counterEntry{}, locks: map[string]time.Time{}}
+}
+
+func (c *Counter) Hit(ctx context.Context, key string, window time.Duration) (int64, time.Duration, error) {
+	if c.Err != nil {
+		return 0, 0, c.Err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.Clock.Now()
+	e := c.hits[key]
+	if !now.Before(e.until) {
+		e = counterEntry{until: now.Add(window)}
+	}
+	e.n++
+	c.hits[key] = e
+	return e.n, e.until.Sub(now), nil
+}
+
+func (c *Counter) Lock(ctx context.Context, key string, ttl time.Duration) error {
+	if c.Err != nil {
+		return c.Err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.locks[key] = c.Clock.Now().Add(ttl)
+	return nil
+}
+
+func (c *Counter) Locked(ctx context.Context, key string) (time.Duration, error) {
+	if c.Err != nil {
+		return 0, c.Err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if left := c.locks[key].Sub(c.Clock.Now()); left > 0 {
+		return left, nil
+	}
+	return 0, nil
+}
+
+func (c *Counter) Reset(ctx context.Context, key string) error {
+	if c.Err != nil {
+		return c.Err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.hits, key)
+	delete(c.locks, key)
+	return nil
+}
+
+// PrincipalStore is an in-memory app.PrincipalStore with owner
+// versions, like the Redis one. Gets counts cache reads that hit.
+type PrincipalStore struct {
+	mu       sync.Mutex
+	entries  map[string]principalEntry
+	versions map[string]int
+	Hits     int
+}
+
+type principalEntry struct {
+	owner   string
+	version int
+	value   []byte
+}
+
+func NewPrincipalStore() *PrincipalStore {
+	return &PrincipalStore{entries: map[string]principalEntry{}, versions: map[string]int{}}
+}
+
+func (s *PrincipalStore) Get(ctx context.Context, key string, into any) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.entries[key]
+	if !ok || e.version != s.versions[e.owner] {
+		return false
+	}
+	if json.Unmarshal(e.value, into) != nil {
+		return false
+	}
+	s.Hits++
+	return true
+}
+
+func (s *PrincipalStore) Put(ctx context.Context, key, owner string, value any, ttl time.Duration) {
+	b, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries[key] = principalEntry{owner: owner, version: s.versions[owner], value: b}
+}
+
+func (s *PrincipalStore) Forget(ctx context.Context, key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.entries, key)
+}
+
+func (s *PrincipalStore) InvalidateOwner(ctx context.Context, owner string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.versions[owner]++
+}
+
+// Contains reports whether any cached value contains needle.
+func (s *PrincipalStore) Contains(needle string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.entries {
+		if strings.Contains(string(e.value), needle) {
+			return true
+		}
+	}
+	return false
 }

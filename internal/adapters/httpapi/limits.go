@@ -1,8 +1,12 @@
 package httpapi
 
 import (
+	"net"
 	"net/http"
+	"strings"
 	"time"
+
+	"enquoir/internal/app"
 )
 
 // MaxRequestBodyBytes caps every request body. The largest legitimate
@@ -44,4 +48,36 @@ func NewServer(addr string, h http.Handler) *http.Server {
 		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes,
 	}
+}
+
+// limitIP applies rule per client IP, before the handler runs.
+func (h *Handler) limitIP(rule app.Rule) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := h.Throttle.Check(r.Context(), rule, clientIP(r, h.ClientIPHeader)); err != nil {
+				writeAppError(w, err, "")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// clientIP is the client's address: from header when one is configured
+// (behind a trusted proxy - its first entry), otherwise the connection.
+// Trusting a header without a proxy would let anyone pick their IP.
+func clientIP(r *http.Request, header string) string {
+	if header != "" {
+		if v := r.Header.Get(header); v != "" {
+			first, _, _ := strings.Cut(v, ",")
+			if ip := strings.TrimSpace(first); ip != "" {
+				return ip
+			}
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }

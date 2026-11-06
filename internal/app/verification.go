@@ -36,6 +36,7 @@ type VerifyEmail struct {
 	Tokens TokenStore
 	Users  UserStore
 	Clock  Clock
+	Cache  *Cache
 }
 
 func (v *VerifyEmail) Run(ctx context.Context, token string) error {
@@ -44,15 +45,28 @@ func (v *VerifyEmail) Run(ctx context.Context, token string) error {
 	if err != nil {
 		return err
 	}
-	return v.Users.MarkEmailVerified(ctx, domain.UserID(t.Subject), now)
+	if err := v.Users.MarkEmailVerified(ctx, domain.UserID(t.Subject), now); err != nil {
+		return err
+	}
+	v.Cache.InvalidateUser(ctx, domain.UserID(t.Subject))
+	return nil
 }
 
-// ResendVerification sends the signed-in user a fresh link.
-type ResendVerification struct{ Emails *Emails }
+// ResendVerification sends the signed-in user a fresh link, at most
+// once a minute and five times a day.
+type ResendVerification struct {
+	Emails   *Emails
+	Throttle *Throttle
+}
 
 func (r *ResendVerification) Run(ctx context.Context, p UserPrincipal) error {
 	if p.User.EmailVerified {
 		return ErrAlreadyVerified
+	}
+	for _, rule := range []Rule{RuleResendPerMinute, RuleResendPerDay} {
+		if err := r.Throttle.Check(ctx, rule, string(p.User.ID)); err != nil {
+			return err
+		}
 	}
 	_, err := r.Emails.Send(ctx, verificationEmail(p.User))
 	return err

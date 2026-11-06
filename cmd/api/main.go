@@ -16,12 +16,14 @@ import (
 	_ "time/tzdata"
 
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 	"go.temporal.io/sdk/client"
 
 	"enquoir/internal/adapters/clock"
 	"enquoir/internal/adapters/credentials"
 	"enquoir/internal/adapters/httpapi"
 	"enquoir/internal/adapters/postgres"
+	"enquoir/internal/adapters/redisstore"
 	"enquoir/internal/app"
 	enquoirworkflow "enquoir/internal/workflow"
 )
@@ -96,6 +98,8 @@ func main() {
 	payments := postgres.NewPaymentReader(pool)
 	analytics := postgres.NewAnalyticsReader(pool)
 	secrets := credentials.RandomSecrets{}
+	throttle, cache := connectRedis(logger)
+
 	emails := &app.Emails{Outbox: postgres.NewEmailOutbox(pool), Dispatcher: &enquoirworkflow.EmailDispatcher{Client: temporalClient}, IDs: ids, Clock: sysClock}
 	tokens := postgres.NewTokenStore(pool)
 	invitations := postgres.NewInvitationStore(pool)
@@ -119,23 +123,23 @@ func main() {
 		},
 
 		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: sysClock, Issuer: issuer, Emails: emails},
-		VerifyEmail:    &app.VerifyEmail{Tokens: tokens, Users: accounts, Clock: sysClock},
-		ResendVerify:   &app.ResendVerification{Emails: emails},
-		ForgotPassword: &app.ForgotPassword{Accounts: accounts, Emails: emails},
-		ResetPassword:  &app.ResetPassword{Tokens: tokens, Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock},
-		ChangePassword: &app.ChangePassword{Users: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock},
+		VerifyEmail:    &app.VerifyEmail{Tokens: tokens, Users: accounts, Clock: sysClock, Cache: cache},
+		ResendVerify:   &app.ResendVerification{Emails: emails, Throttle: throttle},
+		ForgotPassword: &app.ForgotPassword{Accounts: accounts, Emails: emails, Throttle: throttle},
+		ResetPassword:  &app.ResetPassword{Tokens: tokens, Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock, Cache: cache, Throttle: throttle},
+		ChangePassword: &app.ChangePassword{Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock, Cache: cache},
 
 		ListMembers:      &app.ListMembers{Members: accounts},
-		ChangeMemberRole: &app.ChangeMemberRole{Members: accounts, Sessions: sessions, Clock: sysClock},
-		RemoveMember:     &app.RemoveMember{Members: accounts, Sessions: sessions, Clock: sysClock},
+		ChangeMemberRole: &app.ChangeMemberRole{Members: accounts, Sessions: sessions, Clock: sysClock, Cache: cache},
+		RemoveMember:     &app.RemoveMember{Members: accounts, Sessions: sessions, Clock: sysClock, Cache: cache},
 		InviteMember:     &app.InviteMember{Accounts: accounts, Members: accounts, Invitations: invitations, Emails: emails, IDs: ids, Clock: sysClock},
 		ListInvitations:  &app.ListInvitations{Invitations: invitations, Clock: sysClock},
 		RevokeInvitation: &app.RevokeInvitation{Invitations: invitations, Clock: sysClock},
-		AcceptInvitation: &app.AcceptInvitation{Tokens: tokens, Invitations: invitations, Accounts: accounts, Users: accounts, Hasher: hasher, IDs: ids, Issuer: issuer, Clock: sysClock},
-		LogIn:            &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
-		LogOut:           &app.LogOut{Sessions: sessions, Clock: sysClock},
-		ResolveSession:   &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: sysClock},
-		SwitchOrg:        &app.SwitchOrganisation{Accounts: accounts, Sessions: sessions, Issuer: issuer},
+		AcceptInvitation: &app.AcceptInvitation{Tokens: tokens, Invitations: invitations, Accounts: accounts, Users: accounts, Hasher: hasher, IDs: ids, Issuer: issuer, Clock: sysClock, Cache: cache},
+		LogIn:            &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer, Throttle: throttle},
+		LogOut:           &app.LogOut{Sessions: sessions, Clock: sysClock, Cache: cache},
+		ResolveSession:   &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: sysClock, Cache: cache},
+		SwitchOrg:        &app.SwitchOrganisation{Accounts: accounts, Sessions: sessions, Issuer: issuer, Cache: cache},
 		MyOrgs:           &app.ListMyOrganisations{Accounts: accounts},
 		Cookies:          httpapi.CookieSettings{Secure: secureCookies},
 		Origins:          httpapi.ParseAllowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
@@ -143,9 +147,9 @@ func main() {
 		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock},
 		ListAgents:        &app.ListAgents{Agents: agents},
 		GetAgent:          &app.GetAgent{Agents: agents},
-		RotateAgentKey:    &app.RotateAgentKey{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock},
-		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: sysClock},
-		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: sysClock},
+		RotateAgentKey:    &app.RotateAgentKey{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock, Cache: cache},
+		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: sysClock, Cache: cache},
+		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: sysClock, Cache: cache},
 
 		ListPayments:      &app.ListPayments{Payments: payments},
 		GetPayment:        &app.GetPayment{Payments: payments, Events: events, Attempts: attempts},
@@ -184,4 +188,31 @@ func requireEnv(logger *slog.Logger, name string) string {
 		os.Exit(1)
 	}
 	return v
+}
+
+// connectRedis returns the rate limiter and the principal cache. With
+// no REDIS_URL, or a Redis that does not answer at start-up, limits
+// are kept per process and nothing is cached: authentication works
+// either way.
+func connectRedis(logger *slog.Logger) (*app.Throttle, *app.Cache) {
+	url := os.Getenv("REDIS_URL")
+	if url == "" {
+		logger.Warn("REDIS_URL not set: rate limits are per process, and sessions and keys are not cached")
+		return &app.Throttle{Counter: redisstore.NewMemoryCounter()}, nil
+	}
+	opts, err := redis.ParseURL(url)
+	if err != nil {
+		logger.Error("invalid REDIS_URL", "error", err)
+		os.Exit(1)
+	}
+	opts.DialTimeout, opts.ReadTimeout, opts.WriteTimeout = time.Second, 250*time.Millisecond, 250*time.Millisecond
+	rdb := redis.NewClient(opts)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		logger.Warn("redis unreachable at start-up: rate limits are per process, and sessions and keys are not cached", "error", err)
+		return &app.Throttle{Counter: redisstore.NewMemoryCounter()}, nil
+	}
+	logger.Info("redis connected: shared rate limits and principal cache")
+	return &app.Throttle{Counter: redisstore.NewCounter(rdb)}, &app.Cache{Store: redisstore.NewPrincipalStore(rdb)}
 }

@@ -60,6 +60,7 @@ type ChangeMemberRole struct {
 	Members  MemberStore
 	Sessions MemberSessions
 	Clock    Clock
+	Cache    *Cache
 }
 
 func (c *ChangeMemberRole) Run(ctx context.Context, p UserPrincipal, user domain.UserID, to domain.Role) error {
@@ -76,6 +77,7 @@ func (c *ChangeMemberRole) Run(ctx context.Context, p UserPrincipal, user domain
 	if err != nil {
 		return err
 	}
+	c.Cache.InvalidateUser(ctx, user)
 	return c.Sessions.RevokeForMember(ctx, org, user, c.Clock.Now())
 }
 
@@ -85,6 +87,7 @@ type RemoveMember struct {
 	Members  MemberStore
 	Sessions MemberSessions
 	Clock    Clock
+	Cache    *Cache
 }
 
 func (r *RemoveMember) Run(ctx context.Context, p UserPrincipal, user domain.UserID) error {
@@ -104,6 +107,7 @@ func (r *RemoveMember) Run(ctx context.Context, p UserPrincipal, user domain.Use
 	if err != nil {
 		return err
 	}
+	r.Cache.InvalidateUser(ctx, user)
 	return r.Sessions.RevokeForMember(ctx, org, user, r.Clock.Now())
 }
 
@@ -227,6 +231,7 @@ type AcceptInvitation struct {
 	IDs         IDGenerator
 	Issuer      *SessionIssuer
 	Clock       Clock
+	Cache       *Cache
 }
 
 func (a *AcceptInvitation) Run(ctx context.Context, token, password string) (AcceptedInvitation, error) {
@@ -271,6 +276,7 @@ func (a *AcceptInvitation) Run(ctx context.Context, token, password string) (Acc
 		if err := a.Users.MarkEmailVerified(ctx, user.ID, now); err != nil {
 			return AcceptedInvitation{}, err
 		}
+		a.Cache.InvalidateUser(ctx, user.ID)
 		user.EmailVerified = true
 	}
 

@@ -130,6 +130,7 @@ type RotateAgentKey struct {
 	IDs     IDGenerator
 	Secrets SecretGenerator
 	Clock   Clock
+	Cache   *Cache
 }
 
 func (r *RotateAgentKey) Run(ctx context.Context, org domain.OrgID, id domain.AgentID) (IssuedAgent, error) {
@@ -138,6 +139,7 @@ func (r *RotateAgentKey) Run(ctx context.Context, org domain.OrgID, id domain.Ag
 	if err := r.Agents.ReplaceKey(ctx, org, id, key, now); err != nil {
 		return IssuedAgent{}, err
 	}
+	r.Cache.InvalidateAgent(ctx, id)
 	agent, err := r.Agents.GetAgent(ctx, org, id)
 	if err != nil {
 		return IssuedAgent{}, err
@@ -149,23 +151,45 @@ func (r *RotateAgentKey) Run(ctx context.Context, org domain.OrgID, id domain.Ag
 type RevokeAgent struct {
 	Agents AgentStore
 	Clock  Clock
+	Cache  *Cache
 }
 
 func (r *RevokeAgent) Run(ctx context.Context, org domain.OrgID, id domain.AgentID) error {
-	return r.Agents.RevokeAgent(ctx, org, id, r.Clock.Now())
+	if err := r.Agents.RevokeAgent(ctx, org, id, r.Clock.Now()); err != nil {
+		return err
+	}
+	r.Cache.InvalidateAgent(ctx, id)
+	return nil
 }
 
 // AuthenticateAgent turns an API key into the agent it belongs to.
 type AuthenticateAgent struct {
 	Agents AgentStore
 	Clock  Clock
+	Cache  *Cache
 }
 
+// Run is on every agent request. A cached key skips the database and
+// the last-used write; last_used_at is recorded at least once per
+// cache period.
 func (a *AuthenticateAgent) Run(ctx context.Context, secret string) (AgentPrincipal, error) {
 	if secret == "" {
 		return AgentPrincipal{}, ErrUnauthenticated
 	}
-	key, agent, err := a.Agents.ActiveKeyByHash(ctx, HashSecret(secret))
+	hash := HashSecret(secret)
+	if p, ok := a.Cache.agent(ctx, hash); ok {
+		return p, nil
+	}
+	p, err := a.authenticate(ctx, hash)
+	if err != nil {
+		return AgentPrincipal{}, err
+	}
+	a.Cache.putAgent(ctx, hash, p)
+	return p, nil
+}
+
+func (a *AuthenticateAgent) authenticate(ctx context.Context, hash string) (AgentPrincipal, error) {
+	key, agent, err := a.Agents.ActiveKeyByHash(ctx, hash)
 	if errors.Is(err, ErrNotFound) {
 		return AgentPrincipal{}, ErrUnauthenticated
 	}

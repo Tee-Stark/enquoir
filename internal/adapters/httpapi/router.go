@@ -38,6 +38,8 @@ type Handler struct {
 	AcceptInvitation *app.AcceptInvitation
 	Cookies          CookieSettings
 	Origins          AllowedOrigins
+	Throttle         *app.Throttle
+	ClientIPHeader   string // the proxy header carrying the client IP, if any
 
 	CreateAgent       *app.CreateAgent
 	ListAgents        *app.ListAgents
@@ -69,8 +71,8 @@ func NewRouter(h *Handler) chi.Router {
 		r.Post("/v1/beneficiaries", h.registerBeneficiary)
 	})
 
-	r.Post("/v1/auth/signup", h.signUp)
-	r.Post("/v1/auth/login", h.logIn)
+	r.With(h.limitIP(app.RuleSignUpPerIP)).Post("/v1/auth/signup", h.signUp)
+	r.With(h.limitIP(app.RuleLoginPerIP)).Post("/v1/auth/login", h.logIn)
 	r.Post("/v1/auth/logout", h.logOut)
 	r.With(h.requireUser).Get("/v1/auth/session", h.getSession)
 	r.With(h.requireUser).Post("/v1/auth/switch-organisation", h.switchOrganisation)

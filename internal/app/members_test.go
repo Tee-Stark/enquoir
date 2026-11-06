@@ -14,14 +14,15 @@ import (
 
 type membersFixture struct {
 	*accountsFixture
-	invites *apptest.Invitations
-	change  *app.ChangeMemberRole
-	remove  *app.RemoveMember
-	invite  *app.InviteMember
-	accept  *app.AcceptInvitation
-	revoke  *app.RevokeInvitation
-	org     domain.OrgID
-	owner   app.UserPrincipal
+	invites    *apptest.Invitations
+	change     *app.ChangeMemberRole
+	remove     *app.RemoveMember
+	invite     *app.InviteMember
+	accept     *app.AcceptInvitation
+	revoke     *app.RevokeInvitation
+	org        domain.OrgID
+	owner      app.UserPrincipal
+	ownerToken string
 }
 
 func newMembersFixture(t *testing.T) *membersFixture {
@@ -37,6 +38,7 @@ func newMembersFixture(t *testing.T) *membersFixture {
 	signed, _ := f.signUp.Run(context.Background(), validSignUp)
 	f.org = signed.Organisation.ID
 	f.owner, _ = f.resolve.Run(context.Background(), signed.Session.Token)
+	f.ownerToken = signed.Session.Token
 	return f
 }
 

@@ -17,12 +17,18 @@ const ResetLinkTTL = time.Hour
 type ForgotPassword struct {
 	Accounts AccountStore
 	Emails   *Emails
+	Throttle *Throttle
 }
 
 func (f *ForgotPassword) Run(ctx context.Context, rawEmail string) error {
 	email, err := domain.NewEmail(rawEmail)
 	if err != nil {
 		return nil
+	}
+	// Limited per address whether or not it has an account, so the
+	// limit reveals nothing either.
+	if err := f.Throttle.Check(ctx, RuleForgotPerEmail, string(email)); err != nil {
+		return err
 	}
 	user, err := f.Accounts.UserByEmail(ctx, email)
 	if errors.Is(err, ErrNotFound) {
@@ -52,6 +58,8 @@ type ResetPassword struct {
 	Hasher   PasswordHasher
 	Emails   *Emails
 	Clock    Clock
+	Cache    *Cache
+	Throttle *Throttle
 }
 
 func (r *ResetPassword) Run(ctx context.Context, token, newPassword string) error {
@@ -69,6 +77,9 @@ func (r *ResetPassword) Run(ctx context.Context, token, newPassword string) erro
 	if err != nil {
 		return err
 	}
+	r.Cache.InvalidateUser(ctx, user.ID)
+	// The link proved the address: lift any log-in lockout.
+	r.Throttle.unlock(ctx, user.Email)
 	return setPassword(ctx, r.Users, r.Sessions, r.Hasher, r.Emails, user, newPassword, "", now)
 }
 
@@ -76,21 +87,30 @@ func (r *ResetPassword) Run(ctx context.Context, token, newPassword string) erro
 // current one, and signs out every other session.
 type ChangePassword struct {
 	Users    UserStore
+	Accounts AccountStore
 	Sessions SessionStore
 	Hasher   PasswordHasher
 	Emails   *Emails
 	Clock    Clock
+	Cache    *Cache
 }
 
 func (c *ChangePassword) Run(ctx context.Context, p UserPrincipal, current, newPassword string) error {
-	ok, err := c.Hasher.Verify(current, p.User.PasswordHash)
+	// The principal may come from the cache, which never holds the
+	// password hash: read it from the record.
+	user, err := c.Accounts.UserByID(ctx, p.User.ID)
+	if err != nil {
+		return err
+	}
+	ok, err := c.Hasher.Verify(current, user.PasswordHash)
 	if err != nil || !ok {
 		return ErrInvalidCredentials
 	}
 	if err := domain.ValidatePassword(newPassword); err != nil {
 		return invalid("new_password", err)
 	}
-	return setPassword(ctx, c.Users, c.Sessions, c.Hasher, c.Emails, p.User, newPassword, p.SessionID, c.Clock.Now())
+	c.Cache.InvalidateUser(ctx, user.ID)
+	return setPassword(ctx, c.Users, c.Sessions, c.Hasher, c.Emails, user, newPassword, p.SessionID, c.Clock.Now())
 }
 
 func setPassword(ctx context.Context, users UserStore, sessions SessionStore, hasher PasswordHasher, emails *Emails,

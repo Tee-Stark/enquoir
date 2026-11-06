@@ -14,7 +14,7 @@ func passwordFixture(t *testing.T) (*accountsFixture, *app.ForgotPassword, *app.
 	f.withEmail()
 	forgot := &app.ForgotPassword{Accounts: f.accounts, Emails: f.emails}
 	reset := &app.ResetPassword{Tokens: f.tokens, Users: f.accounts, Accounts: f.accounts, Sessions: f.sessions, Hasher: f.hasher, Emails: f.emails, Clock: f.clock}
-	change := &app.ChangePassword{Users: f.accounts, Sessions: f.sessions, Hasher: f.hasher, Emails: f.emails, Clock: f.clock}
+	change := &app.ChangePassword{Users: f.accounts, Accounts: f.accounts, Sessions: f.sessions, Hasher: f.hasher, Emails: f.emails, Clock: f.clock}
 	return f, forgot, reset, change
 }
 
