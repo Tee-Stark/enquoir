@@ -2212,15 +2212,22 @@ components:
         action:
           type: string
         actor:
-          description: Who did it.
+          description: Who did it - a member, or an agent acting with its key.
           oneOf:
             - type: object
-              required: [id, email]
+              required: [type, id, email, name]
               properties:
+                type:
+                  type: string
+                  enum: [user, agent]
                 id:
                   type: string
                 email:
-                  type: string
+                  type: [string, "null"]
+                  description: For a user.
+                name:
+                  type: [string, "null"]
+                  description: For an agent.
             - type: "null"
         target:
           description: What it was done to.

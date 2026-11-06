@@ -55,3 +55,27 @@ func TestAuditLog_AdminsSeeTheirOrganisationsActions(t *testing.T) {
 		t.Errorf("an unknown action filter: %d", rec.Code)
 	}
 }
+
+// When an agent acts, the audit log names the agent.
+func TestAuditLog_NamesTheAgentWhenAnAgentActs(t *testing.T) {
+	registrar := &fakeRegistrar{}
+	f, _ := newBeneficiaryFixture(t, registrar)
+	f.handler.Register.Audit = f.handler.CreateAgent.Audit
+	_, owner := f.newOrg(t)
+	issued := f.createAgent(t, owner, "Payee bot")
+	postBeneficiaryAs(t, f, issued.APIKey.Secret, validBeneficiaryBody)
+
+	var page struct {
+		Data []struct {
+			Action string
+			Actor  *struct {
+				ID, Email, Type, Name string
+			}
+		}
+	}
+	json.Unmarshal(f.do(t, http.MethodGet, "/v1/audit-log?action=payee.registered", "", owner).Body.Bytes(), &page)
+	if len(page.Data) != 1 || page.Data[0].Actor == nil || page.Data[0].Actor.Type != "agent" ||
+		page.Data[0].Actor.ID != issued.Agent.ID || page.Data[0].Actor.Name != "Payee bot" {
+		t.Errorf("payee.registered = %+v, want the agent as actor", page.Data)
+	}
+}

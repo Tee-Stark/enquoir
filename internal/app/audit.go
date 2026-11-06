@@ -13,6 +13,8 @@ import (
 type Actor struct {
 	UserID    domain.UserID
 	Email     domain.Email
+	AgentID   domain.AgentID // when an agent acts, with its API key
+	AgentName string
 	IP        string
 	UserAgent string
 }
@@ -36,6 +38,8 @@ type AuditEvent struct {
 	OrgID       domain.OrgID // empty for account-level events (a password reset)
 	ActorUserID domain.UserID
 	ActorEmail  domain.Email
+	ActorAgent  domain.AgentID
+	AgentName   string
 	Action      string
 	TargetType  string
 	TargetID    string
@@ -102,6 +106,7 @@ func (a *Audit) record(ctx context.Context, org domain.OrgID, action, targetType
 	actor := ActorFrom(ctx)
 	_ = a.Log.Record(ctx, AuditEvent{
 		ID: a.IDs.NewID("aud"), OrgID: org, ActorUserID: actor.UserID, ActorEmail: actor.Email,
+		ActorAgent: actor.AgentID, AgentName: actor.AgentName,
 		Action: action, TargetType: targetType, TargetID: targetID, Details: details,
 		IP: actor.IP, UserAgent: actor.UserAgent, At: a.Clock.Now(),
 	})

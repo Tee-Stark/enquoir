@@ -149,8 +149,10 @@ type auditEventDTO struct {
 }
 
 type refEmailDTO struct {
-	ID    string `json:"id"`
-	Email string `json:"email"`
+	Type  string  `json:"type"`
+	ID    string  `json:"id"`
+	Email *string `json:"email"`
+	Name  *string `json:"name"`
 }
 
 type targetDTO struct {
@@ -177,8 +179,11 @@ func (h *Handler) listAuditLog(w http.ResponseWriter, r *http.Request) {
 		if d.Details == nil {
 			d.Details = map[string]string{}
 		}
-		if e.ActorUserID != "" {
-			d.Actor = &refEmailDTO{ID: string(e.ActorUserID), Email: string(e.ActorEmail)}
+		switch {
+		case e.ActorAgent != "":
+			d.Actor = &refEmailDTO{Type: "agent", ID: string(e.ActorAgent), Name: optional(e.AgentName)}
+		case e.ActorUserID != "":
+			d.Actor = &refEmailDTO{Type: "user", ID: string(e.ActorUserID), Email: optional(string(e.ActorEmail))}
 		}
 		if e.TargetType != "" {
 			d.Target = &targetDTO{Type: e.TargetType, ID: e.TargetID}

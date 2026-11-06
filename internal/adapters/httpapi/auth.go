@@ -265,7 +265,10 @@ func (h *Handler) requireAgent(next http.Handler) http.Handler {
 			writeAppError(w, err, "could not check the API key")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), agentKey, p)))
+		ctx := context.WithValue(r.Context(), agentKey, p)
+		actor := app.ActorFrom(ctx)
+		actor.AgentID, actor.AgentName = p.AgentID, p.AgentName
+		next.ServeHTTP(w, r.WithContext(app.WithActor(ctx, actor)))
 	})
 }
 
