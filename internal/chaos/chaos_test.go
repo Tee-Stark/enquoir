@@ -39,9 +39,10 @@ func TestKillAt_ExitsWhenPointMatches(t *testing.T) {
 		return
 	}
 
-	cmd := exec.Command(os.Args[0], "-test.run=TestKillAt_ExitsWhenPointMatches")
+	cmd := exec.Command(os.Args[0], "-test.run=TestKillAt_ExitsWhenPointMatches", "-test.v")
 	cmd.Env = append(os.Environ(), "CHAOS_TEST_SUBPROCESS=1")
-	var stderr bytes.Buffer
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
@@ -51,6 +52,14 @@ func TestKillAt_ExitsWhenPointMatches(t *testing.T) {
 	}
 	if exitErr.ExitCode() != 1 {
 		t.Errorf("subprocess exit code = %d, want 1 (stderr: %s)", exitErr.ExitCode(), stderr.String())
+	}
+	// The subprocess's own t.Fatal also exits 1, so the exit code alone
+	// can't tell a kill from KillAt returning; only the kill logs this.
+	if !strings.Contains(stderr.String(), killLogLine) {
+		t.Errorf("subprocess exited without the kill switch firing (stderr: %s)", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "KillAt returned") {
+		t.Errorf("KillAt logged the kill but returned instead of exiting (stdout: %s)", stdout.String())
 	}
 }
 
