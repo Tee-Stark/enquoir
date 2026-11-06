@@ -291,3 +291,61 @@ func (s *Agents) StoresPlaintext(secret string) bool {
 	}
 	return false
 }
+
+// EventLog is an in-memory app.EventLog, scoped by organisation: two
+// organisations never share a chain even if they somehow used the
+// same key.
+type EventLog struct {
+	mu     sync.Mutex
+	chains map[domain.OrgID]map[domain.IntentKey]domain.Chain
+}
+
+func NewEventLog() *EventLog {
+	return &EventLog{chains: map[domain.OrgID]map[domain.IntentKey]domain.Chain{}}
+}
+
+func (l *EventLog) Append(ctx context.Context, org domain.OrgID, key domain.IntentKey, eventType, payload string) (domain.Event, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.chains[org] == nil {
+		l.chains[org] = map[domain.IntentKey]domain.Chain{}
+	}
+	chain := l.chains[org][key].Append(key, eventType, payload)
+	l.chains[org][key] = chain
+	return chain[len(chain)-1], nil
+}
+
+func (l *EventLog) Load(ctx context.Context, org domain.OrgID, key domain.IntentKey) (domain.Chain, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.chains[org][key], nil
+}
+
+// PaymentStarter is an in-memory app.PaymentStarter. Err, if set, is
+// returned from every call.
+type PaymentStarter struct {
+	mu    sync.Mutex
+	calls []domain.Intent
+	Err   error
+}
+
+func (s *PaymentStarter) Start(ctx context.Context, intent domain.Intent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, intent)
+	return s.Err
+}
+
+// Calls returns every intent Start was called with, in order.
+func (s *PaymentStarter) Calls() []domain.Intent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]domain.Intent(nil), s.calls...)
+}
+
+// CallCount returns how many times Start was called.
+func (s *PaymentStarter) CallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.calls)
+}

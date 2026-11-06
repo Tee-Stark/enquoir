@@ -44,7 +44,7 @@ type SubmitIntent struct {
 // moving a FAILED or UNKNOWN intent on is a reconciler's job, never a
 // resubmission's.
 func (s *SubmitIntent) Run(ctx context.Context, intent domain.Intent) (SubmitIntentResult, error) {
-	chain, err := s.Events.Load(ctx, intent.Key)
+	chain, err := s.Events.Load(ctx, intent.OrgID, intent.Key)
 	if err != nil {
 		return SubmitIntentResult{}, err
 	}
@@ -73,8 +73,8 @@ type GetIntent struct {
 	Events EventLog
 }
 
-func (g *GetIntent) Run(ctx context.Context, key domain.IntentKey) (GetIntentResult, error) {
-	chain, err := g.Events.Load(ctx, key)
+func (g *GetIntent) Run(ctx context.Context, org domain.OrgID, key domain.IntentKey) (GetIntentResult, error) {
+	chain, err := g.Events.Load(ctx, org, key)
 	if err != nil {
 		return GetIntentResult{}, err
 	}
