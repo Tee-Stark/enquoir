@@ -118,6 +118,8 @@ func main() {
 		LogIn:          &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
 		LogOut:         &app.LogOut{Sessions: sessions, Clock: sysClock},
 		ResolveSession: &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: sysClock},
+		SwitchOrg:      &app.SwitchOrganisation{Accounts: accounts, Sessions: sessions, Issuer: issuer},
+		MyOrgs:         &app.ListMyOrganisations{Accounts: accounts},
 		Cookies:        httpapi.CookieSettings{Secure: secureCookies},
 		Origins:        httpapi.ParseAllowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
 

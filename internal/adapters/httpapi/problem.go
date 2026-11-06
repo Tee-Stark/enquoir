@@ -23,6 +23,8 @@ const (
 	codeForbiddenOrigin  = "forbidden_origin"
 	codeNotImplemented   = "not_implemented"
 	codeBodyTooLarge     = "body_too_large"
+	codeForbidden        = "forbidden"
+	codeNoOrganisation   = "no_organisation"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.
@@ -59,6 +61,10 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 		writeProblem(w, http.StatusUnauthorized, codeUnauthenticated, "sign in, or send a valid API key")
 	case errors.Is(err, app.ErrInvalidCredentials):
 		writeProblem(w, http.StatusUnauthorized, codeInvalidCreds, err.Error())
+	case errors.Is(err, app.ErrForbidden):
+		writeProblem(w, http.StatusForbidden, codeForbidden, err.Error())
+	case errors.Is(err, app.ErrNoOrganisation):
+		writeProblem(w, http.StatusForbidden, codeNoOrganisation, err.Error()+"; accept an invitation to join one")
 	case errors.Is(err, app.ErrEmailTaken):
 		writeProblem(w, http.StatusConflict, codeEmailTaken, err.Error())
 	case errors.Is(err, app.ErrPayeeUnknown):

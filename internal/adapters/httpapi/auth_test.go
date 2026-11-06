@@ -25,6 +25,7 @@ type authFixture struct {
 	payees   *apptest.Beneficiaries
 	attempts *apptest.Attempts
 	payments *apptest.Payments
+	accounts *apptest.Accounts
 }
 
 func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
@@ -42,6 +43,8 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		LogIn:          &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
 		LogOut:         &app.LogOut{Sessions: sessions, Clock: clock},
 		ResolveSession: &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: clock},
+		SwitchOrg:      &app.SwitchOrganisation{Accounts: accounts, Sessions: sessions, Issuer: issuer},
+		MyOrgs:         &app.ListMyOrganisations{Accounts: accounts},
 		Cookies:        CookieSettings{Secure: secureCookies},
 
 		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: clock},
@@ -62,7 +65,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		TimeSeries:        &app.GetTimeSeries{Analytics: analytics, Clock: clock},
 		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
 	}
-	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments}
+	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments, accounts: accounts}
 }
 
 var testEmailCounter atomic.Int64

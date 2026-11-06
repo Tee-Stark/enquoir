@@ -20,7 +20,7 @@ func TestParseRole(t *testing.T) {
 // owners manage admins and ownership.
 func TestRole_Can(t *testing.T) {
 	table := []struct {
-		p                               Permission
+		p                              Permission
 		owner, admin, operator, viewer bool
 	}{
 		{PermRead, true, true, true, true},

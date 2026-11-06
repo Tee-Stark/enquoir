@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"enquoir/internal/app"
+	"enquoir/internal/domain"
 )
 
 // Handler holds the use cases the API calls into.
@@ -20,6 +21,8 @@ type Handler struct {
 	LogIn          *app.LogIn
 	LogOut         *app.LogOut
 	ResolveSession *app.ResolveSession
+	SwitchOrg      *app.SwitchOrganisation
+	MyOrgs         *app.ListMyOrganisations
 	Cookies        CookieSettings
 	Origins        AllowedOrigins
 
@@ -57,6 +60,7 @@ func NewRouter(h *Handler) chi.Router {
 	r.Post("/v1/auth/login", h.logIn)
 	r.Post("/v1/auth/logout", h.logOut)
 	r.With(h.requireUser).Get("/v1/auth/session", h.getSession)
+	r.With(h.requireUser).Post("/v1/auth/switch-organisation", h.switchOrganisation)
 
 	// Placeholders until their requirements arrive.
 	r.Post("/v1/auth/verify-email", notImplemented("Email verification"))
@@ -64,22 +68,26 @@ func NewRouter(h *Handler) chi.Router {
 	r.With(h.requireUser).Get("/v1/onboarding", notImplemented("Onboarding"))
 	r.With(h.requireUser).Put("/v1/onboarding", notImplemented("Onboarding"))
 
+	// The dashboard. Every route names the permission it needs; the
+	// table of who has which is domain.Role.
 	r.Group(func(r chi.Router) {
 		r.Use(h.requireUser)
-		r.Post("/v1/agents", h.createAgent)
-		r.Get("/v1/agents", h.listAgents)
-		r.Get("/v1/agents/{id}", h.getAgent)
-		r.Delete("/v1/agents/{id}", h.revokeAgent)
-		r.Post("/v1/agents/{id}/rotate-key", h.rotateAgentKey)
+		read, write := h.allow(domain.PermRead), h.allow(domain.PermWrite)
 
-		r.Get("/v1/payments", h.listPayments)
-		r.Get("/v1/payments/{key}", h.getPayment)
-		r.Get("/v1/payments/{key}/replay", h.replayPayment)
-		r.Get("/v1/attempts", h.listAttempts)
-		r.Get("/v1/beneficiaries", h.listBeneficiaries)
+		r.With(write).Post("/v1/agents", h.createAgent)
+		r.With(read).Get("/v1/agents", h.listAgents)
+		r.With(read).Get("/v1/agents/{id}", h.getAgent)
+		r.With(write).Delete("/v1/agents/{id}", h.revokeAgent)
+		r.With(write).Post("/v1/agents/{id}/rotate-key", h.rotateAgentKey)
 
-		r.Get("/v1/analytics/summary", h.analyticsSummary)
-		r.Get("/v1/analytics/timeseries", h.analyticsTimeSeries)
+		r.With(read).Get("/v1/payments", h.listPayments)
+		r.With(read).Get("/v1/payments/{key}", h.getPayment)
+		r.With(read).Get("/v1/payments/{key}/replay", h.replayPayment)
+		r.With(read).Get("/v1/attempts", h.listAttempts)
+		r.With(read).Get("/v1/beneficiaries", h.listBeneficiaries)
+
+		r.With(read).Get("/v1/analytics/summary", h.analyticsSummary)
+		r.With(read).Get("/v1/analytics/timeseries", h.analyticsTimeSeries)
 	})
 	return r
 }

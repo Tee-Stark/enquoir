@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"enquoir/internal/app"
+	"enquoir/internal/domain"
 )
 
 // SessionCookieName is the dashboard session cookie.
@@ -38,17 +39,30 @@ type sessionDTO struct {
 }
 
 type authResponse struct {
-	User         userDTO         `json:"user"`
-	Organisation organisationDTO `json:"organisation"`
-	Session      sessionDTO      `json:"session"`
+	User          userDTO         `json:"user"`
+	Organisation  organisationDTO `json:"organisation"`
+	Role          string          `json:"role"`
+	Session       sessionDTO      `json:"session"`
+	Organisations []myOrgDTO      `json:"organisations,omitempty"`
 }
 
-func newAuthResponse(u app.User, o app.Organisation, expires time.Time) authResponse {
+type myOrgDTO struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Role string `json:"role"`
+}
+
+func newAuthResponse(u app.User, o app.Organisation, role domain.Role, expires time.Time) authResponse {
 	return authResponse{
 		User:         userDTO{ID: string(u.ID), Email: string(u.Email), EmailVerified: u.EmailVerified, CreatedAt: u.CreatedAt.UTC()},
 		Organisation: organisationDTO{ID: string(o.ID), Name: o.Name, CreatedAt: o.CreatedAt.UTC()},
+		Role:         string(role),
 		Session:      sessionDTO{ExpiresAt: expires.UTC()},
 	}
+}
+
+func signedInResponse(s app.SignedIn) authResponse {
+	return newAuthResponse(s.User, s.Organisation, s.Role, s.Session.ExpiresAt)
 }
 
 func (h *Handler) setSessionCookie(w http.ResponseWriter, s app.IssuedSession, now time.Time) {
@@ -106,7 +120,7 @@ func (h *Handler) signUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.setSessionCookie(w, signed.Session, h.SignUp.Clock.Now())
-	writeJSON(w, http.StatusCreated, newAuthResponse(signed.User, signed.Organisation, signed.Session.ExpiresAt))
+	writeJSON(w, http.StatusCreated, signedInResponse(signed))
 }
 
 func (h *Handler) logIn(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +137,7 @@ func (h *Handler) logIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.setSessionCookie(w, signed.Session, h.LogIn.Issuer.Clock.Now())
-	writeJSON(w, http.StatusOK, newAuthResponse(signed.User, signed.Organisation, signed.Session.ExpiresAt))
+	writeJSON(w, http.StatusOK, signedInResponse(signed))
 }
 
 func (h *Handler) logOut(w http.ResponseWriter, r *http.Request) {
@@ -139,7 +153,47 @@ func (h *Handler) logOut(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) getSession(w http.ResponseWriter, r *http.Request) {
 	p := userFrom(r.Context())
-	writeJSON(w, http.StatusOK, newAuthResponse(p.User, p.Organisation, p.ExpiresAt))
+	ms, err := h.MyOrgs.Run(r.Context(), p.User.ID)
+	if err != nil {
+		writeAppError(w, err, "could not load your organisations")
+		return
+	}
+	out := newAuthResponse(p.User, p.Organisation, p.Role, p.ExpiresAt)
+	out.Organisations = make([]myOrgDTO, len(ms))
+	for i, m := range ms {
+		out.Organisations[i] = myOrgDTO{ID: string(m.Organisation.ID), Name: m.Organisation.Name, Role: string(m.Role)}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) switchOrganisation(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OrganisationID string `json:"organisation_id"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	c, _ := r.Cookie(SessionCookieName)
+	signed, err := h.SwitchOrg.Run(r.Context(), userFrom(r.Context()), c.Value, domain.OrgID(req.OrganisationID))
+	if err != nil {
+		writeAppError(w, err, "could not switch organisation")
+		return
+	}
+	h.setSessionCookie(w, signed.Session, h.SwitchOrg.Issuer.Clock.Now())
+	writeJSON(w, http.StatusOK, signedInResponse(signed))
+}
+
+// allow admits only a signed-in user whose role has p.
+func (h *Handler) allow(p domain.Permission) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !userFrom(r.Context()).Can(p) {
+				writeAppError(w, app.ErrForbidden, "")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 type ctxKey int

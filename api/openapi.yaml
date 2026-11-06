@@ -115,7 +115,7 @@ paths:
         "413":
           $ref: "#/components/responses/BodyTooLarge"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "201":
           description: Signed up and signed in.
           headers:
@@ -151,7 +151,7 @@ paths:
         "413":
           $ref: "#/components/responses/BodyTooLarge"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: Signed in.
           headers:
@@ -183,7 +183,7 @@ paths:
       description: Revokes the current session and clears the cookie. Succeeds without a session too.
       responses:
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "204":
           description: Logged out.
           headers:
@@ -191,6 +191,51 @@ paths:
               description: Clears `enquoir_session`.
               schema:
                 type: string
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/switch-organisation:
+    post:
+      tags: [Accounts]
+      operationId: switchOrganisation
+      summary: Move the session to another organisation you belong to
+      description: Issues a session bound to that organisation (a new cookie) and revokes the current one.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organisation_id]
+              properties:
+                organisation_id:
+                  type: string
+      responses:
+        "200":
+          description: Switched.
+          headers:
+            Set-Cookie:
+              $ref: "#/components/headers/SetSessionCookie"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: You are not a member of that organisation (`not_found`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -202,6 +247,8 @@ paths:
       security:
         - session: []
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The current session.
           content:
@@ -231,7 +278,7 @@ paths:
         "413":
           $ref: "#/components/responses/BodyTooLarge"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "501":
           $ref: "#/components/responses/NotImplemented"
 
@@ -247,7 +294,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "501":
           $ref: "#/components/responses/NotImplemented"
 
@@ -260,6 +307,8 @@ paths:
       security:
         - session: []
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "501":
@@ -282,7 +331,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "501":
           $ref: "#/components/responses/NotImplemented"
 
@@ -310,7 +359,7 @@ paths:
         "413":
           $ref: "#/components/responses/BodyTooLarge"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "201":
           description: Created.
           content:
@@ -331,6 +380,8 @@ paths:
       security:
         - session: []
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The agents.
           content:
@@ -358,6 +409,8 @@ paths:
       security:
         - session: []
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The agent.
           content:
@@ -381,7 +434,7 @@ paths:
         - session: []
       responses:
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "204":
           description: Revoked.
         "401":
@@ -403,7 +456,7 @@ paths:
         - session: []
       responses:
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: Rotated.
           content:
@@ -463,6 +516,8 @@ paths:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: One page of payments.
           content:
@@ -499,6 +554,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IntentKey"
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The payment.
           content:
@@ -533,6 +590,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IntentKey"
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The replay.
           content:
@@ -559,6 +618,8 @@ paths:
         - $ref: "#/components/parameters/To"
         - $ref: "#/components/parameters/TZ"
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The summary.
           content:
@@ -617,6 +678,8 @@ paths:
         - $ref: "#/components/parameters/To"
         - $ref: "#/components/parameters/TZ"
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The series.
           content:
@@ -672,6 +735,8 @@ paths:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: One page of attempts.
           content:
@@ -718,7 +783,7 @@ paths:
         "413":
           $ref: "#/components/responses/BodyTooLarge"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: Accepted, or recognised as an intent already submitted.
           content:
@@ -776,6 +841,8 @@ paths:
       security:
         - session: []
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The payees.
           content:
@@ -817,7 +884,7 @@ paths:
         "413":
           $ref: "#/components/responses/BodyTooLarge"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: Registered, or found already registered.
           content:
@@ -924,8 +991,12 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
-    ForbiddenOrigin:
-      description: A browser sent this from an origin not in CORS_ALLOWED_ORIGINS (`forbidden_origin`).
+    Forbidden:
+      description: |
+        Your role does not allow this (`forbidden`; see Role), a browser sent
+        it from an origin not in CORS_ALLOWED_ORIGINS (`forbidden_origin`),
+        or, on log-in, the account belongs to no organisation
+        (`no_organisation`).
       content:
         application/problem+json:
           schema:
@@ -982,6 +1053,8 @@ components:
             - forbidden_origin
             - not_implemented
             - body_too_large
+            - forbidden
+            - no_organisation
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.
@@ -1559,14 +1632,46 @@ components:
               type: string
               format: date-time
 
+    Role:
+      type: string
+      description: |
+        A member's role in an organisation.
+
+        | | owner | admin | operator | viewer |
+        |---|---|---|---|---|
+        | View payments, attempts, replay, analytics, payees, agents, members | ✓ | ✓ | ✓ | ✓ |
+        | Create, rotate, revoke agents; register payees | ✓ | ✓ | ✓ | |
+        | Invite and remove members, change roles up to admin; audit log | ✓ | ✓ | | |
+        | Manage admins and owners | ✓ | | | |
+
+        Nobody grants a role above their own; only an owner changes a member
+        at their own level or above; an organisation always keeps an owner.
+      enum: [owner, admin, operator, viewer]
+
     AuthSession:
       type: object
-      required: [user, organisation, session]
+      required: [user, organisation, role, session]
       properties:
         user:
           $ref: "#/components/schemas/User"
         organisation:
+          description: The organisation this session is bound to.
           $ref: "#/components/schemas/Organisation"
+        role:
+          $ref: "#/components/schemas/Role"
+        organisations:
+          type: array
+          description: Every organisation the user belongs to (GET /v1/auth/session only).
+          items:
+            type: object
+            required: [id, name, role]
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              role:
+                $ref: "#/components/schemas/Role"
         session:
           type: object
           required: [expires_at]
