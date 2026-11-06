@@ -7,8 +7,6 @@ package workflow
 import (
 	"context"
 	"errors"
-	"os"
-	"time"
 
 	"go.temporal.io/sdk/temporal"
 
@@ -61,18 +59,9 @@ func (a *Activities) AppendEvent(ctx context.Context, in AppendEventInput) (doma
 func (a *Activities) CreateTransfer(ctx context.Context, intent domain.Intent) (app.Transfer, error) {
 	chaos.KillAt(chaos.AfterLogBeforeCall)
 
-	// during_call: the real call is synchronous, so there is no
-	// natural place to interrupt it mid-flight. Racing a short-lived
-	// kill against it is the closest a single process can get to "the
-	// worker died while the request was genuinely in the air" - which
-	// is exactly the state this is meant to prove recovery from.
-	if os.Getenv(chaos.EnvVar) == string(chaos.DuringCall) {
-		go func() {
-			time.Sleep(50 * time.Millisecond)
-			chaos.KillAt(chaos.DuringCall)
-		}()
-	}
-
+	// during_call fires inside the rail's HTTP transport (see
+	// chaos.ArmTransport, wired in cmd/worker): the moment the create
+	// request has fully left the process, before any response is read.
 	transfer, err := a.Rail.CreateTransfer(ctx, intent)
 	chaos.KillAt(chaos.AfterCallBeforeCommit)
 

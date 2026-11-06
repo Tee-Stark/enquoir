@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/client"
@@ -41,7 +42,14 @@ func main() {
 	}
 	defer pool.Close()
 
-	rail, err := airwallex.NewClient(awxBaseURL, awxClientID, awxAPIKey, &http.Client{Timeout: 30 * time.Second}, clock.System{})
+	// Unarmed, ArmTransport is the default transport unchanged. Armed at
+	// during_call, it kills this process once a transfer create has
+	// fully left it, before any response is read.
+	httpClient := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: chaos.ArmTransport(http.DefaultTransport.(*http.Transport), chaos.DuringCall, isTransferCreate),
+	}
+	rail, err := airwallex.NewClient(awxBaseURL, awxClientID, awxAPIKey, httpClient, clock.System{})
 	if err != nil {
 		logger.Error("building Airwallex client", "error", err)
 		os.Exit(1)
@@ -71,6 +79,10 @@ func main() {
 		logger.Error("worker stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func isTransferCreate(r *http.Request) bool {
+	return r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/api/v1/transfers/create")
 }
 
 func requireEnv(logger *slog.Logger, name string) string {
