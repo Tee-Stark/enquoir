@@ -19,6 +19,15 @@ entry was observed against `https://api.sandbox.airwallex.com` on
 | Transfer transition | Body `{"status": ...}` | Body **`{"next_status": ...}`**; otherwise 400 `Missing body parameter "next_status"` | `Simulator.TransitionTransfer`, `scripts/e2e.sh` |
 | New transfer status | Starts `SENT` | Starts **`PROCESSING`**; simulate `SENT`, then `PAID` | none needed: the workflow polls any non-final status |
 
+## Observed on 2026-11-06 (second sandbox session)
+
+| Area | Guide / assumption | Real sandbox |
+|---|---|---|
+| API key IP allowlist | Not mentioned | A login from an IP the key isn't allowlisted for gets **403 `{"code":"unauthorized","message":"Forbidden"}`**, exactly the response a made-up key gets. When login suddenly starts failing, check the allowlist before the keys. Once, mid-session, the same key gave **401 `credentials_invalid`** instead. |
+| `duplicate_request_id` | Shape unknown | **HTTP 400**, `{"code":"duplicate_request_id","details":{"id":"<existing transfer id>","request_id":"..."},"message":...,"source":"request_id"}`. Observed by re-sending the exact create of a transfer that already existed: no second transfer. The adapter's match on `code`, then lookup, handles it; `details.id` is unused. |
+| LOCAL transfer fee | "LOCAL payouts have no fee" | A US/USD/LOCAL transfer of 7.25 came back with **`fee_amount: 3`, `fee_paid_by: PAYER`**, `amount_payer_pays: 10.25`. Not free in this sandbox; worth knowing when funding runs. |
+| Simulator transitions | Each call applies | Sending `PAID` immediately after `SENT` once did **not** apply (the transfer stayed `SENT`); repeating `SENT` on a `SENT` transfer returns **500 `operation_failed`**. `cmd/chaos` now confirms each transition by reading the transfer back and retries. |
+
 ## Confirmed as documented
 
 - `POST /transfers/create` with `request_id` = the intent key (32 hex
@@ -43,8 +52,8 @@ of scope for now.
 
 ## Not yet observed
 
-- The real shape of a `duplicate_request_id` response (the adapter
-  resolves it via lookup; never triggered in these runs).
 - Whether `nick_name` filtering is exact or a substring match. The
   adapter only accepts an exact match either way.
-- `make chaos` against the real sandbox.
+- A create whose request was genuinely in the air when the worker died
+  (see `during_call` in docs/progress.md: its kill fires before the
+  request leaves).

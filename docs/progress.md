@@ -348,3 +348,89 @@ refused with 403 throughout) surfaced these; each is its own commit.
 Left as is: `BeneficiaryWorkflow` still fails fast when its lookup
 errors. It backs a synchronous API call, so the caller gets a 500 it
 can safely retry, rather than a request that waits out an outage.
+
+## Reason out of the intent key, and the chaos run against the real sandbox (2026-11-06)
+
+Branch `fix/intent-key-reason`, off `chore/e2e-script`.
+
+### Changes
+
+- **The intent key no longer includes `reason`** (`48f20d3`). It is
+  free text an agent writes and rewords when it retries; with it in the
+  key, a reworded retry of the same invoice was a new key, a new
+  workflow and a new `request_id`: a second payment. The key is now
+  payee, amount, currency and reference; the reason is still recorded.
+  The tests pinning the old rule were replaced, not weakened, since the
+  requirement changed; the new golden key is cross-checked with
+  `shasum`. An HTTP-level test proves a reworded resubmission starts
+  nothing, and fails against the old derivation.
+  **Consequence:** intents recorded before this change carry keys from
+  the old derivation. Resubmitting one now derives a different key,
+  so pre-change history is a separate key space.
+- **The attach integration test leaked live payment workflows**
+  (`27164b8`). Its client was closed by `defer`, which runs before
+  `t.Cleanup`, so the terminate failed silently; every
+  `make test-integration` left a running $100.50 `PaymentWorkflow` on
+  the real task queue for any worker to pay. Found live: a stale worker
+  picked one up and, with login refused, it sat in `UNKNOWN` retrying
+  its lookup with backoff up to 300s, exactly as designed. The test now
+  uses its own task queue and fails if the terminate fails.
+- **`cmd/chaos` hardened** (`4717df3`), before trusting its results:
+  - it ran the worker via `go run`, and killing `go run` orphans the
+    compiled worker (seen live with the stale worker processes). The
+    orphan keeps polling and would take the next point's work;
+  - any non-zero exit counted as "died at the kill point", and any
+    final state but `UNKNOWN` passed, `FAILED` included;
+  - its 30s wait for the transfer was about equal to the activity
+    timeout that has to expire before the transfer is created.
+
+### Verified live, against the real sandbox
+
+- `make sandbox-setup`, then `make e2e`: all 13 steps pass on this
+  branch's code. `make demo`: `APPLIED`, history
+  `PROPOSED, AUTHORIZED, IN_FLIGHT, APPLIED`.
+- A reworded-reason retry through the API: same key, reported the
+  first run's `IN_FLIGHT`, exactly one transfer on the rail for the
+  key; settled to `APPLIED` with history
+  `PROPOSED, AUTHORIZED, IN_FLIGHT, APPLIED`.
+- `make chaos`: all four points pass.
+
+| Kill point | Result | Worker died (UTC) | Transfer created (UTC) | Transfers for key | History |
+|---|---|---|---|---|---|
+| `before_log` | PASS, APPLIED | 10:21:10 | 10:21:43 | 1 | PROPOSED, AUTHORIZED, IN_FLIGHT, APPLIED |
+| `after_log_before_call` | PASS, APPLIED | 10:21:52 | 10:22:25 | 1 | same |
+| `during_call` | PASS, APPLIED | 10:22:31 | 10:23:04 | 1 | same |
+| `after_call_before_commit` | PASS, APPLIED | 10:23:12 | 10:23:12 | 1 | same |
+
+Checked independently of the table: each armed worker logged
+`CHAOS: killing the process now` for its own point; transfer counts
+and `created_at` came from `GET /transfers?request_id=`; the Temporal
+history shows each lost `CreateTransfer` redispatched as attempt 2.
+
+What the run actually proves:
+
+- **`after_call_before_commit` is the real double-payment case.** The
+  armed worker's create landed on Airwallex (created in the second it
+  died), it never recorded the result, and the clean worker re-sent
+  `CreateTransfer` with the same `request_id` 30s later. Still exactly
+  one transfer. Re-sending that create by hand afterwards returned
+  400 `duplicate_request_id` (shape in docs/rail-notes.md).
+- **`during_call` did not test a request in the air.** Its transfer
+  was created 33s after the kill, by the clean worker: the 50ms kill
+  fires before the create leaves (the call takes ~2s, login first). It
+  behaved as a second `after_log_before_call`. Making it real needs the
+  kill tied to the request being sent (e.g. in the HTTP transport once
+  the body is written), not a timer.
+- **Recovery happens by activity retry, not the workflow's `UNKNOWN`
+  path.** No history shows `UNKNOWN`: a killed worker reports nothing,
+  Temporal redispatches the activity after its 30s timeout, and the
+  retried create is safe because of the rail's `request_id`. The
+  `UNKNOWN`-then-lookup path is exercised by unit tests and was seen
+  live only in the leaked workflow above (lookup retries while login
+  was refused), not resolved to completion against the sandbox.
+
+### Not verified
+
+- A kill while the create request is in flight (see `during_call`).
+- Re-verified after all three commits: `make test` offline, and
+  `make test-integration` leaves no running workflow behind.
