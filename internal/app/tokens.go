@@ -39,4 +39,7 @@ type TokenStore interface {
 	// marks every other unused token of the same purpose and subject
 	// used too: one link spends them all. ErrTokenInvalid otherwise.
 	Consume(ctx context.Context, hash string, purpose TokenPurpose, now time.Time) (OneTimeToken, error)
+	// Peek returns the token if Consume would accept it now, without
+	// spending it.
+	Peek(ctx context.Context, hash string, purpose TokenPurpose, now time.Time) (OneTimeToken, error)
 }

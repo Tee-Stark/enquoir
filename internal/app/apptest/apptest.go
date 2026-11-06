@@ -840,3 +840,160 @@ func (s *Sessions) RevokeAllForUser(ctx context.Context, user domain.UserID, exc
 	}
 	return nil
 }
+
+func (s *Tokens) Peek(ctx context.Context, hash string, purpose app.TokenPurpose, now time.Time) (app.OneTimeToken, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tokens[hash]
+	if !ok || t.Purpose != purpose || t.UsedAt != nil || !now.Before(t.ExpiresAt) {
+		return app.OneTimeToken{}, app.ErrTokenInvalid
+	}
+	return t, nil
+}
+
+func (s *Sessions) RevokeForMember(ctx context.Context, org domain.OrgID, user domain.UserID, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for h, sess := range s.sessions {
+		if sess.UserID == user && sess.OrgID == org && sess.RevokedAt == nil {
+			sess.RevokedAt = &at
+			s.sessions[h] = sess
+		}
+	}
+	return nil
+}
+
+func (a *Accounts) owners(org domain.OrgID) int {
+	n := 0
+	for _, m := range a.memberships {
+		if m.Organisation.ID == org && m.Role == domain.Owner {
+			n++
+		}
+	}
+	return n
+}
+
+func (a *Accounts) ListMembers(ctx context.Context, org domain.OrgID) ([]app.Member, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []app.Member
+	for _, m := range a.memberships {
+		if m.Organisation.ID == org {
+			out = append(out, app.Member{User: a.users[m.UserID], Role: m.Role, JoinedAt: m.CreatedAt})
+		}
+	}
+	return out, nil
+}
+
+func (a *Accounts) ChangeRole(ctx context.Context, org domain.OrgID, user domain.UserID, to domain.Role, check app.MembershipCheck) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, m := range a.memberships {
+		if m.Organisation.ID == org && m.UserID == user {
+			if err := check(m.Role, a.owners(org)); err != nil {
+				return err
+			}
+			a.memberships[i].Role = to
+			return nil
+		}
+	}
+	return app.ErrNotFound
+}
+
+func (a *Accounts) RemoveMember(ctx context.Context, org domain.OrgID, user domain.UserID, check app.MembershipCheck) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, m := range a.memberships {
+		if m.Organisation.ID == org && m.UserID == user {
+			if err := check(m.Role, a.owners(org)); err != nil {
+				return err
+			}
+			a.memberships = append(a.memberships[:i], a.memberships[i+1:]...)
+			return nil
+		}
+	}
+	return app.ErrNotFound
+}
+
+// Invitations is an in-memory app.InvitationStore, joined to an
+// Accounts for acceptance.
+type Invitations struct {
+	mu       sync.Mutex
+	invs     map[string]app.Invitation
+	Accounts *Accounts
+}
+
+func NewInvitations() *Invitations { return &Invitations{invs: map[string]app.Invitation{}} }
+
+func (s *Invitations) CreateInvitation(ctx context.Context, inv app.Invitation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, other := range s.invs {
+		if other.OrgID == inv.OrgID && other.Email == inv.Email && other.Pending(inv.CreatedAt) {
+			at := inv.CreatedAt
+			other.RevokedAt = &at
+			s.invs[id] = other
+		}
+	}
+	s.invs[inv.ID] = inv
+	return nil
+}
+
+func (s *Invitations) ListPendingInvitations(ctx context.Context, org domain.OrgID, now time.Time) ([]app.Invitation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []app.Invitation
+	for _, inv := range s.invs {
+		if inv.OrgID == org && inv.Pending(now) {
+			out = append(out, inv)
+		}
+	}
+	return out, nil
+}
+
+func (s *Invitations) GetInvitation(ctx context.Context, id string) (app.Invitation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inv, ok := s.invs[id]
+	if !ok {
+		return app.Invitation{}, app.ErrNotFound
+	}
+	return inv, nil
+}
+
+func (s *Invitations) RevokeInvitation(ctx context.Context, org domain.OrgID, id string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inv, ok := s.invs[id]
+	if !ok || inv.OrgID != org || !inv.Pending(at) {
+		return app.ErrNotFound
+	}
+	inv.RevokedAt = &at
+	s.invs[id] = inv
+	return nil
+}
+
+func (s *Invitations) AcceptInvitation(ctx context.Context, id string, user domain.UserID, newUser *app.User, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inv, ok := s.invs[id]
+	if !ok || !inv.Pending(at) {
+		return app.ErrTokenInvalid
+	}
+	if _, err := s.Accounts.Membership(ctx, inv.OrgID, user); err == nil {
+		return app.ErrAlreadyMember
+	}
+	if newUser != nil {
+		s.Accounts.mu.Lock()
+		if s.Accounts.emailTaken(newUser.Email) {
+			s.Accounts.mu.Unlock()
+			return app.ErrEmailTaken
+		}
+		s.Accounts.users[newUser.ID] = *newUser
+		s.Accounts.mu.Unlock()
+	}
+	s.Accounts.AddMember(inv.OrgID, user, inv.Role, at)
+	inv.AcceptedAt = &at
+	s.invs[id] = inv
+	return nil
+}
