@@ -124,6 +124,7 @@ func main() {
 		GetPayment:        &app.GetPayment{Payments: payments, Events: events, Attempts: attempts},
 		ListAttempts:      &app.ListAttempts{Attempts: attempts},
 		ListBeneficiaries: &app.ListBeneficiaries{Beneficiaries: beneficiaries},
+		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
 	}
 
 	logger.Info("api listening", "addr", httpAddr)

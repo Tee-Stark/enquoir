@@ -405,6 +405,40 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/payments/{key}/replay:
+    get:
+      tags: [History]
+      operationId: replayPayment
+      summary: Every step a payment went through, for a replay animation
+      description: |
+        The payment's state transitions (its hash-chained events), the agent
+        submissions and every Airwallex call, merged into one timeline in the
+        order they happened. Each step says when it happened (absolute, offset
+        from the first step, and gap since the previous one), how long it took,
+        who acted, the state it moved from and to, and a ready-to-show title.
+        The frontend plays the steps in order, spacing them by `delta_ms` (or
+        any scale it likes); the backend supplies data only.
+
+        Events and attempts are stamped by the same database clock, so the
+        order does not depend on the clocks of the machines involved.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/IntentKey"
+      responses:
+        "200":
+          description: The replay.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Replay"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/attempts:
     get:
       tags: [History]
@@ -983,6 +1017,102 @@ components:
           format: date-time
         duration_ms:
           type: [integer, "null"]
+
+    Replay:
+      type: object
+      required: [payment, started_at, ended_at, duration_ms, states, chain, steps]
+      properties:
+        payment:
+          $ref: "#/components/schemas/Payment"
+        started_at:
+          type: [string, "null"]
+          format: date-time
+          description: The first step's time; null when there are no steps.
+        ended_at:
+          type: [string, "null"]
+          format: date-time
+        duration_ms:
+          type: integer
+          description: From the first step to the last.
+        states:
+          type: array
+          description: The state path, in order, e.g. PROPOSED, AUTHORIZED, IN_FLIGHT, APPLIED.
+          items:
+            $ref: "#/components/schemas/State"
+        chain:
+          type: object
+          required: [valid, error]
+          properties:
+            valid:
+              type: boolean
+            error:
+              type: [string, "null"]
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplayStep"
+
+    ReplayStep:
+      type: object
+      required: [index, at, offset_ms, delta_ms, duration_ms, type, actor, from_state, to_state, outcome, title, event, attempt]
+      properties:
+        index:
+          type: integer
+        at:
+          type: string
+          format: date-time
+        offset_ms:
+          type: integer
+          description: Milliseconds since the first step.
+        delta_ms:
+          type: integer
+          description: Milliseconds since the previous step.
+        duration_ms:
+          type: [integer, "null"]
+          description: How long an attempt took; null for transitions and unfinished calls.
+        type:
+          type: string
+          description: |
+            - submission: an agent submitted the intent.
+            - transition: the payment moved state (a recorded event).
+            - rail_call: Enquoir called Airwallex.
+          enum: [submission, transition, rail_call]
+        actor:
+          type: string
+          description: Who acted. policy decides AUTHORIZED/BLOCKED; workflow is Enquoir's durable execution; rail is Airwallex.
+          enum: [agent, policy, workflow, rail]
+        from_state:
+          type: [string, "null"]
+          description: For transitions, the state before (null for the first).
+        to_state:
+          type: [string, "null"]
+          description: For transitions, the state after.
+        outcome:
+          description: For submissions and rail calls.
+          oneOf:
+            - $ref: "#/components/schemas/AttemptOutcome"
+            - type: "null"
+        title:
+          type: string
+          description: A one-line description, ready to show.
+        event:
+          description: For transitions, the recorded event.
+          oneOf:
+            - type: object
+              required: [sequence_number, payload, hash]
+              properties:
+                sequence_number:
+                  type: integer
+                payload:
+                  type: string
+                hash:
+                  type: string
+            - type: "null"
+        attempt:
+          description: For submissions and rail calls, the full attempt.
+          oneOf:
+            - $ref: "#/components/schemas/Attempt"
+            - type: "null"
 
     Beneficiary:
       type: object

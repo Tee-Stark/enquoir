@@ -298,6 +298,9 @@ func (s *Agents) StoresPlaintext(secret string) bool {
 type EventLog struct {
 	mu     sync.Mutex
 	chains map[domain.OrgID]map[domain.IntentKey]domain.Chain
+	// Clock stamps each event's RecordedAt, as the database does; the
+	// wall clock if nil.
+	Clock app.Clock
 }
 
 func NewEventLog() *EventLog {
@@ -311,6 +314,11 @@ func (l *EventLog) Append(ctx context.Context, org domain.OrgID, key domain.Inte
 		l.chains[org] = map[domain.IntentKey]domain.Chain{}
 	}
 	chain := l.chains[org][key].Append(key, eventType, payload)
+	if l.Clock != nil {
+		chain[len(chain)-1].RecordedAt = l.Clock.Now()
+	} else {
+		chain[len(chain)-1].RecordedAt = time.Now()
+	}
 	l.chains[org][key] = chain
 	return chain[len(chain)-1], nil
 }

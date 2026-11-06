@@ -157,3 +157,40 @@ func TestAttempts_ListFiltersByKind(t *testing.T) {
 		t.Errorf("rail calls = %+v", list.Data)
 	}
 }
+
+func TestReplay_ReturnsOrderedTimedSteps(t *testing.T) {
+	f := newAuthFixture(t, true)
+	org, cookie := f.newOrg(t)
+	_, other := f.newOrg(t)
+	p := f.seedPayment(t, org, "INV-1", "PROPOSED", "AUTHORIZED", "IN_FLIGHT", "APPLIED")
+	f.attempts.Record(context.Background(), app.Attempt{ID: "att_1", OrgID: org, Kind: app.KindAgentSubmission, Operation: app.OpSubmitIntent,
+		Outcome: app.OutcomeStarted, IntentKey: p.Key, AgentID: "agt_1", AgentName: "Invoice bot", StartedAt: f.clock.Now().Add(-time.Second)})
+
+	rec := f.do(t, http.MethodGet, "/v1/payments/"+string(p.Key)+"/replay", "", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("replay: %d %s", rec.Code, rec.Body)
+	}
+	var r struct {
+		States []string
+		Chain  struct{ Valid bool }
+		Steps  []struct {
+			Index    int
+			Type     string
+			Actor    string
+			ToState  *string `json:"to_state"`
+			OffsetMS int64   `json:"offset_ms"`
+			Title    string
+		}
+	}
+	json.Unmarshal(rec.Body.Bytes(), &r)
+	if len(r.Steps) != 5 || r.Steps[0].Type != "submission" || r.Steps[0].Actor != "agent" || r.Steps[4].ToState == nil || *r.Steps[4].ToState != "APPLIED" {
+		t.Errorf("replay = %s", rec.Body)
+	}
+	if len(r.States) != 4 || !r.Chain.Valid {
+		t.Errorf("states %v, chain %v", r.States, r.Chain)
+	}
+
+	if rec := f.do(t, http.MethodGet, "/v1/payments/"+string(p.Key)+"/replay", "", other); rec.Code != http.StatusNotFound {
+		t.Errorf("another organisation's replay: %d, want 404", rec.Code)
+	}
+}
