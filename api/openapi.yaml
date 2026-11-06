@@ -255,6 +255,79 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/auth/sessions:
+    get:
+      tags: [Accounts]
+      operationId: listSessions
+      summary: List your active sessions
+      description: In every organisation, newest first; `current` marks the one making this request. Tokens are never shown.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: Your sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SessionInfo"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Accounts]
+      operationId: revokeOtherSessions
+      summary: Sign out everywhere else
+      description: Revokes every session but the current one.
+      security:
+        - session: []
+      responses:
+        "204":
+          description: Revoked.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/sessions/{id}:
+    delete:
+      tags: [Accounts]
+      operationId: revokeSession
+      summary: Sign out one of your sessions
+      security:
+        - session: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Revoked.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Not one of your active sessions (`not_found`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/auth/session:
     get:
       tags: [Accounts]
@@ -2073,6 +2146,23 @@ components:
             created_at:
               type: string
               format: date-time
+
+    SessionInfo:
+      type: object
+      required: [id, organisation, created_at, expires_at, current]
+      properties:
+        id:
+          type: string
+        organisation:
+          $ref: "#/components/schemas/Organisation"
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        current:
+          type: boolean
 
     Member:
       type: object

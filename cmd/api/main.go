@@ -129,6 +129,10 @@ func main() {
 		ResetPassword:  &app.ResetPassword{Tokens: tokens, Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock, Cache: cache, Throttle: throttle},
 		ChangePassword: &app.ChangePassword{Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock, Cache: cache},
 
+		ListSessions:        &app.ListSessions{Sessions: sessions, Clock: sysClock},
+		RevokeSession:       &app.RevokeSession{Sessions: sessions, Clock: sysClock, Cache: cache},
+		RevokeOtherSessions: &app.RevokeOtherSessions{Sessions: sessions, Clock: sysClock, Cache: cache},
+
 		ListMembers:      &app.ListMembers{Members: accounts},
 		ChangeMemberRole: &app.ChangeMemberRole{Members: accounts, Sessions: sessions, Clock: sysClock, Cache: cache},
 		RemoveMember:     &app.RemoveMember{Members: accounts, Sessions: sessions, Clock: sysClock, Cache: cache},

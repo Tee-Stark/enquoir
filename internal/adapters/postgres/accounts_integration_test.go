@@ -153,3 +153,29 @@ func TestSessionStore_RevokeAllForUserKeepsOne(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionStore_ListAndRevokeByID(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	org, user := newTestOrg(t, NewAccountStore(pool))
+	_, other := newTestOrg(t, NewAccountStore(pool))
+	sessions := NewSessionStore(pool)
+	now := time.Now()
+	a := app.Session{ID: ids.NewID("ses"), TokenHash: app.HashSecret(ids.NewID("t")), UserID: user.ID, OrgID: org.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	expired := app.Session{ID: ids.NewID("ses"), TokenHash: app.HashSecret(ids.NewID("t")), UserID: user.ID, OrgID: org.ID, CreatedAt: now, ExpiresAt: now.Add(-time.Second)}
+	sessions.Create(ctx, a)
+	sessions.Create(ctx, expired)
+	list, err := sessions.ActiveForUser(ctx, user.ID, now)
+	if err != nil || len(list) != 1 || list[0].ID != a.ID || list[0].Organisation.Name != org.Name {
+		t.Fatalf("active = %+v, %v", list, err)
+	}
+	if err := sessions.RevokeByID(ctx, other.ID, a.ID, now); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("another user revoking it: %v", err)
+	}
+	if err := sessions.RevokeByID(ctx, user.ID, a.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := sessions.ActiveForUser(ctx, user.ID, now); len(list) != 0 {
+		t.Errorf("still listed after revoking: %+v", list)
+	}
+}

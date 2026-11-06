@@ -29,6 +29,10 @@ type Handler struct {
 	ResetPassword  *app.ResetPassword
 	ChangePassword *app.ChangePassword
 
+	ListSessions        *app.ListSessions
+	RevokeSession       *app.RevokeSession
+	RevokeOtherSessions *app.RevokeOtherSessions
+
 	ListMembers      *app.ListMembers
 	ChangeMemberRole *app.ChangeMemberRole
 	RemoveMember     *app.RemoveMember
@@ -82,6 +86,9 @@ func NewRouter(h *Handler) chi.Router {
 	r.Post("/v1/auth/password/forgot", h.forgotPassword)
 	r.Post("/v1/auth/password/reset", h.resetPassword)
 	r.With(h.requireUser).Post("/v1/auth/password/change", h.changePassword)
+	r.With(h.requireUser).Get("/v1/auth/sessions", h.listSessions)
+	r.With(h.requireUser).Delete("/v1/auth/sessions", h.revokeOtherSessions)
+	r.With(h.requireUser).Delete("/v1/auth/sessions/{id}", h.revokeSession)
 	r.Post("/v1/invitations/accept", h.acceptInvitation)
 
 	// Placeholders until their requirements arrive.

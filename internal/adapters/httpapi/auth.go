@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"enquoir/internal/app"
 	"enquoir/internal/domain"
 )
@@ -328,6 +330,45 @@ func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.ChangePassword.Run(r.Context(), userFrom(r.Context()), req.Current, req.New); err != nil {
 		writeAppError(w, err, "could not change the password")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type sessionInfoDTO struct {
+	ID           string          `json:"id"`
+	Organisation organisationDTO `json:"organisation"`
+	CreatedAt    time.Time       `json:"created_at"`
+	ExpiresAt    time.Time       `json:"expires_at"`
+	Current      bool            `json:"current"`
+}
+
+func (h *Handler) listSessions(w http.ResponseWriter, r *http.Request) {
+	list, err := h.ListSessions.Run(r.Context(), userFrom(r.Context()))
+	if err != nil {
+		writeAppError(w, err, "could not list sessions")
+		return
+	}
+	out := make([]sessionInfoDTO, len(list))
+	for i, s := range list {
+		o := s.Organisation
+		out[i] = sessionInfoDTO{ID: s.ID, Organisation: organisationDTO{ID: string(o.ID), Name: o.Name, CreatedAt: o.CreatedAt.UTC()},
+			CreatedAt: s.CreatedAt.UTC(), ExpiresAt: s.ExpiresAt.UTC(), Current: s.Current}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": out})
+}
+
+func (h *Handler) revokeSession(w http.ResponseWriter, r *http.Request) {
+	if err := h.RevokeSession.Run(r.Context(), userFrom(r.Context()), chi.URLParam(r, "id")); err != nil {
+		writeAppError(w, err, "could not revoke the session")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) revokeOtherSessions(w http.ResponseWriter, r *http.Request) {
+	if err := h.RevokeOtherSessions.Run(r.Context(), userFrom(r.Context())); err != nil {
+		writeAppError(w, err, "could not revoke sessions")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -53,6 +53,10 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		ResetPassword:  &app.ResetPassword{Tokens: tokens, Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: clock},
 		ChangePassword: &app.ChangePassword{Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: clock},
 
+		ListSessions:        &app.ListSessions{Sessions: sessions, Clock: clock},
+		RevokeSession:       &app.RevokeSession{Sessions: sessions, Clock: clock},
+		RevokeOtherSessions: &app.RevokeOtherSessions{Sessions: sessions, Clock: clock},
+
 		ListMembers:      &app.ListMembers{Members: accounts},
 		ChangeMemberRole: &app.ChangeMemberRole{Members: accounts, Sessions: sessions, Clock: clock},
 		RemoveMember:     &app.RemoveMember{Members: accounts, Sessions: sessions, Clock: clock},

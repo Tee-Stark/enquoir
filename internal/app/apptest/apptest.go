@@ -1133,3 +1133,29 @@ func (s *PrincipalStore) Contains(needle string) bool {
 	}
 	return false
 }
+
+// Orgs lets Sessions name organisations when listing.
+func (s *Sessions) ActiveForUser(ctx context.Context, user domain.UserID, now time.Time) ([]app.SessionInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []app.SessionInfo
+	for _, sess := range s.sessions {
+		if sess.UserID == user && sess.RevokedAt == nil && now.Before(sess.ExpiresAt) {
+			out = append(out, app.SessionInfo{ID: sess.ID, Organisation: app.Organisation{ID: sess.OrgID}, CreatedAt: sess.CreatedAt, ExpiresAt: sess.ExpiresAt})
+		}
+	}
+	return out, nil
+}
+
+func (s *Sessions) RevokeByID(ctx context.Context, user domain.UserID, id string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for h, sess := range s.sessions {
+		if sess.ID == id && sess.UserID == user && sess.RevokedAt == nil {
+			sess.RevokedAt = &at
+			s.sessions[h] = sess
+			return nil
+		}
+	}
+	return app.ErrNotFound
+}

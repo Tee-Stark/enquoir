@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -45,5 +47,47 @@ func TestPassword_Change(t *testing.T) {
 	}
 	if rec := f.do(t, http.MethodGet, "/v1/auth/session", "", cookie); rec.Code != http.StatusOK {
 		t.Errorf("the session that changed the password: %d, want it kept", rec.Code)
+	}
+}
+
+func TestSessions_ListAndRevoke(t *testing.T) {
+	f := newAuthFixture(t, true)
+	first := sessionCookie(t, f.do(t, http.MethodPost, "/v1/auth/signup", signUpBody))
+	second := sessionCookie(t, f.do(t, http.MethodPost, "/v1/auth/login", `{"email":"ada@example.com","password":"correct horse battery"}`))
+	third := sessionCookie(t, f.do(t, http.MethodPost, "/v1/auth/login", `{"email":"ada@example.com","password":"correct horse battery"}`))
+
+	var list struct {
+		Data []struct {
+			ID      string
+			Current bool
+		}
+	}
+	rec := f.do(t, http.MethodGet, "/v1/auth/sessions", "", first)
+	json.Unmarshal(rec.Body.Bytes(), &list)
+	if rec.Code != 200 || len(list.Data) != 3 || strings.Contains(rec.Body.String(), first.Value) {
+		t.Fatalf("sessions: %d %s", rec.Code, rec.Body)
+	}
+	var other string
+	for _, s := range list.Data {
+		if !s.Current {
+			other = s.ID
+		}
+	}
+	if rec := f.do(t, http.MethodDelete, "/v1/auth/sessions/"+other, "", first); rec.Code != http.StatusNoContent {
+		t.Fatalf("revoke one: %d", rec.Code)
+	}
+	if rec := f.do(t, http.MethodDelete, "/v1/auth/sessions/"+other, "", first); rec.Code != http.StatusNotFound {
+		t.Errorf("revoke it again: %d, want 404", rec.Code)
+	}
+	if rec := f.do(t, http.MethodDelete, "/v1/auth/sessions", "", first); rec.Code != http.StatusNoContent {
+		t.Fatalf("revoke others: %d", rec.Code)
+	}
+	for _, c := range []*http.Cookie{second, third} {
+		if rec := f.do(t, http.MethodGet, "/v1/auth/session", "", c); rec.Code != http.StatusUnauthorized {
+			t.Errorf("another session survived: %d", rec.Code)
+		}
+	}
+	if rec := f.do(t, http.MethodGet, "/v1/auth/session", "", first); rec.Code != http.StatusOK {
+		t.Errorf("the current session: %d", rec.Code)
 	}
 }

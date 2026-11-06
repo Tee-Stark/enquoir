@@ -194,3 +194,36 @@ func (s *SessionStore) RevokeAllForUser(ctx context.Context, user domain.UserID,
 	}
 	return nil
 }
+
+var _ app.SessionLister = (*SessionStore)(nil)
+
+func (s *SessionStore) ActiveForUser(ctx context.Context, user domain.UserID, now time.Time) ([]app.SessionInfo, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT s.id, o.id, o.name, o.created_at, s.created_at, s.expires_at
+		FROM sessions s JOIN organisations o ON o.id = s.org_id
+		WHERE s.user_id = $1 AND s.revoked_at IS NULL AND s.expires_at > $2
+		ORDER BY s.created_at DESC, s.id DESC`, string(user), now)
+	if err != nil {
+		return nil, fmt.Errorf("listing sessions: %w", err)
+	}
+	defer rows.Close()
+	var out []app.SessionInfo
+	for rows.Next() {
+		var si app.SessionInfo
+		var org string
+		if err := rows.Scan(&si.ID, &org, &si.Organisation.Name, &si.Organisation.CreatedAt, &si.CreatedAt, &si.ExpiresAt); err != nil {
+			return nil, err
+		}
+		si.Organisation.ID = domain.OrgID(org)
+		out = append(out, si)
+	}
+	return out, rows.Err()
+}
+
+func (s *SessionStore) RevokeByID(ctx context.Context, user domain.UserID, id string, at time.Time) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE sessions SET revoked_at = $3 WHERE user_id = $1 AND id = $2 AND revoked_at IS NULL`, string(user), id, at)
+	if err == nil && tag.RowsAffected() == 0 {
+		return app.ErrNotFound
+	}
+	return err
+}
