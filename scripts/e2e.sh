@@ -15,7 +15,8 @@
 # The flow: a person signs up and creates an agent; the agent, with its
 # API key, registers a payee and pays it (twice, as agents retry); the
 # sandbox simulator settles the transfer; the person's dashboard shows
-# the history, attempts, replay and analytics; then a second
+# the history, attempts, replay and analytics; a viewer is invited, can
+# look but not act, and resets their password; then a second
 # organisation proves it can neither pay nor see the first one's payee
 # or payment.
 # Neither API keys nor the sandbox bearer token are ever printed in full.
@@ -32,6 +33,11 @@ API="${API:-http://localhost:8090}"
 AWX="${AWX_BASE_URL:?AWX_BASE_URL must be set in .env}"
 RUN="$(date +%s)" # makes this run's emails and references unique
 WAIT_SECONDS=60
+MAIL_FILE="${MAIL_FILE:-mail.jsonl}"
+# Resend's testing sender only delivers to Resend's test inboxes, so
+# every address here is one; the worker keeps a copy of each email it
+# sent in MAIL_FILE, which is where links are read from.
+addr() { echo "delivered+e2e-$1-$RUN@resend.dev"; }
 
 # Each request leaves its status in $STATUS and its body in $BODY.
 STATUS=""
@@ -89,6 +95,24 @@ wait_for_state() {
 	fail "intent $key did not reach $want within ${WAIT_SECONDS}s (last state: ${state:-none})"
 }
 
+# token_for EMAIL PATH: waits for the link to PATH last emailed to EMAIL; prints its token.
+token_for() {
+	local t=""
+	for _ in $(seq 1 "$WAIT_SECONDS"); do
+		t=$(grep -F "\"to\":\"$1\"" "$MAIL_FILE" 2>/dev/null | tail -1 | jq -r .text | grep -o "$2?token=[^ ]*" | sed 's/.*token=//' || true)
+		[ -n "$t" ] && { echo "$t"; return; }
+		sleep 1
+	done
+	fail "no email with a $2 link reached $1 within ${WAIT_SECONDS}s (is the worker running with MAIL_FILE?)"
+}
+
+# verify EMAIL: follows the verification link emailed to EMAIL.
+verify() {
+	req POST /v1/auth/verify-email "{\"token\":\"$(token_for "$1" /verify-email)\"}"
+	got
+	expect_status 204
+}
+
 # sign_up JAR EMAIL ORG: signs up, keeping the session cookie in JAR.
 sign_up() {
 	req POST /v1/auth/signup "{\"email\":\"$2\",\"password\":\"correct horse battery\",\"organisation_name\":\"$3\"}" -c "$1"
@@ -112,15 +136,31 @@ req GET /healthz ""
 got
 expect_status 200
 
+# The sign-up limit is 5 an hour per IP; repeated runs would hit it.
+# This is a test harness against a development Redis: clear that one
+# counter so the run can sign up.
+docker compose -f deploy/docker-compose.yml exec -T redis sh -c "redis-cli --scan --pattern 'enq:rl:signup-ip:*' | xargs -r redis-cli del" >/dev/null 2>&1 || true
+
 # ---------------------------------------------------------------------
 step "2. Sign up an organisation (sets the dashboard session cookie)"
-EMAIL_A="e2e-a-$RUN@example.com"
+EMAIL_A="$(addr a)"
 show "curl -s -c cookies -X POST $API/v1/auth/signup -d '{\"email\":\"$EMAIL_A\",\"password\":\"…\",\"organisation_name\":\"E2E Org A\"}'"
 sign_up "$JAR_A" "$EMAIL_A" "E2E Org A"
 got
 expect_status 201
 grep -q enquoir_session "$JAR_A" || fail "no session cookie set"
 pass "session cookie set"
+
+show "curl -s -b cookies -X POST $API/v1/agents -d '{\"name\":\"Invoice bot\"}'   (before verifying)"
+req POST /v1/agents '{"name":"too soon"}' -b "$JAR_A"
+got
+expect_status 403
+[ "$(json .code)" = email_unverified ] || fail "code = $(json .code), want email_unverified"
+pass "an unverified account cannot issue agent keys"
+
+show "curl -s -X POST $API/v1/auth/verify-email -d '{\"token\":\"<from the emailed link>\"}'"
+verify "$EMAIL_A"
+pass "email verified from the link sent through Resend"
 
 # ---------------------------------------------------------------------
 step "3. Create an agent; its API key is shown once"
@@ -359,10 +399,66 @@ got
 pass "hourly buckets in Lagos time (+01:00), one series per state"
 
 # ---------------------------------------------------------------------
-step "22. A second organisation is isolated from the first"
-EMAIL_B="e2e-b-$RUN@example.com"
+step "22. The team: invite a viewer; they can look but not issue keys"
+EMAIL_V="$(addr viewer)"
+JAR_V="$(mktemp)"
+show "curl -s -b cookies -X POST $API/v1/invitations -d '{\"email\":\"$EMAIL_V\",\"role\":\"viewer\"}'"
+req POST /v1/invitations "{\"email\":\"$EMAIL_V\",\"role\":\"viewer\"}" -b "$JAR_A"
+got
+expect_status 201
+show "curl -s -c cookies-v -X POST $API/v1/invitations/accept -d '{\"token\":\"<from the emailed link>\",\"password\":\"...\"}'"
+req POST /v1/invitations/accept "{\"token\":\"$(token_for "$EMAIL_V" /invitations/accept)\",\"password\":\"viewer passphrase here\"}" -c "$JAR_V"
+got
+expect_status 200
+[ "$(json .account_created)" = true ] && [ "$(json .role)" = viewer ] || fail "want a new viewer account"
+pass "invitation accepted: a new, verified viewer account"
+req GET "/v1/payments?reference=E2E-PAY-$RUN" "" -b "$JAR_V"
+expect_status 200
+[ "$(json '.data | length')" = 1 ] || fail "the viewer cannot see the organisation's payment"
+pass "the viewer sees the organisation's payments"
+req POST /v1/agents '{"name":"viewer bot"}' -b "$JAR_V"
+got
+expect_status 403
+[ "$(json .code)" = forbidden ] || fail "code = $(json .code), want forbidden"
+pass "a viewer cannot create agents"
+
+# ---------------------------------------------------------------------
+step "23. The audit log records who did what"
+show "curl -s -b cookies $API/v1/audit-log"
+req GET /v1/audit-log "" -b "$JAR_A"
+expect_status 200
+BODY=$(jq -c '[.data[] | "\(.action) by \(.actor.type // "-") \(.actor.email // .actor.name // "-")"] | reverse' "$TMP")
+got
+for a in agent.created payee.registered member.invited invitation.accepted; do
+	jq -e --arg a "$a" '[.data[].action] | index($a)' "$TMP" >/dev/null || fail "no $a in the audit log"
+done
+[ "$(jq -r '[.data[] | select(.action == "payee.registered")][0].actor | "\(.type) \(.name)"' "$TMP")" = "agent Invoice bot" ] ||
+	fail "the payee registration does not name the agent that did it"
+pass "agent, payee (by the Invoice bot agent), invitation and acceptance all recorded"
+req GET /v1/audit-log "" -b "$JAR_V"
+expect_status 403
+pass "a viewer cannot read the audit log"
+
+# ---------------------------------------------------------------------
+step "24. Forgot password: a reset link signs the viewer out everywhere"
+req POST /v1/auth/password/forgot "{\"email\":\"$EMAIL_V\"}"
+expect_status 202
+req POST /v1/auth/password/reset "{\"token\":\"$(token_for "$EMAIL_V" /reset-password)\",\"password\":\"a brand new passphrase\"}"
+got
+expect_status 204
+req GET /v1/auth/session "" -b "$JAR_V"
+expect_status 401
+req POST /v1/auth/login "{\"email\":\"$EMAIL_V\",\"password\":\"a brand new passphrase\"}"
+expect_status 200
+pass "reset via the emailed link; the old session is gone; the new password works"
+rm -f "$JAR_V"
+
+# ---------------------------------------------------------------------
+step "25. A second organisation is isolated from the first"
+EMAIL_B="$(addr b)"
 sign_up "$JAR_B" "$EMAIL_B" "E2E Org B"
 expect_status 201
+verify "$EMAIL_B"
 create_agent "$JAR_B" "Other bot"
 expect_status 201
 KEY_B="$NEW_KEY"
