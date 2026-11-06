@@ -137,3 +137,53 @@ func (h *Handler) acceptInvitation(w http.ResponseWriter, r *http.Request) {
 		"account_created": acc.AccountCreated,
 	})
 }
+
+type auditEventDTO struct {
+	ID      string            `json:"id"`
+	Action  string            `json:"action"`
+	Actor   *refEmailDTO      `json:"actor"`
+	Target  *targetDTO        `json:"target"`
+	Details map[string]string `json:"details"`
+	IP      *string           `json:"ip"`
+	At      time.Time         `json:"at"`
+}
+
+type refEmailDTO struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+}
+
+type targetDTO struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
+func (h *Handler) listAuditLog(w http.ResponseWriter, r *http.Request) {
+	q := &query{v: r.URL.Query()}
+	f := app.AuditFilter{Action: q.str("action"), Actor: domain.UserID(q.str("actor_id")),
+		From: q.time("from"), To: q.time("to"), Limit: q.int("limit"), Cursor: q.str("cursor")}
+	if q.err != nil {
+		writeAppError(w, q.err, "")
+		return
+	}
+	page, err := h.ListAuditLog.Run(r.Context(), userFrom(r.Context()).Organisation.ID, f)
+	if err != nil {
+		writeAppError(w, err, "could not list the audit log")
+		return
+	}
+	out := make([]auditEventDTO, len(page.Events))
+	for i, e := range page.Events {
+		d := auditEventDTO{ID: e.ID, Action: e.Action, Details: e.Details, IP: optional(e.IP), At: e.At.UTC()}
+		if d.Details == nil {
+			d.Details = map[string]string{}
+		}
+		if e.ActorUserID != "" {
+			d.Actor = &refEmailDTO{ID: string(e.ActorUserID), Email: string(e.ActorEmail)}
+		}
+		if e.TargetType != "" {
+			d.Target = &targetDTO{Type: e.TargetType, ID: e.TargetID}
+		}
+		out[i] = d
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": out, "next_cursor": optional(page.NextCursor)})
+}

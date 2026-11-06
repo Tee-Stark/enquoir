@@ -64,6 +64,7 @@ type RevokeOtherSessions struct {
 	Sessions SessionLister
 	Clock    Clock
 	Cache    *Cache
+	Audit    *Audit
 }
 
 func (r *RevokeOtherSessions) Run(ctx context.Context, p UserPrincipal) error {
@@ -71,5 +72,6 @@ func (r *RevokeOtherSessions) Run(ctx context.Context, p UserPrincipal) error {
 		return err
 	}
 	r.Cache.InvalidateUser(ctx, p.User.ID)
+	r.Audit.record(ctx, p.Organisation.ID, AuditSessionsRevoked, "user", string(p.User.ID), nil)
 	return nil
 }

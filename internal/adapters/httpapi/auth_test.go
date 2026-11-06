@@ -42,6 +42,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	mailer, outbox, tokens := &apptest.Mailer{}, apptest.NewOutbox(), apptest.NewTokens()
 	deliver := &app.DeliverEmail{Outbox: outbox, Tokens: tokens, Renderer: apptest.Renderer{}, Mailer: mailer,
 		Secrets: secrets, Clock: clock, AppBaseURL: "https://enquoir.etimi.me"}
+	audit := &app.Audit{Log: apptest.NewAuditLog(), IDs: ids, Clock: clock}
 	invitations := apptest.NewInvitations()
 	invitations.Accounts = accounts
 	emails := &app.Emails{Outbox: outbox, Dispatcher: &apptest.Dispatcher{Deliver: deliver.Run}, IDs: ids, Clock: clock}
@@ -57,10 +58,12 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		RevokeSession:       &app.RevokeSession{Sessions: sessions, Clock: clock},
 		RevokeOtherSessions: &app.RevokeOtherSessions{Sessions: sessions, Clock: clock},
 
+		ListAuditLog: &app.ListAuditLog{Log: audit.Log},
+
 		ListMembers:      &app.ListMembers{Members: accounts},
 		ChangeMemberRole: &app.ChangeMemberRole{Members: accounts, Sessions: sessions, Clock: clock},
 		RemoveMember:     &app.RemoveMember{Members: accounts, Sessions: sessions, Clock: clock},
-		InviteMember:     &app.InviteMember{Accounts: accounts, Members: accounts, Invitations: invitations, Emails: emails, IDs: ids, Clock: clock},
+		InviteMember:     &app.InviteMember{Accounts: accounts, Members: accounts, Invitations: invitations, Emails: emails, IDs: ids, Clock: clock, Audit: audit},
 		ListInvitations:  &app.ListInvitations{Invitations: invitations, Clock: clock},
 		RevokeInvitation: &app.RevokeInvitation{Invitations: invitations, Clock: clock},
 		AcceptInvitation: &app.AcceptInvitation{Tokens: tokens, Invitations: invitations, Accounts: accounts, Users: accounts, Hasher: hasher, IDs: ids, Issuer: issuer, Clock: clock},
@@ -71,7 +74,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		MyOrgs:           &app.ListMyOrganisations{Accounts: accounts},
 		Cookies:          CookieSettings{Secure: secureCookies},
 
-		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: clock},
+		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
 		ListAgents:        &app.ListAgents{Agents: agents},
 		GetAgent:          &app.GetAgent{Agents: agents},
 		RotateAgentKey:    &app.RotateAgentKey{Agents: agents, IDs: ids, Secrets: secrets, Clock: clock},

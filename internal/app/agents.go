@@ -92,6 +92,7 @@ type CreateAgent struct {
 	IDs     IDGenerator
 	Secrets SecretGenerator
 	Clock   Clock
+	Audit   *Audit
 }
 
 func (c *CreateAgent) Run(ctx context.Context, org domain.OrgID, name string) (IssuedAgent, error) {
@@ -106,6 +107,7 @@ func (c *CreateAgent) Run(ctx context.Context, org domain.OrgID, name string) (I
 		return IssuedAgent{}, fmt.Errorf("creating agent: %w", err)
 	}
 	agent.Key = &key
+	c.Audit.record(ctx, org, AuditAgentCreated, "agent", string(agent.ID), map[string]string{"name": name, "key_prefix": key.Prefix})
 	return IssuedAgent{Agent: agent, Secret: secret}, nil
 }
 
@@ -131,6 +133,7 @@ type RotateAgentKey struct {
 	Secrets SecretGenerator
 	Clock   Clock
 	Cache   *Cache
+	Audit   *Audit
 }
 
 func (r *RotateAgentKey) Run(ctx context.Context, org domain.OrgID, id domain.AgentID) (IssuedAgent, error) {
@@ -140,6 +143,7 @@ func (r *RotateAgentKey) Run(ctx context.Context, org domain.OrgID, id domain.Ag
 		return IssuedAgent{}, err
 	}
 	r.Cache.InvalidateAgent(ctx, id)
+	r.Audit.record(ctx, org, AuditAgentKeyRotated, "agent", string(id), map[string]string{"key_prefix": key.Prefix})
 	agent, err := r.Agents.GetAgent(ctx, org, id)
 	if err != nil {
 		return IssuedAgent{}, err
@@ -152,6 +156,7 @@ type RevokeAgent struct {
 	Agents AgentStore
 	Clock  Clock
 	Cache  *Cache
+	Audit  *Audit
 }
 
 func (r *RevokeAgent) Run(ctx context.Context, org domain.OrgID, id domain.AgentID) error {
@@ -159,6 +164,7 @@ func (r *RevokeAgent) Run(ctx context.Context, org domain.OrgID, id domain.Agent
 		return err
 	}
 	r.Cache.InvalidateAgent(ctx, id)
+	r.Audit.record(ctx, org, AuditAgentRevoked, "agent", string(id), nil)
 	return nil
 }
 

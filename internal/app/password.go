@@ -60,6 +60,7 @@ type ResetPassword struct {
 	Clock    Clock
 	Cache    *Cache
 	Throttle *Throttle
+	Audit    *Audit
 }
 
 func (r *ResetPassword) Run(ctx context.Context, token, newPassword string) error {
@@ -80,6 +81,7 @@ func (r *ResetPassword) Run(ctx context.Context, token, newPassword string) erro
 	r.Cache.InvalidateUser(ctx, user.ID)
 	// The link proved the address: lift any log-in lockout.
 	r.Throttle.unlock(ctx, user.Email)
+	r.Audit.recordAs(ctx, user, "", AuditPasswordReset, "user", string(user.ID), nil)
 	return setPassword(ctx, r.Users, r.Sessions, r.Hasher, r.Emails, user, newPassword, "", now)
 }
 
@@ -93,6 +95,7 @@ type ChangePassword struct {
 	Emails   *Emails
 	Clock    Clock
 	Cache    *Cache
+	Audit    *Audit
 }
 
 func (c *ChangePassword) Run(ctx context.Context, p UserPrincipal, current, newPassword string) error {
@@ -110,6 +113,7 @@ func (c *ChangePassword) Run(ctx context.Context, p UserPrincipal, current, newP
 		return invalid("new_password", err)
 	}
 	c.Cache.InvalidateUser(ctx, user.ID)
+	c.Audit.record(ctx, p.Organisation.ID, AuditPasswordChanged, "user", string(user.ID), nil)
 	return setPassword(ctx, c.Users, c.Sessions, c.Hasher, c.Emails, user, newPassword, p.SessionID, c.Clock.Now())
 }
 

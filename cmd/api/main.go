@@ -99,6 +99,8 @@ func main() {
 	analytics := postgres.NewAnalyticsReader(pool)
 	secrets := credentials.RandomSecrets{}
 	throttle, cache := connectRedis(logger)
+	auditLog := postgres.NewAuditLog(pool)
+	audit := &app.Audit{Log: auditLog, IDs: ids, Clock: sysClock}
 
 	emails := &app.Emails{Outbox: postgres.NewEmailOutbox(pool), Dispatcher: &enquoirworkflow.EmailDispatcher{Client: temporalClient}, IDs: ids, Clock: sysClock}
 	tokens := postgres.NewTokenStore(pool)
@@ -123,24 +125,26 @@ func main() {
 		},
 
 		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: sysClock, Issuer: issuer, Emails: emails},
-		VerifyEmail:    &app.VerifyEmail{Tokens: tokens, Users: accounts, Clock: sysClock, Cache: cache},
+		VerifyEmail:    &app.VerifyEmail{Tokens: tokens, Users: accounts, Clock: sysClock, Cache: cache, Audit: audit},
 		ResendVerify:   &app.ResendVerification{Emails: emails, Throttle: throttle},
 		ForgotPassword: &app.ForgotPassword{Accounts: accounts, Emails: emails, Throttle: throttle},
-		ResetPassword:  &app.ResetPassword{Tokens: tokens, Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock, Cache: cache, Throttle: throttle},
-		ChangePassword: &app.ChangePassword{Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock, Cache: cache},
+		ResetPassword:  &app.ResetPassword{Tokens: tokens, Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock, Cache: cache, Throttle: throttle, Audit: audit},
+		ChangePassword: &app.ChangePassword{Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock, Cache: cache, Audit: audit},
 
 		ListSessions:        &app.ListSessions{Sessions: sessions, Clock: sysClock},
 		RevokeSession:       &app.RevokeSession{Sessions: sessions, Clock: sysClock, Cache: cache},
-		RevokeOtherSessions: &app.RevokeOtherSessions{Sessions: sessions, Clock: sysClock, Cache: cache},
+		RevokeOtherSessions: &app.RevokeOtherSessions{Sessions: sessions, Clock: sysClock, Cache: cache, Audit: audit},
+
+		ListAuditLog: &app.ListAuditLog{Log: auditLog},
 
 		ListMembers:      &app.ListMembers{Members: accounts},
-		ChangeMemberRole: &app.ChangeMemberRole{Members: accounts, Sessions: sessions, Clock: sysClock, Cache: cache},
-		RemoveMember:     &app.RemoveMember{Members: accounts, Sessions: sessions, Clock: sysClock, Cache: cache},
-		InviteMember:     &app.InviteMember{Accounts: accounts, Members: accounts, Invitations: invitations, Emails: emails, IDs: ids, Clock: sysClock},
+		ChangeMemberRole: &app.ChangeMemberRole{Members: accounts, Sessions: sessions, Clock: sysClock, Cache: cache, Audit: audit},
+		RemoveMember:     &app.RemoveMember{Members: accounts, Sessions: sessions, Clock: sysClock, Cache: cache, Audit: audit},
+		InviteMember:     &app.InviteMember{Accounts: accounts, Members: accounts, Invitations: invitations, Emails: emails, IDs: ids, Clock: sysClock, Audit: audit},
 		ListInvitations:  &app.ListInvitations{Invitations: invitations, Clock: sysClock},
-		RevokeInvitation: &app.RevokeInvitation{Invitations: invitations, Clock: sysClock},
-		AcceptInvitation: &app.AcceptInvitation{Tokens: tokens, Invitations: invitations, Accounts: accounts, Users: accounts, Hasher: hasher, IDs: ids, Issuer: issuer, Clock: sysClock, Cache: cache},
-		LogIn:            &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer, Throttle: throttle},
+		RevokeInvitation: &app.RevokeInvitation{Invitations: invitations, Clock: sysClock, Audit: audit},
+		AcceptInvitation: &app.AcceptInvitation{Tokens: tokens, Invitations: invitations, Accounts: accounts, Users: accounts, Hasher: hasher, IDs: ids, Issuer: issuer, Clock: sysClock, Cache: cache, Audit: audit},
+		LogIn:            &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer, Throttle: throttle, Audit: audit},
 		LogOut:           &app.LogOut{Sessions: sessions, Clock: sysClock, Cache: cache},
 		ResolveSession:   &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: sysClock, Cache: cache},
 		SwitchOrg:        &app.SwitchOrganisation{Accounts: accounts, Sessions: sessions, Issuer: issuer, Cache: cache},
@@ -148,11 +152,11 @@ func main() {
 		Cookies:          httpapi.CookieSettings{Secure: secureCookies},
 		Origins:          httpapi.ParseAllowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
 
-		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock},
+		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock, Audit: audit},
 		ListAgents:        &app.ListAgents{Agents: agents},
 		GetAgent:          &app.GetAgent{Agents: agents},
-		RotateAgentKey:    &app.RotateAgentKey{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock, Cache: cache},
-		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: sysClock, Cache: cache},
+		RotateAgentKey:    &app.RotateAgentKey{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock, Cache: cache, Audit: audit},
+		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: sysClock, Cache: cache, Audit: audit},
 		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: sysClock, Cache: cache},
 
 		ListPayments:      &app.ListPayments{Payments: payments},

@@ -37,6 +37,7 @@ type VerifyEmail struct {
 	Users  UserStore
 	Clock  Clock
 	Cache  *Cache
+	Audit  *Audit
 }
 
 func (v *VerifyEmail) Run(ctx context.Context, token string) error {
@@ -49,6 +50,7 @@ func (v *VerifyEmail) Run(ctx context.Context, token string) error {
 		return err
 	}
 	v.Cache.InvalidateUser(ctx, domain.UserID(t.Subject))
+	v.Audit.recordAs(ctx, User{ID: domain.UserID(t.Subject)}, "", AuditEmailVerified, "user", t.Subject, nil)
 	return nil
 }
 

@@ -1159,3 +1159,38 @@ func (s *Sessions) RevokeByID(ctx context.Context, user domain.UserID, id string
 	}
 	return app.ErrNotFound
 }
+
+// AuditLog is an in-memory app.AuditLog.
+type AuditLog struct {
+	mu     sync.Mutex
+	events []app.AuditEvent
+}
+
+func NewAuditLog() *AuditLog { return &AuditLog{} }
+
+func (l *AuditLog) Record(ctx context.Context, e app.AuditEvent) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.events = append(l.events, e)
+	return nil
+}
+
+func (l *AuditLog) List(ctx context.Context, org domain.OrgID, f app.AuditFilter) (app.AuditPage, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []app.AuditEvent
+	for i := len(l.events) - 1; i >= 0; i-- {
+		e := l.events[i]
+		if e.OrgID == org && (f.Action == "" || e.Action == f.Action) && (f.Actor == "" || e.ActorUserID == f.Actor) {
+			out = append(out, e)
+		}
+	}
+	return app.AuditPage{Events: out}, nil
+}
+
+// All returns every event, oldest first.
+func (l *AuditLog) All() []app.AuditEvent {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]app.AuditEvent(nil), l.events...)
+}

@@ -228,7 +228,19 @@ func (h *Handler) requireUser(next http.Handler) http.Handler {
 			writeAppError(w, err, "could not check the session")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, p)))
+		ctx := context.WithValue(r.Context(), userKey, p)
+		actor := app.ActorFrom(ctx)
+		actor.UserID, actor.Email = p.User.ID, p.User.Email
+		next.ServeHTTP(w, r.WithContext(app.WithActor(ctx, actor)))
+	})
+}
+
+// withActor records the client's IP and user agent for the audit log;
+// requireUser adds who they are once the session resolves.
+func (h *Handler) withActor(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := app.WithActor(r.Context(), app.Actor{IP: clientIP(r, h.ClientIPHeader), UserAgent: r.UserAgent()})
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

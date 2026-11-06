@@ -821,6 +821,58 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/audit-log:
+    get:
+      tags: [Members]
+      operationId: listAuditLog
+      summary: Account actions in the organisation
+      description: |
+        Owners and admins. Newest first. Actions: auth.logged_in,
+        auth.password_changed, auth.sessions_revoked, member.invited,
+        invitation.revoked, invitation.accepted, member.role_changed,
+        member.removed, member.left, agent.created, agent.key_rotated,
+        agent.revoked, payee.registered. Payments have their own history
+        (GET /v1/payments/{key}).
+      security:
+        - session: []
+      parameters:
+        - name: action
+          in: query
+          schema:
+            type: string
+        - name: actor_id
+          in: query
+          description: A user ID.
+          schema:
+            type: string
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of events.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditEvent"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/agents:
     post:
       tags: [Agents]
@@ -2146,6 +2198,47 @@ components:
             created_at:
               type: string
               format: date-time
+
+    AuditEvent:
+      type: object
+      required: [id, action, actor, target, details, ip, at]
+      properties:
+        id:
+          type: string
+        action:
+          type: string
+        actor:
+          description: Who did it.
+          oneOf:
+            - type: object
+              required: [id, email]
+              properties:
+                id:
+                  type: string
+                email:
+                  type: string
+            - type: "null"
+        target:
+          description: What it was done to.
+          oneOf:
+            - type: object
+              required: [type, id]
+              properties:
+                type:
+                  type: string
+                  enum: [user, agent, invitation, payee]
+                id:
+                  type: string
+            - type: "null"
+        details:
+          type: object
+          additionalProperties:
+            type: string
+        ip:
+          type: [string, "null"]
+        at:
+          type: string
+          format: date-time
 
     SessionInfo:
       type: object

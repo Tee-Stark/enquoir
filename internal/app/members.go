@@ -61,11 +61,14 @@ type ChangeMemberRole struct {
 	Sessions MemberSessions
 	Clock    Clock
 	Cache    *Cache
+	Audit    *Audit
 }
 
 func (c *ChangeMemberRole) Run(ctx context.Context, p UserPrincipal, user domain.UserID, to domain.Role) error {
 	org := p.Organisation.ID
+	var was domain.Role
 	err := c.Members.ChangeRole(ctx, org, user, to, func(from domain.Role, owners int) error {
+		was = from
 		if err := p.Role.CanAssign(from, to); err != nil {
 			return err
 		}
@@ -78,6 +81,7 @@ func (c *ChangeMemberRole) Run(ctx context.Context, p UserPrincipal, user domain
 		return err
 	}
 	c.Cache.InvalidateUser(ctx, user)
+	c.Audit.record(ctx, org, AuditRoleChanged, "user", string(user), map[string]string{"from": string(was), "to": string(to)})
 	return c.Sessions.RevokeForMember(ctx, org, user, c.Clock.Now())
 }
 
@@ -88,11 +92,14 @@ type RemoveMember struct {
 	Sessions MemberSessions
 	Clock    Clock
 	Cache    *Cache
+	Audit    *Audit
 }
 
 func (r *RemoveMember) Run(ctx context.Context, p UserPrincipal, user domain.UserID) error {
 	org := p.Organisation.ID
+	var was domain.Role
 	err := r.Members.RemoveMember(ctx, org, user, func(from domain.Role, owners int) error {
+		was = from
 		if user != p.User.ID {
 			// Removing someone is managing them: as if moving them down.
 			if err := p.Role.CanAssign(from, domain.Viewer); err != nil {
@@ -108,6 +115,11 @@ func (r *RemoveMember) Run(ctx context.Context, p UserPrincipal, user domain.Use
 		return err
 	}
 	r.Cache.InvalidateUser(ctx, user)
+	action := AuditMemberRemoved
+	if user == p.User.ID {
+		action = AuditMemberLeft
+	}
+	r.Audit.record(ctx, org, action, "user", string(user), map[string]string{"role": string(was)})
 	return r.Sessions.RevokeForMember(ctx, org, user, r.Clock.Now())
 }
 
@@ -156,6 +168,7 @@ type InviteMember struct {
 	Emails      *Emails
 	IDs         IDGenerator
 	Clock       Clock
+	Audit       *Audit
 }
 
 func (i *InviteMember) Run(ctx context.Context, p UserPrincipal, rawEmail string, role domain.Role) (Invitation, error) {
@@ -180,6 +193,7 @@ func (i *InviteMember) Run(ctx context.Context, p UserPrincipal, rawEmail string
 	if err := i.Invitations.CreateInvitation(ctx, inv); err != nil {
 		return Invitation{}, err
 	}
+	i.Audit.record(ctx, inv.OrgID, AuditMemberInvited, "invitation", inv.ID, map[string]string{"email": string(email), "role": string(role)})
 	_, err = i.Emails.Send(ctx, Email{
 		OrgID: p.Organisation.ID, To: email, Template: TemplateInvitation,
 		Params: map[string]string{"organisation": p.Organisation.Name, "inviter": string(p.User.Email), "role": string(role)},
@@ -202,10 +216,15 @@ func (l *ListInvitations) Run(ctx context.Context, org domain.OrgID) ([]Invitati
 type RevokeInvitation struct {
 	Invitations InvitationStore
 	Clock       Clock
+	Audit       *Audit
 }
 
 func (r *RevokeInvitation) Run(ctx context.Context, p UserPrincipal, id string) error {
-	return r.Invitations.RevokeInvitation(ctx, p.Organisation.ID, id, r.Clock.Now())
+	if err := r.Invitations.RevokeInvitation(ctx, p.Organisation.ID, id, r.Clock.Now()); err != nil {
+		return err
+	}
+	r.Audit.record(ctx, p.Organisation.ID, AuditInvitationRevoked, "invitation", id, nil)
+	return nil
 }
 
 // AcceptedInvitation is the result of accepting: the organisation and
@@ -232,6 +251,7 @@ type AcceptInvitation struct {
 	Issuer      *SessionIssuer
 	Clock       Clock
 	Cache       *Cache
+	Audit       *Audit
 }
 
 func (a *AcceptInvitation) Run(ctx context.Context, token, password string) (AcceptedInvitation, error) {
@@ -284,6 +304,8 @@ func (a *AcceptInvitation) Run(ctx context.Context, token, password string) (Acc
 	if err != nil {
 		return AcceptedInvitation{}, fmt.Errorf("reading the new membership: %w", err)
 	}
+	a.Audit.recordAs(ctx, user, inv.OrgID, AuditInvitationAccepted, "invitation", inv.ID,
+		map[string]string{"role": string(m.Role), "account_created": fmt.Sprint(created)})
 	out := AcceptedInvitation{Organisation: m.Organisation, Role: m.Role, User: user, AccountCreated: created}
 	if created {
 		s, err := a.Issuer.issue(ctx, user, inv.OrgID)

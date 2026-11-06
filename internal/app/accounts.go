@@ -198,6 +198,7 @@ type LogIn struct {
 	Hasher   PasswordHasher
 	Issuer   *SessionIssuer
 	Throttle *Throttle
+	Audit    *Audit
 }
 
 func (l *LogIn) Run(ctx context.Context, rawEmail, password string) (SignedIn, error) {
@@ -222,6 +223,9 @@ func (l *LogIn) Run(ctx context.Context, rawEmail, password string) (SignedIn, e
 	ok, verr := l.Hasher.Verify(password, encoded)
 	if errors.Is(err, ErrNotFound) || verr != nil || !ok {
 		if email != "" && l.Throttle.failedLogIn(ctx, email) {
+			if !errors.Is(err, ErrNotFound) {
+				l.Audit.recordAs(ctx, user, "", AuditLockedOut, "user", string(user.ID), nil)
+			}
 			return SignedIn{}, &AccountLockedError{RetryAfter: LockoutDuration}
 		}
 		return SignedIn{}, ErrInvalidCredentials
@@ -242,6 +246,7 @@ func (l *LogIn) Run(ctx context.Context, rawEmail, password string) (SignedIn, e
 	if err != nil {
 		return SignedIn{}, err
 	}
+	l.Audit.recordAs(ctx, user, m.Organisation.ID, AuditLoggedIn, "user", string(user.ID), nil)
 	return SignedIn{User: user, Organisation: m.Organisation, Role: m.Role, Session: session}, nil
 }
 

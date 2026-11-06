@@ -33,6 +33,8 @@ type Handler struct {
 	RevokeSession       *app.RevokeSession
 	RevokeOtherSessions *app.RevokeOtherSessions
 
+	ListAuditLog *app.ListAuditLog
+
 	ListMembers      *app.ListMembers
 	ChangeMemberRole *app.ChangeMemberRole
 	RemoveMember     *app.RemoveMember
@@ -63,7 +65,7 @@ type Handler struct {
 
 func NewRouter(h *Handler) chi.Router {
 	r := chi.NewRouter()
-	r.Use(limitBody, h.cors, h.checkOrigin)
+	r.Use(limitBody, h.cors, h.checkOrigin, h.withActor)
 	r.Get("/healthz", h.healthz)
 	r.Get("/openapi.yaml", serveSpec)
 	r.Get("/docs", serveDocs)
@@ -125,6 +127,8 @@ func NewRouter(h *Handler) chi.Router {
 		r.With(manage, verified).Post("/v1/invitations", h.inviteMember)
 		r.With(manage).Get("/v1/invitations", h.listInvitations)
 		r.With(manage).Delete("/v1/invitations/{id}", h.revokeInvitation)
+
+		r.With(h.allow(domain.PermViewAuditLog)).Get("/v1/audit-log", h.listAuditLog)
 	})
 	return r
 }
