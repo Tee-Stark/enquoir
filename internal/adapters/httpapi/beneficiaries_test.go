@@ -54,8 +54,8 @@ const validBeneficiaryBody = `{
 }`
 
 type registerResponse struct {
-	ID    string `json:"id"`
-	Key   string `json:"key"`
+	ID     string `json:"id"`
+	Key    string `json:"key"`
 	Detail string `json:"detail"`
 }
 
