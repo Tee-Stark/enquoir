@@ -150,16 +150,22 @@ func (t *transport) doJSON(ctx context.Context, method, path string, body any) (
 			return 0, nil, fmt.Errorf("airwallex: %s %s: reading response: %v: %w", method, path, readErr, app.ErrAmbiguous)
 		}
 
-		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRequestAttempts {
-			t.sleep(backoff)
-			backoff *= 2
-			continue
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if attempt < maxRequestAttempts {
+				t.sleep(backoff)
+				backoff *= 2
+				continue
+			}
+			// Still rate limited: the rail declined to look at the
+			// request, so its outcome is unknown, never a rejection. A
+			// caller that saw a 4xx here would end a good payment.
+			return 0, nil, railError(fmt.Sprintf("airwallex: %s %s: still rate limited after %d attempts: status %d: %s",
+				method, path, maxRequestAttempts, resp.StatusCode, respBody), resp.StatusCode, respBody, app.ErrAmbiguous)
 		}
 
 		return resp.StatusCode, respBody, nil
 	}
-
-	return 0, nil, fmt.Errorf("airwallex: %s %s: exhausted retries on repeated rate limiting: %w", method, path, app.ErrAmbiguous)
+	panic("unreachable: the loop always returns")
 }
 
 // railError describes a failed call the rail answered, keeping its
