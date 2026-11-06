@@ -21,6 +21,13 @@ type Handler struct {
 	LogOut         *app.LogOut
 	ResolveSession *app.ResolveSession
 	Cookies        CookieSettings
+
+	CreateAgent       *app.CreateAgent
+	ListAgents        *app.ListAgents
+	GetAgent          *app.GetAgent
+	RotateAgentKey    *app.RotateAgentKey
+	RevokeAgent       *app.RevokeAgent
+	AuthenticateAgent *app.AuthenticateAgent
 }
 
 func NewRouter(h *Handler) chi.Router {
@@ -36,6 +43,15 @@ func NewRouter(h *Handler) chi.Router {
 	r.Post("/v1/auth/login", h.logIn)
 	r.Post("/v1/auth/logout", h.logOut)
 	r.With(h.requireUser).Get("/v1/auth/session", h.getSession)
+
+	r.Group(func(r chi.Router) {
+		r.Use(h.requireUser)
+		r.Post("/v1/agents", h.createAgent)
+		r.Get("/v1/agents", h.listAgents)
+		r.Get("/v1/agents/{id}", h.getAgent)
+		r.Delete("/v1/agents/{id}", h.revokeAgent)
+		r.Post("/v1/agents/{id}/rotate-key", h.rotateAgentKey)
+	})
 	return r
 }
 

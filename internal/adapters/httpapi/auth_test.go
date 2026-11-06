@@ -15,21 +15,30 @@ import (
 type authFixture struct {
 	router http.Handler
 	clock  *apptest.Clock
+	agents *apptest.Agents
 }
 
 func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	t.Helper()
 	clock := apptest.NewClock()
 	accounts, sessions, hasher := apptest.NewAccounts(), apptest.NewSessions(), &apptest.Hasher{}
-	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: &apptest.Secrets{}, Clock: clock, TTL: 7 * 24 * time.Hour}
+	agents, ids, secrets := apptest.NewAgents(), &apptest.IDs{}, &apptest.Secrets{}
+	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: clock, TTL: 7 * 24 * time.Hour}
 	h := &Handler{
-		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: &apptest.IDs{}, Clock: clock, Issuer: issuer},
+		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: clock, Issuer: issuer},
 		LogIn:          &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
 		LogOut:         &app.LogOut{Sessions: sessions, Clock: clock},
 		ResolveSession: &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: clock},
 		Cookies:        CookieSettings{Secure: secureCookies},
+
+		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: clock},
+		ListAgents:        &app.ListAgents{Agents: agents},
+		GetAgent:          &app.GetAgent{Agents: agents},
+		RotateAgentKey:    &app.RotateAgentKey{Agents: agents, IDs: ids, Secrets: secrets, Clock: clock},
+		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: clock},
+		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: clock},
 	}
-	return &authFixture{router: contract(t, NewRouter(h)), clock: clock}
+	return &authFixture{router: contract(t, NewRouter(h)), clock: clock, agents: agents}
 }
 
 func (f *authFixture) do(t *testing.T, method, path, body string, cookies ...*http.Cookie) *httptest.ResponseRecorder {

@@ -19,6 +19,11 @@ tags:
       Sign up, log in and out of the dashboard. Sessions are an HttpOnly
       cookie, `enquoir_session`, SameSite=Lax. Email verification and
       onboarding are placeholders until their requirements arrive.
+  - name: Agents
+    description: |
+      The AI agents that submit payments. Each agent has one API key,
+      shown once when created or rotated; agents send it as
+      `Authorization: Bearer <key>`. Managing agents needs a dashboard session.
   - name: Payments
     description: Payment intents submitted by agents.
   - name: Beneficiaries
@@ -177,6 +182,133 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/agents:
+    post:
+      tags: [Agents]
+      operationId: createAgent
+      summary: Create an agent and its API key
+      description: The response is the only time the key's secret is shown. Store it then.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedAgent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Agents]
+      operationId: listAgents
+      summary: List the organisation's agents
+      description: Oldest first, revoked agents included.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The agents.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Agent"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/agents/{id}:
+    parameters:
+      - $ref: "#/components/parameters/AgentID"
+    get:
+      tags: [Agents]
+      operationId: getAgent
+      summary: Get an agent
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Agents]
+      operationId: revokeAgent
+      summary: Revoke an agent
+      description: |
+        Its key stops working at once. The agent stays listed, marked revoked,
+        so its payment history keeps its name. Revoking twice succeeds.
+      security:
+        - session: []
+      responses:
+        "204":
+          description: Revoked.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/agents/{id}/rotate-key:
+    parameters:
+      - $ref: "#/components/parameters/AgentID"
+    post:
+      tags: [Agents]
+      operationId: rotateAgentKey
+      summary: Replace an agent's API key
+      description: The old key stops working at once. The new secret is shown only in this response.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: Rotated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedAgent"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: No such agent in this organisation, or it is revoked (`not_found`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/intents:
     post:
       tags: [Payments]
@@ -274,6 +406,12 @@ components:
         type: string
 
   parameters:
+    AgentID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
     IntentKey:
       name: key
       in: path
@@ -394,6 +532,68 @@ components:
         created_at:
           type: string
           format: date-time
+
+    Agent:
+      type: object
+      required: [id, name, status, created_at, revoked_at, api_key]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, revoked]
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: [string, "null"]
+          format: date-time
+        api_key:
+          description: The active key, without its secret. Null once revoked.
+          oneOf:
+            - $ref: "#/components/schemas/APIKey"
+            - type: "null"
+
+    APIKey:
+      type: object
+      required: [id, prefix, created_at, last_used_at]
+      properties:
+        id:
+          type: string
+        prefix:
+          type: string
+          description: The first 12 characters of the secret, to recognise it by.
+          examples: [enq_sk_Ab3dE]
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: [string, "null"]
+          format: date-time
+          description: Updated at most once a minute.
+
+    IssuedAgent:
+      type: object
+      required: [agent, api_key]
+      properties:
+        agent:
+          $ref: "#/components/schemas/Agent"
+        api_key:
+          type: object
+          required: [id, prefix, secret, created_at]
+          properties:
+            id:
+              type: string
+            prefix:
+              type: string
+            secret:
+              type: string
+              description: The API key. Shown only in this response; Enquoir stores only its hash.
+            created_at:
+              type: string
+              format: date-time
 
     AuthSession:
       type: object

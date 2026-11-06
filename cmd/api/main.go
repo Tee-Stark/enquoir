@@ -83,7 +83,9 @@ func main() {
 	sessions := postgres.NewSessionStore(pool)
 	hasher := &credentials.PBKDF2Hasher{}
 	ids := credentials.RandomIDs{}
-	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: credentials.RandomSecrets{}, Clock: sysClock, TTL: sessionTTL}
+	agents := postgres.NewAgentStore(pool)
+	secrets := credentials.RandomSecrets{}
+	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: sysClock, TTL: sessionTTL}
 
 	handler := &httpapi.Handler{
 		Submit: &app.SubmitIntent{
@@ -98,6 +100,13 @@ func main() {
 		LogOut:         &app.LogOut{Sessions: sessions, Clock: sysClock},
 		ResolveSession: &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: sysClock},
 		Cookies:        httpapi.CookieSettings{Secure: secureCookies},
+
+		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock},
+		ListAgents:        &app.ListAgents{Agents: agents},
+		GetAgent:          &app.GetAgent{Agents: agents},
+		RotateAgentKey:    &app.RotateAgentKey{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock},
+		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: sysClock},
+		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: sysClock},
 	}
 
 	logger.Info("api listening", "addr", httpAddr)
