@@ -80,3 +80,24 @@ func (m *Mailer) used(key string) bool {
 	}
 	return false
 }
+
+// Copy sends through primary and, once primary has accepted a message,
+// appends a copy to path - for development, where the real provider
+// delivers to test inboxes no one can read. Nothing is copied for a
+// message primary did not send.
+func Copy(primary app.Mailer, path string) app.Mailer {
+	return copyMailer{primary: primary, file: New(path)}
+}
+
+type copyMailer struct {
+	primary app.Mailer
+	file    *Mailer
+}
+
+func (c copyMailer) Send(ctx context.Context, e app.OutgoingEmail) (string, error) {
+	id, err := c.primary.Send(ctx, e)
+	if err == nil {
+		c.file.Send(ctx, e) // best effort: a copy, never the record
+	}
+	return id, err
+}

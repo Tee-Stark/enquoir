@@ -602,3 +602,204 @@ func (r *Payments) GetPayment(ctx context.Context, org domain.OrgID, key domain.
 	}
 	return app.Payment{}, app.ErrNotFound
 }
+
+// Outbox is an in-memory app.EmailOutbox.
+type Outbox struct {
+	mu     sync.Mutex
+	emails map[string]app.Email
+	order  []string
+}
+
+func NewOutbox() *Outbox { return &Outbox{emails: map[string]app.Email{}} }
+
+func (o *Outbox) Queue(ctx context.Context, e app.Email) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.emails[e.ID] = e
+	o.order = append(o.order, e.ID)
+	return nil
+}
+
+func (o *Outbox) Get(ctx context.Context, id string) (app.Email, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e, ok := o.emails[id]
+	if !ok {
+		return app.Email{}, app.ErrNotFound
+	}
+	return e, nil
+}
+
+func (o *Outbox) MarkSent(ctx context.Context, id, providerID string, at time.Time) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e := o.emails[id]
+	e.Status, e.ProviderID, e.SentAt = app.EmailSent, providerID, &at
+	o.emails[id] = e
+	return nil
+}
+
+func (o *Outbox) MarkFailed(ctx context.Context, id, reason string, at time.Time) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e := o.emails[id]
+	e.Status, e.Error = app.EmailFailed, reason
+	o.emails[id] = e
+	return nil
+}
+
+// All returns every queued email, oldest first.
+func (o *Outbox) All() []app.Email {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	out := make([]app.Email, len(o.order))
+	for i, id := range o.order {
+		out[i] = o.emails[id]
+	}
+	return out
+}
+
+// Dispatcher records dispatched email IDs. Err, if set, is returned.
+type Dispatcher struct {
+	mu  sync.Mutex
+	ids []string
+	Err error
+	// Deliver, if set, is run for each dispatch: a synchronous stand-in
+	// for the durable send.
+	Deliver func(ctx context.Context, id string) error
+}
+
+func (d *Dispatcher) Dispatch(ctx context.Context, id string) error {
+	d.mu.Lock()
+	d.ids = append(d.ids, id)
+	d.mu.Unlock()
+	if d.Err != nil {
+		return d.Err
+	}
+	if d.Deliver != nil {
+		return d.Deliver(ctx, id)
+	}
+	return nil
+}
+
+func (d *Dispatcher) Dispatched() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.ids...)
+}
+
+// Mailer records sent emails. Err, if set, is returned instead.
+type Mailer struct {
+	mu   sync.Mutex
+	sent []app.OutgoingEmail
+	n    int
+	Err  error
+}
+
+func (m *Mailer) Send(ctx context.Context, e app.OutgoingEmail) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return "", m.Err
+	}
+	m.sent = append(m.sent, e)
+	m.n++
+	return fmt.Sprintf("msg_%d", m.n), nil
+}
+
+func (m *Mailer) Sent() []app.OutgoingEmail {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]app.OutgoingEmail(nil), m.sent...)
+}
+
+// LastTo returns the link in the last email sent to addr.
+func (m *Mailer) LastLinkTo(addr domain.Email) string {
+	sent := m.Sent()
+	for i := len(sent) - 1; i >= 0; i-- {
+		if sent[i].To == addr {
+			return LinkIn(sent[i].Text)
+		}
+	}
+	return ""
+}
+
+// TokenFrom is the token in the last link sent to addr.
+func (m *Mailer) TokenTo(addr domain.Email) string {
+	link := m.LastLinkTo(addr)
+	if i := strings.Index(link, "token="); i >= 0 {
+		return link[i+len("token="):]
+	}
+	return ""
+}
+
+// LinkIn returns the first URL with a token in text.
+func LinkIn(text string) string {
+	for _, f := range strings.Fields(text) {
+		if strings.Contains(f, "token=") {
+			return f
+		}
+	}
+	return ""
+}
+
+// Renderer renders any template as its params, one per line, so tests
+// can read them back.
+type Renderer struct{}
+
+func (Renderer) Render(id app.TemplateID, params map[string]string) (app.RenderedEmail, error) {
+	var b strings.Builder
+	for k, v := range params {
+		fmt.Fprintf(&b, "%s: %s\n", k, v)
+	}
+	if params["link"] != "" {
+		b.WriteString(params["link"] + "\n")
+	}
+	return app.RenderedEmail{Subject: string(id), HTML: "<p>" + string(id) + "</p>", Text: b.String()}, nil
+}
+
+// Tokens is an in-memory app.TokenStore.
+type Tokens struct {
+	mu     sync.Mutex
+	tokens map[string]app.OneTimeToken
+}
+
+func NewTokens() *Tokens { return &Tokens{tokens: map[string]app.OneTimeToken{}} }
+
+func (s *Tokens) Create(ctx context.Context, t app.OneTimeToken) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tokens[t.Hash] = t
+	return nil
+}
+
+func (s *Tokens) Consume(ctx context.Context, hash string, purpose app.TokenPurpose, now time.Time) (app.OneTimeToken, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tokens[hash]
+	if !ok || t.Purpose != purpose || t.UsedAt != nil || !now.Before(t.ExpiresAt) {
+		return app.OneTimeToken{}, app.ErrTokenInvalid
+	}
+	for h, other := range s.tokens {
+		if other.Purpose == t.Purpose && other.Subject == t.Subject && other.UsedAt == nil {
+			other.UsedAt = &now
+			s.tokens[h] = other
+		}
+	}
+	t.UsedAt = &now
+	return t, nil
+}
+
+func (s *Tokens) Count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.tokens)
+}
+
+// StoresPlaintext reports whether any stored token hash is token.
+func (s *Tokens) StoresPlaintext(token string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.tokens[token]
+	return ok
+}

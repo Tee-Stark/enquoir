@@ -41,6 +41,9 @@ type Activities struct {
 	Attempts app.AttemptLog
 	IDs      app.IDGenerator
 	Clock    app.Clock
+
+	EmailDelivery *app.DeliverEmail
+	EmailGiveUp   *app.GiveUpEmail
 }
 
 // TransferRef names a transfer and the intent it pays.
