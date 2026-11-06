@@ -74,3 +74,22 @@ a transfer, never a clean rejection). Re-ran the exact same
 sequence immediately after and all four points passed, `before_log`
 included, so this looks like an intermittent sandbox-side condition
 on this fee corridor, not anything in the request Enquoir sent.
+
+## Observed later on 2026-11-06 (Phase 4 verification runs)
+
+- **`fee_unknown` is not rare.** It rejected a create in 2 of the 4
+  `make chaos` runs that day (`400 {"code":"fee_unknown", ... "source":
+  "transfer"}`), each time on a different kill point, while the other
+  points in the same run succeeded. Enquoir treats it correctly as a
+  clear rejection (FAILED, reason recorded, no transfer). `cmd/chaos`
+  now retries such a point with a fresh intent and reports it
+  INCONCLUSIVE if every attempt is rejected. If it persists, it is a
+  question for Airwallex about this account's fee configuration.
+- **The transition simulator can answer 500 and still apply.** A
+  `next_status: PAID` call returned 500 `operation_failed` five times
+  over ~10s; the transfer read PAID shortly after. Confirm transitions
+  by reading the transfer, never by the simulator's status code.
+- **A real DNS failure hit a retried create** (`lookup
+  api.sandbox.airwallex.com: no such host`). Enquoir recovered through
+  UNKNOWN and the lookup (itself retried with backoff), found the
+  transfer the killed worker had created, and sent no second create.

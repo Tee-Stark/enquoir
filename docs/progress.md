@@ -571,3 +571,67 @@ decision, not wiring, and wasn't invented here without asking.
   exactly as found - it documents the pre-Cloud, single-tenant demo
   script and doesn't mention organisations or agents at all. Not part
   of this branch's history; not touched, not committed, not deleted.
+
+## Corrections and fixes after reviewing the session above (2026-11-06)
+
+A review of the nine commits above, against the code, both test suites,
+the live stack and the real sandbox, found the intent tenancy itself
+correct, and the following not in order.
+
+### Correction to the record above
+
+- **"Clean after every commit" was not true.** 7 of those 9 commits
+  (`6196be9` to `0de1f11`) do not build; only `443c2ea` and `1427e0a`
+  pass `make test`. Each changed a signature and left callers for a
+  later commit. History is not rewritten (AGENTS.md); this records it.
+  Every commit from here on was checked to build and pass on its own.
+- **Beneficiary ownership was not an open decision.** AGENTS.md requires
+  every beneficiary to belong to one organisation, and the approved
+  Phase 4 plan included payee ownership. Live, organisation B
+  registering organisation A's payee details got A's beneficiary ID
+  back, and `payee` was never checked, so any organisation's agent
+  could pay any payee on the shared Airwallex account.
+
+### Fixed
+
+- **Migration 0005 truncated `intents` and `intent_events`** - every
+  recorded payment and its hash-chained history, on any database it ran
+  on. Rewritten (`f1d5d5c`): pre-tenancy intents move to an
+  `org_pre_tenancy` organisation with their chains intact. Edited in
+  place because the branch was never pushed; this machine had already
+  run the destructive version, and its earlier sandbox records are
+  gone (no backup). An integration test builds a pre-0005 database in
+  an isolated schema and requires the history to survive; it failed
+  against the old migration.
+- **Beneficiaries belong to one organisation** (`93299fa`, `5765097`,
+  `8cb3b46`): the beneficiary key includes the organisation, so each
+  organisation gets its own Airwallex beneficiary; a `beneficiaries`
+  table records the owner (rail ID unique, only the last four account
+  digits kept); an intent for a payee the organisation did not register
+  is `422 payee_unknown` and starts nothing. Mutation-checked at the app
+  and HTTP layers.
+- **`make e2e` was broken** (401 at step 2). Rewritten for the Cloud
+  flow (`55df6e3`): sign up, agent, key; reworded-reason retry; and a
+  second organisation that cannot pay or see the first's payee or
+  payment. All 17 steps pass against the real sandbox.
+- **`cmd/chaos`** (`b3a141f`): a clean rail rejection is reported as
+  such (retried, then INCONCLUSIVE), not as "no transfer found"; and
+  simulator transitions are waited out for up to 90s, since the
+  simulator has answered 500 and applied the transition later.
+
+### Verified
+
+- `make test` offline and `make test-integration` (no workflows left
+  running), `make demo`, `make e2e` (17/17), and `make chaos`: all four
+  points pass. In that run `after_call_before_commit` hit a real DNS
+  failure on its retried create and recovered through `UNKNOWN` and the
+  lookup to the one transfer already on the rail - the first time that
+  recovery path completed against the real sandbox
+  (`PROPOSED > AUTHORIZED > IN_FLIGHT > UNKNOWN > IN_FLIGHT > APPLIED`).
+
+### Not verified
+
+- A chaos point actually going INCONCLUSIVE live (no `fee_unknown` in
+  the final run); the verdict is covered by a unit test.
+- Phase 4's remaining scope - attempts, history, replay, analytics, and
+  the email-verification and onboarding placeholders - is not built yet.
