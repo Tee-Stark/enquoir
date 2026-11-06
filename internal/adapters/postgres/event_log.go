@@ -25,8 +25,11 @@ func NewEventLog(pool *pgxpool.Pool) *EventLog {
 // Append loads the chain recorded so far, extends it with the domain's
 // own chaining logic, and persists only the new event. The event is
 // written before Append returns, never after a caller acts on it.
-func (l *EventLog) Append(ctx context.Context, intentKey domain.IntentKey, eventType, payload string) (domain.Event, error) {
-	chain, err := l.Load(ctx, intentKey)
+// Tenants are isolated: org is stored on the row and scopes the load
+// that precedes it, even though intentKey alone already cannot belong
+// to two organisations.
+func (l *EventLog) Append(ctx context.Context, org domain.OrgID, intentKey domain.IntentKey, eventType, payload string) (domain.Event, error) {
+	chain, err := l.Load(ctx, org, intentKey)
 	if err != nil {
 		return domain.Event{}, err
 	}
@@ -35,9 +38,9 @@ func (l *EventLog) Append(ctx context.Context, intentKey domain.IntentKey, event
 	newEvent := chain[len(chain)-1]
 
 	_, err = l.pool.Exec(ctx, `
-		INSERT INTO intent_events (intent_key, sequence_number, type, payload, prev_hash, hash)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		string(intentKey), newEvent.SequenceNumber, newEvent.Type, newEvent.Payload, newEvent.PrevHash, newEvent.Hash,
+		INSERT INTO intent_events (intent_key, org_id, sequence_number, type, payload, prev_hash, hash)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		string(intentKey), string(org), newEvent.SequenceNumber, newEvent.Type, newEvent.Payload, newEvent.PrevHash, newEvent.Hash,
 	)
 	if err != nil {
 		return domain.Event{}, fmt.Errorf("appending event for %s: %w", intentKey, err)
@@ -46,11 +49,11 @@ func (l *EventLog) Append(ctx context.Context, intentKey domain.IntentKey, event
 	return newEvent, nil
 }
 
-func (l *EventLog) Load(ctx context.Context, intentKey domain.IntentKey) (domain.Chain, error) {
+func (l *EventLog) Load(ctx context.Context, org domain.OrgID, intentKey domain.IntentKey) (domain.Chain, error) {
 	rows, err := l.pool.Query(ctx, `
 		SELECT sequence_number, type, payload, prev_hash, hash
-		FROM intent_events WHERE intent_key = $1
-		ORDER BY sequence_number ASC`, string(intentKey),
+		FROM intent_events WHERE org_id = $1 AND intent_key = $2
+		ORDER BY sequence_number ASC`, string(org), string(intentKey),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("loading chain for %s: %w", intentKey, err)

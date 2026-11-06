@@ -29,9 +29,14 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func testIntent(t *testing.T) domain.Intent {
+// testIntent builds an Intent for a freshly stored, real organisation -
+// intents.org_id references organisations(id), so there is no
+// shortcut around having one.
+func testIntent(t *testing.T, pool *pgxpool.Pool) domain.Intent {
 	t.Helper()
+	org, _ := newTestOrg(t, NewAccountStore(pool))
 	intent, err := domain.NewIntent(
+		org.ID,
 		fmt.Sprintf("payee-%s", t.Name()),
 		10050, "USD",
 		fmt.Sprintf("ref-%s", t.Name()),
@@ -57,7 +62,7 @@ func TestIntentRepository_SavingSameKeyTwiceReturnsExistingIntent(t *testing.T) 
 	pool := testPool(t)
 	repo := NewIntentRepository(pool)
 
-	intent := testIntent(t)
+	intent := testIntent(t, pool)
 	cleanupIntent(t, pool, intent.Key)
 
 	first, err := repo.Save(ctx, intent)
@@ -89,14 +94,14 @@ func TestEventLog_AppendsWithGaplessSequenceNumbers(t *testing.T) {
 	repo := NewIntentRepository(pool)
 	events := NewEventLog(pool)
 
-	intent := testIntent(t)
+	intent := testIntent(t, pool)
 	cleanupIntent(t, pool, intent.Key)
 	if _, err := repo.Save(ctx, intent); err != nil {
 		t.Fatalf("saving intent: %v", err)
 	}
 
 	for wantSeq, eventType := range []string{"PROPOSED", "AUTHORIZED", "IN_FLIGHT"} {
-		event, err := events.Append(ctx, intent.Key, eventType, "payload")
+		event, err := events.Append(ctx, intent.OrgID, intent.Key, eventType, "payload")
 		if err != nil {
 			t.Fatalf("appending event %d: %v", wantSeq, err)
 		}
@@ -112,19 +117,19 @@ func TestEventLog_StoredChainVerifiesAfterReload(t *testing.T) {
 	repo := NewIntentRepository(pool)
 	events := NewEventLog(pool)
 
-	intent := testIntent(t)
+	intent := testIntent(t, pool)
 	cleanupIntent(t, pool, intent.Key)
 	if _, err := repo.Save(ctx, intent); err != nil {
 		t.Fatalf("saving intent: %v", err)
 	}
 
 	for _, eventType := range []string{"PROPOSED", "AUTHORIZED", "IN_FLIGHT"} {
-		if _, err := events.Append(ctx, intent.Key, eventType, "payload"); err != nil {
+		if _, err := events.Append(ctx, intent.OrgID, intent.Key, eventType, "payload"); err != nil {
 			t.Fatalf("appending %s: %v", eventType, err)
 		}
 	}
 
-	reloaded, err := events.Load(ctx, intent.Key)
+	reloaded, err := events.Load(ctx, intent.OrgID, intent.Key)
 	if err != nil {
 		t.Fatalf("loading chain: %v", err)
 	}
@@ -133,5 +138,34 @@ func TestEventLog_StoredChainVerifiesAfterReload(t *testing.T) {
 	}
 	if err := reloaded.Verify(); err != nil {
 		t.Errorf("reloaded chain failed to verify: %v", err)
+	}
+}
+
+// Tenants are isolated: explicit org scoping must block a cross-tenant
+// read even for a key that, by construction, could never arise under
+// a different organisation - the point is the database-level guard,
+// independent of the key's own uncollidability.
+func TestEventLog_KeyFromAnotherOrganisationReturnsEmptyChain(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	repo := NewIntentRepository(pool)
+	events := NewEventLog(pool)
+
+	intent := testIntent(t, pool)
+	cleanupIntent(t, pool, intent.Key)
+	if _, err := repo.Save(ctx, intent); err != nil {
+		t.Fatalf("saving intent: %v", err)
+	}
+	if _, err := events.Append(ctx, intent.OrgID, intent.Key, "PROPOSED", ""); err != nil {
+		t.Fatalf("appending event: %v", err)
+	}
+
+	otherOrg, _ := newTestOrg(t, NewAccountStore(pool))
+	chain, err := events.Load(ctx, otherOrg.ID, intent.Key)
+	if err != nil {
+		t.Fatalf("loading chain for another organisation: %v", err)
+	}
+	if len(chain) != 0 {
+		t.Errorf("another organisation saw %d events for a key it does not own, want 0", len(chain))
 	}
 }
