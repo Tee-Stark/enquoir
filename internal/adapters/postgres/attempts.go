@@ -36,6 +36,10 @@ func nullableInt(n int) *int {
 	return &n
 }
 
+// insert stores a with times from the database clock, the clock every
+// event is stamped with, so a payment's attempts and events order
+// correctly however far the API's and workers' clocks drift from it.
+// A finished attempt keeps its measured duration.
 func (l *AttemptLog) insert(ctx context.Context, a app.Attempt) error {
 	details, err := json.Marshal(a.Details)
 	if err != nil {
@@ -48,12 +52,14 @@ func (l *AttemptLog) insert(ctx context.Context, a app.Attempt) error {
 		INSERT INTO attempts (id, org_id, kind, operation, outcome, intent_key, beneficiary_key, agent_id,
 			request_id, transfer_id, transfer_status, http_status, error_code, error_message, activity_attempt,
 			details, started_at, finished_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+			clock_timestamp() - make_interval(secs => $17::float8),
+			CASE WHEN $18 THEN clock_timestamp() END)`,
 		a.ID, string(a.OrgID), string(a.Kind), a.Operation, string(a.Outcome),
 		nullable(string(a.IntentKey)), nullable(string(a.BeneficiaryKey)), nullable(string(a.AgentID)),
 		nullable(a.RequestID), nullable(a.TransferID), nullable(a.TransferStatus), nullableInt(a.HTTPStatus),
 		nullable(a.ErrorCode), nullable(a.ErrorMessage), nullableInt(a.ActivityAttempt),
-		details, a.StartedAt, a.FinishedAt)
+		details, durationSeconds(a), a.FinishedAt != nil)
 	if err != nil {
 		return fmt.Errorf("recording attempt: %w", err)
 	}
@@ -71,10 +77,10 @@ func (l *AttemptLog) Start(ctx context.Context, a app.Attempt) error {
 func (l *AttemptLog) Finish(ctx context.Context, org domain.OrgID, id string, f app.AttemptFinish) error {
 	tag, err := l.pool.Exec(ctx, `
 		UPDATE attempts SET outcome = $3, transfer_id = COALESCE($4, transfer_id), transfer_status = $5,
-			http_status = $6, error_code = $7, error_message = $8, finished_at = $9
+			http_status = $6, error_code = $7, error_message = $8, finished_at = clock_timestamp()
 		WHERE org_id = $1 AND id = $2`,
 		string(org), id, string(f.Outcome), nullable(f.TransferID), nullable(f.TransferStatus),
-		nullableInt(f.HTTPStatus), nullable(f.ErrorCode), nullable(f.ErrorMessage), f.FinishedAt)
+		nullableInt(f.HTTPStatus), nullable(f.ErrorCode), nullable(f.ErrorMessage))
 	if err != nil {
 		return fmt.Errorf("finishing attempt: %w", err)
 	}
@@ -176,6 +182,13 @@ func (l *AttemptLog) List(ctx context.Context, org domain.OrgID, f app.AttemptFi
 		page.NextCursor = encodeCursor(last.StartedAt, last.ID)
 	}
 	return page, nil
+}
+
+func durationSeconds(a app.Attempt) float64 {
+	if d := a.Duration(); d != nil {
+		return d.Seconds()
+	}
+	return 0
 }
 
 // pageTime keeps microsecond precision, which is all Postgres stores.

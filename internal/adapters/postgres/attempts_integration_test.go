@@ -38,6 +38,13 @@ func TestAttemptLog_RecordStartFinishAndList(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Times come from the database clock; set them where the test needs
+	// a particular order or age.
+	for id, age := range map[string]string{sub.ID: "3 seconds", call.ID: "2 seconds", stale.ID: "10 minutes"} {
+		if _, err := pool.Exec(ctx, `UPDATE attempts SET started_at = now() - $2::interval WHERE id = $1`, id, age); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := log.Finish(ctx, org.ID, call.ID, app.AttemptFinish{Outcome: app.OutcomeOK, TransferID: "tr_1", TransferStatus: "PROCESSING", FinishedAt: now}); err != nil {
 		t.Fatal(err)
 	}
@@ -113,3 +120,34 @@ func TestAttemptLog_RecordStartFinishAndList(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// Attempt times come from the database clock, like event times, so a
+// worker whose clock is an hour off still records in order.
+func TestAttemptLog_StampsTimesWithTheDatabaseClock(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	log := NewAttemptLog(pool)
+	org, _ := newTestOrg(t, NewAccountStore(pool))
+	skewed := time.Now().Add(-time.Hour)
+
+	sub := app.Attempt{ID: ids.NewID("att"), OrgID: org.ID, Kind: app.KindAgentSubmission, Operation: app.OpSubmitIntent,
+		Outcome: app.OutcomeStarted, StartedAt: skewed, FinishedAt: ptr(skewed.Add(250 * time.Millisecond))}
+	call := app.Attempt{ID: ids.NewID("att"), OrgID: org.ID, Kind: app.KindRailCall, Operation: app.OpGetTransfer, StartedAt: skewed}
+	log.Record(ctx, sub)
+	log.Start(ctx, call)
+	log.Finish(ctx, org.ID, call.ID, app.AttemptFinish{Outcome: app.OutcomeOK, FinishedAt: skewed})
+
+	var dbNow time.Time
+	pool.QueryRow(ctx, `SELECT now()`).Scan(&dbNow)
+	page, _ := log.List(ctx, org.ID, app.AttemptFilter{Limit: 10})
+	for _, a := range page.Attempts {
+		if dbNow.Sub(a.StartedAt).Abs() > time.Minute {
+			t.Errorf("%s started_at %v is the caller's clock, not the database's (%v)", a.Operation, a.StartedAt, dbNow)
+		}
+		if a.ID == sub.ID {
+			if d := a.Duration(); d == nil || d.Round(time.Millisecond) != 250*time.Millisecond {
+				t.Errorf("submission duration = %v, want the measured 250ms", d)
+			}
+		}
+	}
+}
