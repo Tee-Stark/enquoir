@@ -139,8 +139,10 @@ change, session listing and revocation, and an audit log are built in.
 Log-in, sign-up, resends and resets are rate limited, and 10 failed
 log-ins lock an account for an hour.
 
-Email goes through Resend (`EMAIL_PROVIDER=resend`, `RESEND_API_KEY`,
-`EMAIL_FROM`) or to a file (`EMAIL_PROVIDER=file`, `MAIL_FILE`).
+Email goes through Resend from `Enquoir <no-reply@enquoir.etimi.me>`
+(`EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, `EMAIL_FROM`; the domain is
+verified, so any address receives it) or to a file
+(`EMAIL_PROVIDER=file`, `MAIL_FILE`).
 `make emails` writes previews of every template to `email-previews/`.
 Redis (`REDIS_URL`, started by `make up`) holds rate-limit counters and a
 short cache of sessions and keys; without it everything still works.

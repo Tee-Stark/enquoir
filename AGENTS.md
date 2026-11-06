@@ -119,13 +119,27 @@ Further rules:
 
 ## Git
 
-- Local repository only. Do not add a remote or push.
+- The remote is GitHub, `Tee-Stark/enquoir` (`origin`). Work on a feature
+  branch from an up-to-date `main`, push the branch, and open a pull request
+  into `main` with a short bullet-point description. Never push to `main`
+  directly; `main` changes only by merging a reviewed pull request.
 - Commit after each green cycle. One behaviour per commit, tests and code
   together, with a conventional message such as `feat(domain): derive intent key`.
 - Every commit must pass `make test`. Never commit .env.
-- Do not amend, rebase or force anything. History is a record of the work.
-- At the end of a phase, update docs/progress.md, commit, and tag the commit
-  `phase-N`.
+- Do not amend, rebase or force-push anything. History is a record of the work.
+- At the end of a phase, update docs/progress.md, commit, tag the commit
+  `phase-N`, and open the phase's pull request.
+
+## Email facts
+
+- Enquoir sends through Resend from `Enquoir <no-reply@enquoir.etimi.me>`
+  (`EMAIL_FROM`). The domain `enquoir.etimi.me` is verified in Resend, so
+  email reaches any address; the frontend, and every emailed link, live at
+  `APP_BASE_URL` (`https://enquoir.etimi.me`).
+- `RESEND_API_KEY` is a secret: from the environment only, never printed,
+  logged or committed.
+- Automated tests send only to Resend's test inboxes
+  (`delivered+label@resend.dev`), never to real people.
 
 ## Airwallex facts to build on
 
@@ -140,8 +154,11 @@ each one you depend on, and record differences in docs/rail-notes.md.
   to 50 characters.
 - Create a transfer with POST /transfers/create, sending transfer_currency and
   transfer_amount. transfer_method is LOCAL or SWIFT. Use the US, USD, LOCAL
-  corridor, since LOCAL payouts have no fee.
-- Call POST /beneficiaries/schema before building a beneficiary payload.
+  corridor. (The guide says LOCAL payouts have no fee; the sandbox charged
+  one - see docs/rail-notes.md.)
+- Read the beneficiary form schema before building a beneficiary payload.
+  (The guide says POST /beneficiaries/schema; the live endpoint is
+  POST /beneficiary_form_schemas/generate - see docs/rail-notes.md.)
 - Fund the sandbox: list or create a Global Account, then
   POST /simulation/deposit/create.
 - Move a transfer through states with
@@ -156,7 +173,7 @@ each one you depend on, and record differences in docs/rail-notes.md.
   viewer (read only). One person may belong to several organisations; a
   session is bound to one. Nobody grants a role above their own; an
   organisation always keeps an owner; a role change or removal signs the
-  member out everywhere.
+  member out of that organisation at once.
 - Invitations by email; accepting adds the membership (or creates the
   account). Only verified accounts may create agents, invite, or register
   payees, so only an organisation's own agents can create its intents.

@@ -880,3 +880,14 @@ Branch `feat/auth`, from `main` after PR #8 merged.
 - `make e2e` clears the dev Redis sign-up counter so repeated runs are
   not limited.
 - Two-factor authentication and API key scopes/expiry are not built.
+
+### Sender domain verified (2026-11-07)
+
+`enquoir.etimi.me` is verified in Resend; Enquoir now sends from
+`Enquoir <no-reply@enquoir.etimi.me>`, so email reaches any address, not
+just Resend's test inboxes (the limitation noted above no longer
+applies). Checked live: a send from that address was accepted. `make
+e2e` still sends only to Resend's test inboxes, by choice, so automated
+runs never email real people. AGENTS.md now records the GitHub
+branch-and-pull-request workflow (replacing "local repository only"),
+the sender, and corrects two Airwallex facts the sandbox disproved.

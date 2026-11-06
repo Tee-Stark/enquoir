@@ -34,9 +34,10 @@ AWX="${AWX_BASE_URL:?AWX_BASE_URL must be set in .env}"
 RUN="$(date +%s)" # makes this run's emails and references unique
 WAIT_SECONDS=60
 MAIL_FILE="${MAIL_FILE:-mail.jsonl}"
-# Resend's testing sender only delivers to Resend's test inboxes, so
-# every address here is one; the worker keeps a copy of each email it
-# sent in MAIL_FILE, which is where links are read from.
+# Every address here is a Resend test inbox, so a run never emails a
+# real person; the emails still go through Resend from the verified
+# sender. The worker keeps a copy of each email it sent in MAIL_FILE,
+# which is where links are read from.
 addr() { echo "delivered+e2e-$1-$RUN@resend.dev"; }
 
 # Each request leaves its status in $STATUS and its body in $BODY.
