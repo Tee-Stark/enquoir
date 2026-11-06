@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"time"
 
 	"enquoir/internal/domain"
 )
@@ -32,4 +33,29 @@ func (r *RegisterBeneficiary) Run(ctx context.Context, b domain.Beneficiary) (Re
 		return RegisterBeneficiaryResult{}, err
 	}
 	return RegisterBeneficiaryResult{ID: id, Key: b.Key}, nil
+}
+
+// RegisteredBeneficiary records that an organisation registered a
+// payee, and the rail's ID for it. Only the account number's last four
+// digits are kept: enough to recognise it, not enough to misuse.
+type RegisteredBeneficiary struct {
+	OrgID         domain.OrgID
+	Key           domain.BeneficiaryKey
+	RailID        string
+	Name          string
+	AccountLast4  string
+	RoutingNumber string
+	Category      domain.AccountCategory
+	CreatedAt     time.Time
+}
+
+// BeneficiaryStore records which organisation owns which payee. Every
+// organisation pays through one rail account, so the rail itself
+// cannot say; this is what stops one organisation paying another's.
+type BeneficiaryStore interface {
+	// Save records b. Saving the same beneficiary again is a no-op.
+	// A rail ID already owned by another organisation is an error.
+	Save(ctx context.Context, b RegisteredBeneficiary) error
+	// Owns reports whether org registered the rail beneficiary railID.
+	Owns(ctx context.Context, org domain.OrgID, railID string) (bool, error)
 }
