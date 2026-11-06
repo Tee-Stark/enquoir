@@ -795,3 +795,88 @@ SIGTERM shutdown, the dev ports refused from the LAN address, and
   revoking all sessions on a password change (there is no password
   change or reset yet - both belong here).
 - Audit trail of account actions (key created/rotated/revoked, sign-ins).
+
+## Phase 5: authentication hardening - done (2026-11-07)
+
+Branch `feat/auth`, from `main` after PR #8 merged.
+
+### What exists
+
+- **Roles and memberships.** owner, admin, operator (read and write),
+  viewer (read only) - one table in `domain.Role`. A person may belong to
+  several organisations; a session is bound to one
+  (`POST /v1/auth/switch-organisation`). Nobody grants above their own
+  role; only an owner changes a member at their own level or above; an
+  organisation always keeps an owner, enforced under a lock on its
+  memberships. Every dashboard route names its permission.
+- **Members and invitations.** List, change role, remove or leave;
+  invite by email (7 days); accept creates the account (verified, signed
+  in) or adds the membership. A role change or removal signs the member
+  out of that organisation at once.
+- **Email, through Resend.** Four templates (verify, invitation, reset,
+  password changed), embedded with `go:embed`, placeholder styling with
+  every visual choice in `internal/adapters/emailtmpl/brand.go`;
+  `make emails` writes previews. The outbox stores a template ID and
+  non-secret values; `SendEmailWorkflow` sends with
+  `Idempotency-Key: email/<id>` and mints the link's token at send time,
+  storing only its hash - no address, link or token enters Temporal's
+  history. Retries stop inside Resend's 24-hour idempotency window.
+  `EMAIL_PROVIDER=resend|file`; `MAIL_FILE` keeps a local copy.
+- **Verification.** Sign-up sends a link (24 h). Unverified users can
+  look around but cannot create or rotate agent keys, invite, or register
+  payees - so only an organisation's own agents, created by its verified
+  members, can create its intents.
+- **Passwords.** Forgot (always 202), reset (1 h; policy checked before
+  the link is spent; signs out everywhere; lifts a lockout), change
+  (current password; signs out other sessions); a notice is emailed.
+- **Limits.** Log-in 5/min per email and 30/min per IP; 10 failures lock
+  the email for an hour (unknown emails too); sign-up 5/h per IP;
+  resend 1/min and 5/day; reset requests 3/h per email. 429 with
+  Retry-After.
+- **Redis**, a cache and a rate limiter, never a record: shared counters,
+  and resolved sessions and agent keys cached up to 60 s (never with a
+  password hash), invalidated at once on every access change by bumping
+  the owner's version. Every call is bounded to 250 ms; failures are
+  misses or allowed hits; without Redis the API keeps per-process limits
+  and no cache. Compose runs it on loopback, without persistence.
+- **Sessions.** List, revoke one, sign out everywhere else.
+- **Audit log.** Account actions with actor (a member, or an agent acting
+  with its key), target, details, IP and user agent;
+  `GET /v1/audit-log` for owners and admins.
+- **Dashboard payee registration** for operators and up, verified.
+- `docs/frontend.md`: the email link pages, the invitation-accept flow,
+  roles to show, and how errors and limits arrive.
+
+### Verified
+
+- `make test` and `make test-integration` (including concurrent
+  demotions keeping an owner, single-use tokens under a race, Redis
+  windows and cross-instance invalidation), at every commit.
+- Live against Resend: a send to a Resend test inbox, and that reusing an
+  idempotency key with a changed body returns
+  `invalid_idempotent_request` - which is what makes a retried send with
+  a fresh link unable to deliver twice.
+- Live, `make e2e` (25 steps): unverified sign-up refused keys, verified
+  from the emailed link, the payment flow, the dashboard, a viewer
+  invited and limited, the audit log naming the acting agent, a password
+  reset from the emailed link, and a second organisation isolated. Every
+  email went through Resend. Also live: the lockout (Retry-After 3600,
+  even the right password refused), a viewer's cached session ending the
+  moment their role changed, a revoked agent's cached key failing at
+  once, no password hash in Redis.
+- `make chaos`, all four points, unchanged.
+
+### Choices and limits worth knowing
+
+- Resend's testing sender (`onboarding@resend.dev`) only delivers to the
+  account owner's address and Resend's test inboxes; real invitations
+  need a verified domain (planned: `no-reply@enquoir.etimi.me`).
+- Audit events are written after the action; a failed write does not
+  undo it. Account-level events without an organisation (a reset before
+  signing in, verification) are recorded but not yet listed anywhere.
+- Re-registering an existing payee records `payee.registered` again.
+- Per-IP limits trust a proxy header only when `CLIENT_IP_HEADER` names
+  one; set it behind a reverse proxy, or every client shares its IP.
+- `make e2e` clears the dev Redis sign-up counter so repeated runs are
+  not limited.
+- Two-factor authentication and API key scopes/expiry are not built.

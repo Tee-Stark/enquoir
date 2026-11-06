@@ -127,7 +127,23 @@ curl -b cookies 'localhost:8090/v1/analytics/summary?tz=Africa/Lagos'
 curl -b cookies 'localhost:8090/v1/analytics/timeseries?metric=payments&interval=day&group_by=state&tz=Africa/Lagos'
 ```
 
-A frontend on another origin must be listed in `CORS_ALLOWED_ORIGINS`.
+A frontend on another origin must be listed in `CORS_ALLOWED_ORIGINS`;
+`docs/frontend.md` covers what a dashboard needs to know.
+
+### Teams, email and limits
+
+Organisations have members with roles (owner, admin, operator, viewer),
+invited by email. Sign-up sends a verification link; until it's followed,
+the account can't create agents or invite anyone. Password reset and
+change, session listing and revocation, and an audit log are built in.
+Log-in, sign-up, resends and resets are rate limited, and 10 failed
+log-ins lock an account for an hour.
+
+Email goes through Resend (`EMAIL_PROVIDER=resend`, `RESEND_API_KEY`,
+`EMAIL_FROM`) or to a file (`EMAIL_PROVIDER=file`, `MAIL_FILE`).
+`make emails` writes previews of every template to `email-previews/`.
+Redis (`REDIS_URL`, started by `make up`) holds rate-limit counters and a
+short cache of sessions and keys; without it everything still works.
 
 Posting the same intent again (same organisation, payee, amount,
 currency and reference) returns the same key, reports its recorded state, and starts
@@ -163,9 +179,12 @@ with a reworded reason: one key, one transfer), drives the transfer to
 PAID through the simulator, and checks the intent settles to `APPLIED`
 with a clean history. Then a second organisation proves it can neither
 pay nor see the first's payee or payment, and gets its own beneficiary
-for the same details. In between, the signed-in owner checks the
-dashboard: the payment in history, its detail and verifying chain, its
-attempts, its replay, and analytics in Lagos time. 22 steps. Every step
+for the same details. In between: the owner verifies their email from
+the link Resend delivered, checks the dashboard (history, detail,
+attempts, replay, analytics), invites a viewer who can look but not act,
+reads the audit log, and the viewer resets their password from an
+emailed link. 25 steps. Needs the worker to keep a copy of sent mail
+(`MAIL_FILE`). Every step
 is a plain, copyable curl. Needs `make up`, `make sandbox-setup`, `make
 worker` and `make api`. Run only one worker: an old one still polling the
 task queue will pick up work with stale code.
@@ -267,7 +286,7 @@ Verified directly, not just "should work":
 
 Verified against the real Airwallex sandbox (2026-11-06):
 
-- `make sandbox-setup`, `make demo`, `make e2e` (all 22 steps) and
+- `make sandbox-setup`, `make demo`, `make e2e` (all 25 steps) and
   `make chaos` (all four kill points). Where the real sandbox differs
   from the documented facts is recorded in docs/rail-notes.md.
 - A retry with a reworded `reason` resolves to the same intent and
