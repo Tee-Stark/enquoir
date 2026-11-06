@@ -116,6 +116,7 @@ func main() {
 		LogOut:         &app.LogOut{Sessions: sessions, Clock: sysClock},
 		ResolveSession: &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: sysClock},
 		Cookies:        httpapi.CookieSettings{Secure: secureCookies},
+		Origins:        httpapi.ParseAllowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
 
 		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock},
 		ListAgents:        &app.ListAgents{Agents: agents},

@@ -21,6 +21,7 @@ type Handler struct {
 	LogOut         *app.LogOut
 	ResolveSession *app.ResolveSession
 	Cookies        CookieSettings
+	Origins        AllowedOrigins
 
 	CreateAgent       *app.CreateAgent
 	ListAgents        *app.ListAgents
@@ -40,6 +41,7 @@ type Handler struct {
 
 func NewRouter(h *Handler) chi.Router {
 	r := chi.NewRouter()
+	r.Use(h.cors, h.checkOrigin)
 	r.Get("/healthz", h.healthz)
 	r.Get("/openapi.yaml", serveSpec)
 	r.Get("/docs", serveDocs)
@@ -55,6 +57,12 @@ func NewRouter(h *Handler) chi.Router {
 	r.Post("/v1/auth/login", h.logIn)
 	r.Post("/v1/auth/logout", h.logOut)
 	r.With(h.requireUser).Get("/v1/auth/session", h.getSession)
+
+	// Placeholders until their requirements arrive.
+	r.Post("/v1/auth/verify-email", notImplemented("Email verification"))
+	r.With(h.requireUser).Post("/v1/auth/verify-email/resend", notImplemented("Email verification"))
+	r.With(h.requireUser).Get("/v1/onboarding", notImplemented("Onboarding"))
+	r.With(h.requireUser).Put("/v1/onboarding", notImplemented("Onboarding"))
 
 	r.Group(func(r chi.Router) {
 		r.Use(h.requireUser)

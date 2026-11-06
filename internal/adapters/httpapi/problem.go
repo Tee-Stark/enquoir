@@ -20,6 +20,8 @@ const (
 	codeInvalidCreds     = "invalid_credentials"
 	codeEmailTaken       = "email_taken"
 	codePayeeUnknown     = "payee_unknown"
+	codeForbiddenOrigin  = "forbidden_origin"
+	codeNotImplemented   = "not_implemented"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.

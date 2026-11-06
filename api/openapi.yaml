@@ -10,6 +10,15 @@ info:
     reconciles unclear outcomes before anything is retried.
 
     The rail is Airwallex, **sandbox only**. No real money can move.
+
+    **Authentication.** Agents send their API key as `Authorization: Bearer
+    <key>` on the payment routes. The dashboard uses the `enquoir_session`
+    cookie set by sign-up and log-in. Dashboard frontends on another origin
+    must be listed in the server's `CORS_ALLOWED_ORIGINS`; a state-changing
+    request a browser sends from any other origin is refused
+    (`403 forbidden_origin`).
+
+    **Errors** are RFC 9457 problem details; branch on their `code`.
 servers:
   - url: http://localhost:8090
     description: Local development
@@ -102,6 +111,8 @@ paths:
             schema:
               $ref: "#/components/schemas/SignUpRequest"
       responses:
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
         "201":
           description: Signed up and signed in.
           headers:
@@ -134,6 +145,8 @@ paths:
             schema:
               $ref: "#/components/schemas/LogInRequest"
       responses:
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
         "200":
           description: Signed in.
           headers:
@@ -164,6 +177,8 @@ paths:
       summary: Log out
       description: Revokes the current session and clears the cookie. Succeeds without a session too.
       responses:
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
         "204":
           description: Logged out.
           headers:
@@ -193,6 +208,75 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/auth/verify-email:
+    post:
+      tags: [Accounts]
+      operationId: verifyEmail
+      summary: Verify an email address (placeholder)
+      description: Not built yet - returns 501 until its requirements arrive. Will take the token from the verification email.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+      responses:
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
+  /v1/auth/verify-email/resend:
+    post:
+      tags: [Accounts]
+      operationId: resendVerificationEmail
+      summary: Resend the verification email (placeholder)
+      description: Not built yet - returns 501 until its requirements arrive.
+      security:
+        - session: []
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
+  /v1/onboarding:
+    get:
+      tags: [Accounts]
+      operationId: getOnboarding
+      summary: Onboarding progress (placeholder)
+      description: Not built yet - returns 501 until its requirements arrive.
+      security:
+        - session: []
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    put:
+      tags: [Accounts]
+      operationId: updateOnboarding
+      summary: Update onboarding progress (placeholder)
+      description: Not built yet - returns 501 until its requirements arrive.
+      security:
+        - session: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
   /v1/agents:
     post:
       tags: [Agents]
@@ -214,6 +298,8 @@ paths:
                   minLength: 1
                   maxLength: 100
       responses:
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
         "201":
           description: Created.
           content:
@@ -283,6 +369,8 @@ paths:
       security:
         - session: []
       responses:
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
         "204":
           description: Revoked.
         "401":
@@ -303,6 +391,8 @@ paths:
       security:
         - session: []
       responses:
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
         "200":
           description: Rotated.
           content:
@@ -614,6 +704,8 @@ paths:
             schema:
               $ref: "#/components/schemas/SubmitIntentRequest"
       responses:
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
         "200":
           description: Accepted, or recognised as an intent already submitted.
           content:
@@ -709,6 +801,8 @@ paths:
             schema:
               $ref: "#/components/schemas/RegisterBeneficiaryRequest"
       responses:
+        "403":
+          $ref: "#/components/responses/ForbiddenOrigin"
         "200":
           description: Registered, or found already registered.
           content:
@@ -809,6 +903,18 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
+    ForbiddenOrigin:
+      description: A browser sent this from an origin not in CORS_ALLOWED_ORIGINS (`forbidden_origin`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotImplemented:
+      description: A placeholder; not built yet (`not_implemented`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     Unauthenticated:
       description: No valid session or API key (`unauthenticated`).
       content:
@@ -852,6 +958,8 @@ components:
             - invalid_credentials
             - email_taken
             - payee_unknown
+            - forbidden_origin
+            - not_implemented
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.
