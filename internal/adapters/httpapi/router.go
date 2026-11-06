@@ -28,6 +28,11 @@ type Handler struct {
 	RotateAgentKey    *app.RotateAgentKey
 	RevokeAgent       *app.RevokeAgent
 	AuthenticateAgent *app.AuthenticateAgent
+
+	ListPayments      *app.ListPayments
+	GetPayment        *app.GetPayment
+	ListAttempts      *app.ListAttempts
+	ListBeneficiaries *app.ListBeneficiaries
 }
 
 func NewRouter(h *Handler) chi.Router {
@@ -55,6 +60,11 @@ func NewRouter(h *Handler) chi.Router {
 		r.Get("/v1/agents/{id}", h.getAgent)
 		r.Delete("/v1/agents/{id}", h.revokeAgent)
 		r.Post("/v1/agents/{id}/rotate-key", h.rotateAgentKey)
+
+		r.Get("/v1/payments", h.listPayments)
+		r.Get("/v1/payments/{key}", h.getPayment)
+		r.Get("/v1/attempts", h.listAttempts)
+		r.Get("/v1/beneficiaries", h.listBeneficiaries)
 	})
 	return r
 }

@@ -488,3 +488,55 @@ func (l *Attempts) All() []app.Attempt {
 	defer l.mu.Unlock()
 	return append([]app.Attempt(nil), l.attempts...)
 }
+
+func (s *Beneficiaries) List(ctx context.Context, org domain.OrgID) ([]app.RegisteredBeneficiary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []app.RegisteredBeneficiary
+	for _, b := range s.saved {
+		if b.OrgID == org {
+			out = append(out, b)
+		}
+	}
+	return out, nil
+}
+
+// Payments is an in-memory app.PaymentReader over seeded payments.
+type Payments struct {
+	mu       sync.Mutex
+	payments []app.Payment
+	// LastFilter is the filter the last ListPayments call received.
+	LastFilter app.PaymentFilter
+}
+
+func NewPayments(ps ...app.Payment) *Payments { return &Payments{payments: ps} }
+
+func (r *Payments) Add(p app.Payment) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.payments = append(r.payments, p)
+}
+
+func (r *Payments) ListPayments(ctx context.Context, org domain.OrgID, f app.PaymentFilter) (app.PaymentPage, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.LastFilter = f
+	var out []app.Payment
+	for _, p := range r.payments {
+		if p.OrgID == org {
+			out = append(out, p)
+		}
+	}
+	return app.PaymentPage{Payments: out}, nil
+}
+
+func (r *Payments) GetPayment(ctx context.Context, org domain.OrgID, key domain.IntentKey) (app.Payment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, p := range r.payments {
+		if p.OrgID == org && p.Key == key {
+			return p, nil
+		}
+	}
+	return app.Payment{}, app.ErrNotFound
+}

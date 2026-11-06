@@ -86,6 +86,7 @@ func main() {
 	agents := postgres.NewAgentStore(pool)
 	beneficiaries := postgres.NewBeneficiaryStore(pool)
 	attempts := postgres.NewAttemptLog(pool)
+	payments := postgres.NewPaymentReader(pool)
 	secrets := credentials.RandomSecrets{}
 	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: sysClock, TTL: sessionTTL}
 
@@ -118,6 +119,11 @@ func main() {
 		RotateAgentKey:    &app.RotateAgentKey{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock},
 		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: sysClock},
 		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: sysClock},
+
+		ListPayments:      &app.ListPayments{Payments: payments},
+		GetPayment:        &app.GetPayment{Payments: payments, Events: events, Attempts: attempts},
+		ListAttempts:      &app.ListAttempts{Attempts: attempts},
+		ListBeneficiaries: &app.ListBeneficiaries{Beneficiaries: beneficiaries},
 	}
 
 	logger.Info("api listening", "addr", httpAddr)

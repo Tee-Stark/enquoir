@@ -28,6 +28,11 @@ tags:
     description: Payment intents submitted by agents.
   - name: Beneficiaries
     description: Payees registered on the rail before they can be paid.
+  - name: History
+    description: |
+      What an organisation's agents did and what happened to every payment:
+      payments over a period, each payment's full history, and every attempt
+      (agent submissions and Airwallex calls). Dashboard-only: needs a session.
   - name: Meta
     description: Health and the API contract itself.
 
@@ -309,6 +314,160 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/payments:
+    get:
+      tags: [History]
+      operationId: listPayments
+      summary: List payments over a period
+      description: Newest first. Every filter is optional.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - name: state
+          in: query
+          description: Repeat the parameter, or separate values with commas.
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/PaymentState"
+          style: form
+          explode: true
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: payee
+          in: query
+          description: A beneficiary ID.
+          schema:
+            type: string
+        - name: currency
+          in: query
+          schema:
+            type: string
+            enum: [USD, EUR, GBP]
+        - name: reference
+          in: query
+          description: Exact match.
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of payments.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Payment"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/payments/{key}:
+    get:
+      tags: [History]
+      operationId: getPayment
+      summary: One payment in full
+      description: |
+        The payment, its hash-chained event history (each event with its
+        recorded time and hashes), whether the chain verifies, and every
+        attempt made for it - agent submissions and Airwallex calls - oldest
+        first.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/IntentKey"
+      responses:
+        "200":
+          description: The payment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentDetail"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/attempts:
+    get:
+      tags: [History]
+      operationId: listAttempts
+      summary: List attempts
+      description: |
+        Every agent submission (`kind=agent_submission`) and every Airwallex
+        call Enquoir made (`kind=rail_call`), newest first. Every filter is
+        optional.
+      security:
+        - session: []
+      parameters:
+        - name: kind
+          in: query
+          schema:
+            $ref: "#/components/schemas/AttemptKind"
+        - name: operation
+          in: query
+          schema:
+            $ref: "#/components/schemas/AttemptOperation"
+        - name: outcome
+          in: query
+          description: Repeat the parameter, or separate values with commas.
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/AttemptOutcome"
+          style: form
+          explode: true
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: intent_key
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of attempts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Attempt"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/intents:
     post:
       tags: [Payments]
@@ -380,6 +539,30 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   /v1/beneficiaries:
+    get:
+      tags: [Beneficiaries]
+      operationId: listBeneficiaries
+      summary: List the organisation's payees
+      description: Newest first. Dashboard-only.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The payees.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Beneficiary"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
     post:
       tags: [Beneficiaries]
       operationId: registerBeneficiary
@@ -440,6 +623,34 @@ components:
         type: string
 
   parameters:
+    From:
+      name: from
+      in: query
+      description: Start of the period, inclusive (RFC 3339).
+      schema:
+        type: string
+        format: date-time
+    To:
+      name: to
+      in: query
+      description: End of the period, exclusive (RFC 3339).
+      schema:
+        type: string
+        format: date-time
+    Limit:
+      name: limit
+      in: query
+      description: Page size, 1 to 200. Default 50.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+    Cursor:
+      name: cursor
+      in: query
+      description: The `next_cursor` of the previous page.
+      schema:
+        type: string
     AgentID:
       name: id
       in: path
@@ -564,6 +775,233 @@ components:
           type: string
         name:
           type: string
+        created_at:
+          type: string
+          format: date-time
+
+    NextCursor:
+      type: [string, "null"]
+      description: Pass as `cursor` for the next page; null on the last page.
+
+    Money:
+      type: object
+      required: [minor_units, currency, amount]
+      properties:
+        minor_units:
+          type: integer
+          description: Integer minor units (cents). Use this for arithmetic.
+        currency:
+          type: string
+          enum: [USD, EUR, GBP]
+        amount:
+          type: string
+          description: Major units as a decimal string, for display.
+          examples: ["10.50"]
+
+    Ref:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: [string, "null"]
+
+    PaymentState:
+      type: string
+      description: |
+        A State, or RECEIVED: accepted by the API, not yet picked up by a
+        worker (nothing has happened to it yet).
+      enum: [RECEIVED, PROPOSED, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED]
+
+    Payment:
+      type: object
+      required: [key, state, terminal, amount, payee, reference, reason, agent, transfer_id, failure_reason,
+                 created_at, state_changed_at, submissions, rail_calls]
+      properties:
+        key:
+          type: string
+        state:
+          $ref: "#/components/schemas/PaymentState"
+        terminal:
+          type: boolean
+          description: True once nothing more will happen (APPLIED or BLOCKED).
+        amount:
+          $ref: "#/components/schemas/Money"
+        payee:
+          $ref: "#/components/schemas/Ref"
+        reference:
+          type: string
+        reason:
+          type: string
+        agent:
+          description: The agent that first submitted it. Null for payments submitted by Enquoir's own tooling.
+          oneOf:
+            - $ref: "#/components/schemas/Ref"
+            - type: "null"
+        transfer_id:
+          type: [string, "null"]
+          description: The Airwallex transfer, once APPLIED.
+        failure_reason:
+          type: [string, "null"]
+          description: Why it is FAILED or BLOCKED.
+        created_at:
+          type: string
+          format: date-time
+        state_changed_at:
+          type: [string, "null"]
+          format: date-time
+        submissions:
+          type: integer
+          description: How many times agents submitted it.
+        rail_calls:
+          type: integer
+          description: How many Airwallex calls Enquoir made for it.
+
+    PaymentDetail:
+      allOf:
+        - $ref: "#/components/schemas/Payment"
+        - type: object
+          required: [events, chain, attempts]
+          properties:
+            events:
+              type: array
+              items:
+                $ref: "#/components/schemas/RecordedEvent"
+            chain:
+              type: object
+              required: [valid, error]
+              properties:
+                valid:
+                  type: boolean
+                  description: Whether the hash chain verifies end to end.
+                error:
+                  type: [string, "null"]
+                  description: Where it breaks, if it does.
+            attempts:
+              type: array
+              description: Oldest first.
+              items:
+                $ref: "#/components/schemas/Attempt"
+
+    RecordedEvent:
+      type: object
+      required: [sequence_number, type, payload, recorded_at, hash, prev_hash]
+      properties:
+        sequence_number:
+          type: integer
+        type:
+          $ref: "#/components/schemas/State"
+        payload:
+          type: string
+        recorded_at:
+          type: string
+          format: date-time
+          description: When it was stored. Not covered by the hash.
+        hash:
+          type: string
+        prev_hash:
+          type: string
+
+    AttemptKind:
+      type: string
+      description: |
+        - agent_submission: an agent called POST /v1/intents.
+        - rail_call: Enquoir called Airwallex.
+      enum: [agent_submission, rail_call]
+
+    AttemptOperation:
+      type: string
+      enum: [submit_intent, create_transfer, get_transfer, find_transfer, create_beneficiary, find_beneficiary]
+
+    AttemptOutcome:
+      type: string
+      description: |
+        Agent submissions: started (a new payment began), attached (joined a
+        run already starting), deduplicated (already had history; nothing
+        started), invalid, payee_unknown, error.
+        Rail calls: ok, not_found (a lookup found nothing), rejected (a clear
+        no), ambiguous (outcome unclear: timeout, 5xx, network),
+        duplicate_transfers, error, in_progress (under way), interrupted
+        (started but never finished - the worker likely died mid-call).
+      enum: [started, attached, deduplicated, invalid, payee_unknown, error,
+             ok, not_found, rejected, ambiguous, duplicate_transfers, in_progress, interrupted]
+
+    Attempt:
+      type: object
+      required: [id, kind, operation, outcome, intent_key, beneficiary_key, agent, request_id, transfer_id,
+                 transfer_status, http_status, error_code, error_message, activity_attempt, details,
+                 started_at, finished_at, duration_ms]
+      properties:
+        id:
+          type: string
+        kind:
+          $ref: "#/components/schemas/AttemptKind"
+        operation:
+          $ref: "#/components/schemas/AttemptOperation"
+        outcome:
+          $ref: "#/components/schemas/AttemptOutcome"
+        intent_key:
+          type: [string, "null"]
+          description: Null for a submission too invalid to derive a key, or a beneficiary call.
+        beneficiary_key:
+          type: [string, "null"]
+        agent:
+          description: For agent submissions.
+          oneOf:
+            - $ref: "#/components/schemas/Ref"
+            - type: "null"
+        request_id:
+          type: [string, "null"]
+          description: The Airwallex request_id sent (the intent key).
+        transfer_id:
+          type: [string, "null"]
+        transfer_status:
+          type: [string, "null"]
+          description: The transfer's status as Airwallex reported it in this call.
+        http_status:
+          type: [integer, "null"]
+          description: Airwallex's HTTP status, on a failed call it answered.
+        error_code:
+          type: [string, "null"]
+          description: Airwallex's error code, such as fee_unknown.
+        error_message:
+          type: [string, "null"]
+        activity_attempt:
+          type: [integer, "null"]
+          description: For rail calls, the durable workflow's attempt number for this call (2+ means a retry).
+        details:
+          type: object
+          description: For submissions, what the agent sent (payee, amount, currency, reference, reason) and the state reported back.
+          additionalProperties:
+            type: string
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+        duration_ms:
+          type: [integer, "null"]
+
+    Beneficiary:
+      type: object
+      required: [id, key, name, account_last4, routing_number, account_category, created_at]
+      properties:
+        id:
+          type: string
+          description: The rail's beneficiary ID; an intent's payee.
+        key:
+          type: string
+        name:
+          type: string
+        account_last4:
+          type: string
+        routing_number:
+          type: string
+        account_category:
+          type: string
+          enum: [Checking, Savings]
         created_at:
           type: string
           format: date-time

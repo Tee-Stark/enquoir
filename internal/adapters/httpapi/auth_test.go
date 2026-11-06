@@ -24,6 +24,7 @@ type authFixture struct {
 	starter  *apptest.PaymentStarter
 	payees   *apptest.Beneficiaries
 	attempts *apptest.Attempts
+	payments *apptest.Payments
 }
 
 func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
@@ -32,7 +33,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	accounts, sessions, hasher := apptest.NewAccounts(), apptest.NewSessions(), &apptest.Hasher{}
 	agents, ids, secrets := apptest.NewAgents(), &apptest.IDs{}, &apptest.Secrets{}
 	events, starter, payees := apptest.NewEventLog(), &apptest.PaymentStarter{}, apptest.NewBeneficiaries()
-	attempts := apptest.NewAttempts()
+	attempts, payments := apptest.NewAttempts(), apptest.NewPayments()
 	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: clock, TTL: 7 * 24 * time.Hour}
 	h := &Handler{
 		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: clock, Issuer: issuer},
@@ -50,8 +51,13 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 
 		Submit: &app.SubmitIntent{Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents(), Attempts: attempts, IDs: ids, Clock: clock},
 		Get:    &app.GetIntent{Events: events},
+
+		ListPayments:      &app.ListPayments{Payments: payments},
+		GetPayment:        &app.GetPayment{Payments: payments, Events: events, Attempts: attempts},
+		ListAttempts:      &app.ListAttempts{Attempts: attempts},
+		ListBeneficiaries: &app.ListBeneficiaries{Beneficiaries: payees},
 	}
-	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts}
+	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments}
 }
 
 var testEmailCounter atomic.Int64

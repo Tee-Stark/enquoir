@@ -74,4 +74,6 @@ type BeneficiaryStore interface {
 	Save(ctx context.Context, b RegisteredBeneficiary) error
 	// Owns reports whether org registered the rail beneficiary railID.
 	Owns(ctx context.Context, org domain.OrgID, railID string) (bool, error)
+	// List returns org's payees, newest first.
+	List(ctx context.Context, org domain.OrgID) ([]RegisteredBeneficiary, error)
 }
