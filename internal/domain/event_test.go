@@ -53,3 +53,22 @@ func TestChain_EmptyChainVerifies(t *testing.T) {
 		t.Errorf("empty chain should trivially verify: %v", err)
 	}
 }
+
+// NextEvent builds the event that follows last knowing only last, so a
+// store can append without reading the whole chain. It must be exactly
+// what Chain.Append would add.
+func TestNextEvent_MatchesChainAppend(t *testing.T) {
+	const key = IntentKey("k1")
+	if got, want := NextEvent(key, nil, "PROPOSED", ""), (Chain{}).Append(key, "PROPOSED", "")[0]; got != want {
+		t.Errorf("first event: got %+v, want %+v", got, want)
+	}
+	chain := Chain{}.Append(key, "PROPOSED", "").Append(key, "AUTHORIZED", "").Append(key, "IN_FLIGHT", "")
+	last := chain[len(chain)-1]
+	want := chain.Append(key, "APPLIED", "tr_1")
+	if got := NextEvent(key, &last, "APPLIED", "tr_1"); got != want[len(want)-1] {
+		t.Errorf("next event: got %+v, want %+v", got, want[len(want)-1])
+	}
+	if err := append(chain, NextEvent(key, &last, "APPLIED", "tr_1")).Verify(); err != nil {
+		t.Errorf("a chain extended by NextEvent does not verify: %v", err)
+	}
+}
