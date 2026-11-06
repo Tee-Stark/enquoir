@@ -7,10 +7,13 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/joho/godotenv"
 	"go.temporal.io/sdk/client"
 
+	"enquoir/internal/adapters/clock"
+	"enquoir/internal/adapters/credentials"
 	"enquoir/internal/adapters/httpapi"
 	"enquoir/internal/adapters/postgres"
 	"enquoir/internal/app"
@@ -61,6 +64,27 @@ func main() {
 	}
 	defer temporalClient.Close()
 
+	sessionTTL := 7 * 24 * time.Hour
+	if v := os.Getenv("SESSION_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			logger.Error("invalid SESSION_TTL", "value", v)
+			os.Exit(1)
+		}
+		sessionTTL = d
+	}
+	secureCookies := os.Getenv("SESSION_COOKIE_SECURE") != "false"
+	if !secureCookies {
+		logger.Warn("session cookies are not Secure: only for plain-HTTP local development")
+	}
+
+	sysClock := clock.System{}
+	accounts := postgres.NewAccountStore(pool)
+	sessions := postgres.NewSessionStore(pool)
+	hasher := &credentials.PBKDF2Hasher{}
+	ids := credentials.RandomIDs{}
+	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: credentials.RandomSecrets{}, Clock: sysClock, TTL: sessionTTL}
+
 	handler := &httpapi.Handler{
 		Submit: &app.SubmitIntent{
 			Starter: &httpapi.TemporalPaymentStarter{Client: temporalClient, MaxAmountMinorUnits: maxMinorUnits},
@@ -68,6 +92,12 @@ func main() {
 		},
 		Get:      &app.GetIntent{Events: events},
 		Register: &app.RegisterBeneficiary{Registrar: &httpapi.TemporalBeneficiaryRegistrar{Client: temporalClient}},
+
+		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: sysClock, Issuer: issuer},
+		LogIn:          &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
+		LogOut:         &app.LogOut{Sessions: sessions, Clock: sysClock},
+		ResolveSession: &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: sysClock},
+		Cookies:        httpapi.CookieSettings{Secure: secureCookies},
 	}
 
 	logger.Info("api listening", "addr", httpAddr)

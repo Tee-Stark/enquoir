@@ -2,7 +2,10 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+
+	"enquoir/internal/app"
 )
 
 // Problem codes: stable, machine-readable reasons a client can branch
@@ -13,6 +16,9 @@ const (
 	codeNotFound         = "not_found"
 	codeRailRejected     = "rail_rejected"
 	codeInternal         = "internal_error"
+	codeUnauthenticated  = "unauthenticated"
+	codeInvalidCreds     = "invalid_credentials"
+	codeEmailTaken       = "email_taken"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.
@@ -22,18 +28,40 @@ type problem struct {
 	Status int    `json:"status"`
 	Detail string `json:"detail"`
 	Code   string `json:"code"`
+	Field  string `json:"field,omitempty"`
 }
 
 func writeProblem(w http.ResponseWriter, status int, code, detail string) {
+	writeProblemBody(w, problem{Status: status, Code: code, Detail: detail})
+}
+
+func writeProblemBody(w http.ResponseWriter, p problem) {
+	p.Type = "about:blank"
+	p.Title = http.StatusText(p.Status)
 	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(problem{
-		Type:   "about:blank",
-		Title:  http.StatusText(status),
-		Status: status,
-		Detail: detail,
-		Code:   code,
-	})
+	w.WriteHeader(p.Status)
+	json.NewEncoder(w).Encode(p)
+}
+
+// writeAppError maps an application error to its problem response.
+// Anything unrecognised is a 500 with internalDetail, never the raw
+// error text, which may carry internals.
+func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
+	var verr *app.ValidationError
+	switch {
+	case errors.As(err, &verr):
+		writeProblemBody(w, problem{Status: http.StatusBadRequest, Code: codeValidationFailed, Detail: verr.Error(), Field: verr.Field})
+	case errors.Is(err, app.ErrUnauthenticated):
+		writeProblem(w, http.StatusUnauthorized, codeUnauthenticated, "sign in, or send a valid API key")
+	case errors.Is(err, app.ErrInvalidCredentials):
+		writeProblem(w, http.StatusUnauthorized, codeInvalidCreds, err.Error())
+	case errors.Is(err, app.ErrEmailTaken):
+		writeProblem(w, http.StatusConflict, codeEmailTaken, err.Error())
+	case errors.Is(err, app.ErrNotFound):
+		writeProblem(w, http.StatusNotFound, codeNotFound, "not found")
+	default:
+		writeProblem(w, http.StatusInternalServerError, codeInternal, internalDetail)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

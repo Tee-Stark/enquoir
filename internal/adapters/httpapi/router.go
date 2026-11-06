@@ -15,6 +15,12 @@ type Handler struct {
 	Submit   *app.SubmitIntent
 	Get      *app.GetIntent
 	Register *app.RegisterBeneficiary
+
+	SignUp         *app.SignUp
+	LogIn          *app.LogIn
+	LogOut         *app.LogOut
+	ResolveSession *app.ResolveSession
+	Cookies        CookieSettings
 }
 
 func NewRouter(h *Handler) chi.Router {
@@ -25,6 +31,11 @@ func NewRouter(h *Handler) chi.Router {
 	r.Post("/v1/intents", h.submitIntent)
 	r.Get("/v1/intents/{key}", h.getIntent)
 	r.Post("/v1/beneficiaries", h.registerBeneficiary)
+
+	r.Post("/v1/auth/signup", h.signUp)
+	r.Post("/v1/auth/login", h.logIn)
+	r.Post("/v1/auth/logout", h.logOut)
+	r.With(h.requireUser).Get("/v1/auth/session", h.getSession)
 	return r
 }
 

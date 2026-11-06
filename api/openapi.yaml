@@ -14,6 +14,11 @@ servers:
   - url: http://localhost:8090
     description: Local development
 tags:
+  - name: Accounts
+    description: |
+      Sign up, log in and out of the dashboard. Sessions are an HttpOnly
+      cookie, `enquoir_session`, SameSite=Lax. Email verification and
+      onboarding are placeholders until their requirements arrive.
   - name: Payments
     description: Payment intents submitted by agents.
   - name: Beneficiaries
@@ -64,6 +69,113 @@ paths:
             text/html:
               schema:
                 type: string
+
+  /v1/auth/signup:
+    post:
+      tags: [Accounts]
+      operationId: signUp
+      summary: Create an organisation and its owner
+      description: |
+        Creates a new organisation with the signing-up user as its owner, and
+        signs them in (sets the session cookie). The email starts unverified;
+        nothing is gated on verification yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignUpRequest"
+      responses:
+        "201":
+          description: Signed up and signed in.
+          headers:
+            Set-Cookie:
+              $ref: "#/components/headers/SetSessionCookie"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: An account already uses this email (`email_taken`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/login:
+    post:
+      tags: [Accounts]
+      operationId: logIn
+      summary: Log in with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogInRequest"
+      responses:
+        "200":
+          description: Signed in.
+          headers:
+            Set-Cookie:
+              $ref: "#/components/headers/SetSessionCookie"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: |
+            The email and password don't match an account
+            (`invalid_credentials`). The same answer whether or not the email
+            is registered.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/logout:
+    post:
+      tags: [Accounts]
+      operationId: logOut
+      summary: Log out
+      description: Revokes the current session and clears the cookie. Succeeds without a session too.
+      responses:
+        "204":
+          description: Logged out.
+          headers:
+            Set-Cookie:
+              description: Clears `enquoir_session`.
+              schema:
+                type: string
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/session:
+    get:
+      tags: [Accounts]
+      operationId: getSession
+      summary: The signed-in user, their organisation and session
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The current session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/intents:
     post:
@@ -148,6 +260,19 @@ paths:
           $ref: "#/components/responses/InternalError"
 
 components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: enquoir_session
+      description: The dashboard session cookie, set by sign-up and log-in.
+
+  headers:
+    SetSessionCookie:
+      description: "`enquoir_session=<token>; Path=/; Max-Age=<ttl>; HttpOnly; SameSite=Lax` (plus `Secure` outside local development)."
+      schema:
+        type: string
+
   parameters:
     IntentKey:
       name: key
@@ -166,6 +291,12 @@ components:
             $ref: "#/components/schemas/Problem"
     NotFound:
       description: No such resource (`not_found`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unauthenticated:
+      description: No valid session or API key (`unauthenticated`).
       content:
         application/problem+json:
           schema:
@@ -203,6 +334,82 @@ components:
             - not_found
             - rail_rejected
             - internal_error
+            - unauthenticated
+            - invalid_credentials
+            - email_taken
+        field:
+          type: string
+          description: For `validation_failed`, the request field at fault, when known.
+
+    SignUpRequest:
+      type: object
+      required: [email, password, organisation_name]
+      properties:
+        email:
+          type: string
+          format: email
+          description: Compared case-insensitively.
+        password:
+          type: string
+          minLength: 12
+          maxLength: 128
+          description: 12 to 128 characters, not only whitespace.
+        organisation_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+
+    LogInRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+
+    User:
+      type: object
+      required: [id, email, email_verified, created_at]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        email_verified:
+          type: boolean
+          description: Always false until email verification is built.
+        created_at:
+          type: string
+          format: date-time
+
+    Organisation:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    AuthSession:
+      type: object
+      required: [user, organisation, session]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        organisation:
+          $ref: "#/components/schemas/Organisation"
+        session:
+          type: object
+          required: [expires_at]
+          properties:
+            expires_at:
+              type: string
+              format: date-time
 
     State:
       type: string
