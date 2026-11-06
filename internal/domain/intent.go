@@ -22,6 +22,11 @@ type Intent struct {
 	Reference string
 	Reason    string
 	Key       IntentKey
+
+	// Agent is the agent that submitted the intent. Recorded, not part
+	// of the key: two agents of one organisation paying the same
+	// invoice are the same payment.
+	Agent AgentID
 }
 
 // NewIntent builds an Intent, normalising its reference (trimmed) and

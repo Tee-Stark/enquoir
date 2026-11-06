@@ -24,7 +24,7 @@ func testIntent(t *testing.T) domain.Intent {
 func TestSubmitIntent_FreshSubmissionReturnsProposed(t *testing.T) {
 	intent := testIntent(t)
 	starter := &apptest.PaymentStarter{}
-	use := &app.SubmitIntent{Starter: starter, Events: apptest.NewEventLog(), Payees: ownedPayees()}
+	use := &app.SubmitIntent{Starter: starter, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents()}
 
 	result, err := use.Run(context.Background(), intent)
 	if err != nil {
@@ -48,7 +48,7 @@ func TestSubmitIntent_AttachingReturnsCurrentRecordedState(t *testing.T) {
 	events.Append(context.Background(), testOrg, intent.Key, "AUTHORIZED", "")
 	events.Append(context.Background(), testOrg, intent.Key, "APPLIED", "tr_1")
 
-	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{}, Events: events, Payees: ownedPayees()}
+	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{}, Events: events, Payees: ownedPayees(), Intents: apptest.NewIntents()}
 
 	result, err := use.Run(context.Background(), intent)
 	if err != nil {
@@ -84,7 +84,7 @@ func TestSubmitIntent_RecordedHistoryIsNeverRestarted(t *testing.T) {
 				events.Append(context.Background(), testOrg, intent.Key, typ, "")
 			}
 			starter := &apptest.PaymentStarter{}
-			use := &app.SubmitIntent{Starter: starter, Events: events, Payees: ownedPayees()}
+			use := &app.SubmitIntent{Starter: starter, Events: events, Payees: ownedPayees(), Intents: apptest.NewIntents()}
 
 			result, err := use.Run(context.Background(), intent)
 			if err != nil {
@@ -106,7 +106,7 @@ func TestSubmitIntent_PropagatesEventLogError(t *testing.T) {
 	intent := testIntent(t)
 	wantErr := errors.New("postgres unavailable")
 	starter := &apptest.PaymentStarter{}
-	use := &app.SubmitIntent{Starter: starter, Events: failingEventLog{err: wantErr}, Payees: ownedPayees()}
+	use := &app.SubmitIntent{Starter: starter, Events: failingEventLog{err: wantErr}, Payees: ownedPayees(), Intents: apptest.NewIntents()}
 
 	_, err := use.Run(context.Background(), intent)
 	if !errors.Is(err, wantErr) {
@@ -130,7 +130,7 @@ func (l failingEventLog) Load(ctx context.Context, org domain.OrgID, key domain.
 func TestSubmitIntent_PropagatesStarterError(t *testing.T) {
 	intent := testIntent(t)
 	wantErr := errors.New("temporal unavailable")
-	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{Err: wantErr}, Events: apptest.NewEventLog(), Payees: ownedPayees()}
+	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{Err: wantErr}, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents()}
 
 	_, err := use.Run(context.Background(), intent)
 	if !errors.Is(err, wantErr) {
@@ -201,7 +201,7 @@ func TestSubmitIntent_RefusesAPayeeTheOrganisationDoesNotOwn(t *testing.T) {
 	for name, payees := range cases {
 		t.Run(name, func(t *testing.T) {
 			starter, events := &apptest.PaymentStarter{}, apptest.NewEventLog()
-			use := &app.SubmitIntent{Starter: starter, Events: events, Payees: payees}
+			use := &app.SubmitIntent{Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents()}
 
 			_, err := use.Run(context.Background(), intent)
 			if !errors.Is(err, app.ErrPayeeUnknown) {
@@ -211,5 +211,30 @@ func TestSubmitIntent_RefusesAPayeeTheOrganisationDoesNotOwn(t *testing.T) {
 				t.Errorf("started %d workflows for a payee the organisation does not own, want 0", starter.CallCount())
 			}
 		})
+	}
+}
+
+// The API records the intent, and which agent submitted it, as soon as
+// it is accepted: the dashboard shows a payment even before a worker
+// picks it up, and a later submission by another agent of the same
+// organisation does not change who submitted it first.
+func TestSubmitIntent_RecordsTheIntentAndTheAgentThatFirstSubmittedIt(t *testing.T) {
+	intent := testIntent(t)
+	intent.Agent = "agt_first"
+	intents := apptest.NewIntents()
+	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{}, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: intents}
+
+	if _, err := use.Run(context.Background(), intent); err != nil {
+		t.Fatal(err)
+	}
+	again := intent
+	again.Agent = "agt_second"
+	if _, err := use.Run(context.Background(), again); err != nil {
+		t.Fatal(err)
+	}
+
+	stored, ok := intents.Get(intent.Key)
+	if !ok || stored.Agent != "agt_first" || stored.OrgID != testOrg {
+		t.Errorf("stored = %+v (found %v), want the intent attributed to agt_first", stored, ok)
 	}
 }

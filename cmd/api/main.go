@@ -93,6 +93,7 @@ func main() {
 			Starter: &httpapi.TemporalPaymentStarter{Client: temporalClient, MaxAmountMinorUnits: maxMinorUnits},
 			Events:  events,
 			Payees:  beneficiaries,
+			Intents: postgres.NewIntentRepository(pool),
 		},
 		Get: &app.GetIntent{Events: events},
 		Register: &app.RegisterBeneficiary{

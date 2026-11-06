@@ -16,9 +16,10 @@ import (
 // independent guard against a cross-tenant read or write, not just the
 // key's own uncollidability.
 type IntentRepository interface {
-	// Save stores intent if its key is new. If an intent with the same
-	// key already exists, Save returns that stored intent unchanged.
-	Save(ctx context.Context, intent domain.Intent) (domain.Intent, error)
+	// Save stores intent if its key is new, reporting created. If an
+	// intent with the same key already exists, Save returns that stored
+	// intent unchanged.
+	Save(ctx context.Context, intent domain.Intent) (stored domain.Intent, created bool, err error)
 }
 
 // EventLog durably records an Intent's execution history as a

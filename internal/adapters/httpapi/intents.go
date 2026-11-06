@@ -38,12 +38,13 @@ func (h *Handler) submitIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	org := agentFrom(r.Context()).OrgID
-	intent, err := domain.NewIntent(org, req.Payee, amount.MinorUnits(), string(amount.Currency()), req.Reference, req.Reason)
+	agent := agentFrom(r.Context())
+	intent, err := domain.NewIntent(agent.OrgID, req.Payee, amount.MinorUnits(), string(amount.Currency()), req.Reference, req.Reason)
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, codeValidationFailed, err.Error())
 		return
 	}
+	intent.Agent = agent.AgentID
 
 	result, err := h.Submit.Run(r.Context(), intent)
 	if err != nil {

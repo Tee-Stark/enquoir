@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // genesisHash is the PrevHash of the first event in any chain.
@@ -21,6 +22,10 @@ type Event struct {
 	Payload        string
 	PrevHash       string
 	Hash           string
+
+	// RecordedAt is when the event was stored. It is not part of the
+	// hash: the chain proves order and content, not wall-clock time.
+	RecordedAt time.Time
 }
 
 func hashEvent(seq int, intentKey IntentKey, eventType, payload, prevHash string) string {

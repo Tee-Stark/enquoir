@@ -403,3 +403,29 @@ func (s *Beneficiaries) Get(key domain.BeneficiaryKey) (app.RegisteredBeneficiar
 	b, ok := s.saved[key]
 	return b, ok
 }
+
+// Intents is an in-memory app.IntentRepository.
+type Intents struct {
+	mu     sync.Mutex
+	stored map[domain.IntentKey]domain.Intent
+}
+
+func NewIntents() *Intents { return &Intents{stored: map[domain.IntentKey]domain.Intent{}} }
+
+func (r *Intents) Save(ctx context.Context, intent domain.Intent) (domain.Intent, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing, ok := r.stored[intent.Key]; ok {
+		return existing, false, nil
+	}
+	r.stored[intent.Key] = intent
+	return intent, true, nil
+}
+
+// Get returns the stored intent for key.
+func (r *Intents) Get(key domain.IntentKey) (domain.Intent, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	i, ok := r.stored[key]
+	return i, ok
+}

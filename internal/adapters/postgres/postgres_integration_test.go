@@ -65,16 +65,19 @@ func TestIntentRepository_SavingSameKeyTwiceReturnsExistingIntent(t *testing.T) 
 	intent := testIntent(t, pool)
 	cleanupIntent(t, pool, intent.Key)
 
-	first, err := repo.Save(ctx, intent)
+	first, created, err := repo.Save(ctx, intent)
 	if err != nil {
 		t.Fatalf("first Save: %v", err)
 	}
 
-	second, err := repo.Save(ctx, intent)
+	second, createdAgain, err := repo.Save(ctx, intent)
 	if err != nil {
 		t.Fatalf("second Save: %v", err)
 	}
 
+	if !created || createdAgain {
+		t.Errorf("created = %v then %v, want true then false", created, createdAgain)
+	}
 	if first != second {
 		t.Errorf("second Save returned a different intent: %+v vs %+v", first, second)
 	}
@@ -96,7 +99,7 @@ func TestEventLog_AppendsWithGaplessSequenceNumbers(t *testing.T) {
 
 	intent := testIntent(t, pool)
 	cleanupIntent(t, pool, intent.Key)
-	if _, err := repo.Save(ctx, intent); err != nil {
+	if _, _, err := repo.Save(ctx, intent); err != nil {
 		t.Fatalf("saving intent: %v", err)
 	}
 
@@ -119,7 +122,7 @@ func TestEventLog_StoredChainVerifiesAfterReload(t *testing.T) {
 
 	intent := testIntent(t, pool)
 	cleanupIntent(t, pool, intent.Key)
-	if _, err := repo.Save(ctx, intent); err != nil {
+	if _, _, err := repo.Save(ctx, intent); err != nil {
 		t.Fatalf("saving intent: %v", err)
 	}
 
@@ -153,7 +156,7 @@ func TestEventLog_KeyFromAnotherOrganisationReturnsEmptyChain(t *testing.T) {
 
 	intent := testIntent(t, pool)
 	cleanupIntent(t, pool, intent.Key)
-	if _, err := repo.Save(ctx, intent); err != nil {
+	if _, _, err := repo.Save(ctx, intent); err != nil {
 		t.Fatalf("saving intent: %v", err)
 	}
 	if _, err := events.Append(ctx, intent.OrgID, intent.Key, "PROPOSED", ""); err != nil {

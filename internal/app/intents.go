@@ -38,6 +38,7 @@ type SubmitIntent struct {
 	Starter PaymentStarter
 	Events  EventLog
 	Payees  BeneficiaryStore
+	Intents IntentRepository
 }
 
 // Run starts intent's workflow only if nothing has ever been recorded
@@ -56,6 +57,9 @@ func (s *SubmitIntent) Run(ctx context.Context, intent domain.Intent) (SubmitInt
 	}
 	if !owned {
 		return SubmitIntentResult{}, ErrPayeeUnknown
+	}
+	if _, _, err := s.Intents.Save(ctx, intent); err != nil {
+		return SubmitIntentResult{}, err
 	}
 
 	chain, err := s.Events.Load(ctx, intent.OrgID, intent.Key)

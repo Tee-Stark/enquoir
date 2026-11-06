@@ -8,8 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"enquoir/internal/adapters/credentials"
 	"enquoir/internal/app"
+	"enquoir/internal/domain"
 )
 
 func newAgentUseCases(store *AgentStore) (*app.CreateAgent, *app.RotateAgentKey, *app.RevokeAgent, *app.AuthenticateAgent) {
@@ -81,4 +84,11 @@ func TestAgentStore_LifecycleAndScoping(t *testing.T) {
 	if _, err := rotate.Run(ctx, orgA.ID, issued.Agent.ID); !errors.Is(err, app.ErrNotFound) {
 		t.Errorf("rotating revoked agent: %v, want ErrNotFound", err)
 	}
+}
+
+func newAgentFor(t *testing.T, pool *pgxpool.Pool, org domain.OrgID) (domain.AgentID, error) {
+	t.Helper()
+	create, _, _, _ := newAgentUseCases(NewAgentStore(pool))
+	issued, err := create.Run(context.Background(), org, "test agent")
+	return issued.Agent.ID, err
 }

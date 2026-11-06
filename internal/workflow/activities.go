@@ -35,7 +35,8 @@ type Activities struct {
 }
 
 func (a *Activities) SaveIntent(ctx context.Context, intent domain.Intent) (domain.Intent, error) {
-	return a.Intents.Save(ctx, intent)
+	stored, _, err := a.Intents.Save(ctx, intent)
+	return stored, err
 }
 
 // AppendEventInput is AppendEvent's input, since Temporal activities
