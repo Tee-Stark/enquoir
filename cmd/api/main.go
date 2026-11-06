@@ -98,6 +98,7 @@ func main() {
 	secrets := credentials.RandomSecrets{}
 	emails := &app.Emails{Outbox: postgres.NewEmailOutbox(pool), Dispatcher: &enquoirworkflow.EmailDispatcher{Client: temporalClient}, IDs: ids, Clock: sysClock}
 	tokens := postgres.NewTokenStore(pool)
+	invitations := postgres.NewInvitationStore(pool)
 	issuer := &app.SessionIssuer{Sessions: sessions, IDs: ids, Secrets: secrets, Clock: sysClock, TTL: sessionTTL}
 
 	handler := &httpapi.Handler{
@@ -123,13 +124,21 @@ func main() {
 		ForgotPassword: &app.ForgotPassword{Accounts: accounts, Emails: emails},
 		ResetPassword:  &app.ResetPassword{Tokens: tokens, Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock},
 		ChangePassword: &app.ChangePassword{Users: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock},
-		LogIn:          &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
-		LogOut:         &app.LogOut{Sessions: sessions, Clock: sysClock},
-		ResolveSession: &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: sysClock},
-		SwitchOrg:      &app.SwitchOrganisation{Accounts: accounts, Sessions: sessions, Issuer: issuer},
-		MyOrgs:         &app.ListMyOrganisations{Accounts: accounts},
-		Cookies:        httpapi.CookieSettings{Secure: secureCookies},
-		Origins:        httpapi.ParseAllowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
+
+		ListMembers:      &app.ListMembers{Members: accounts},
+		ChangeMemberRole: &app.ChangeMemberRole{Members: accounts, Sessions: sessions, Clock: sysClock},
+		RemoveMember:     &app.RemoveMember{Members: accounts, Sessions: sessions, Clock: sysClock},
+		InviteMember:     &app.InviteMember{Accounts: accounts, Members: accounts, Invitations: invitations, Emails: emails, IDs: ids, Clock: sysClock},
+		ListInvitations:  &app.ListInvitations{Invitations: invitations, Clock: sysClock},
+		RevokeInvitation: &app.RevokeInvitation{Invitations: invitations, Clock: sysClock},
+		AcceptInvitation: &app.AcceptInvitation{Tokens: tokens, Invitations: invitations, Accounts: accounts, Users: accounts, Hasher: hasher, IDs: ids, Issuer: issuer, Clock: sysClock},
+		LogIn:            &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
+		LogOut:           &app.LogOut{Sessions: sessions, Clock: sysClock},
+		ResolveSession:   &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: sysClock},
+		SwitchOrg:        &app.SwitchOrganisation{Accounts: accounts, Sessions: sessions, Issuer: issuer},
+		MyOrgs:           &app.ListMyOrganisations{Accounts: accounts},
+		Cookies:          httpapi.CookieSettings{Secure: secureCookies},
+		Origins:          httpapi.ParseAllowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
 
 		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock},
 		ListAgents:        &app.ListAgents{Agents: agents},

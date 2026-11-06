@@ -28,8 +28,16 @@ type Handler struct {
 	ForgotPassword *app.ForgotPassword
 	ResetPassword  *app.ResetPassword
 	ChangePassword *app.ChangePassword
-	Cookies        CookieSettings
-	Origins        AllowedOrigins
+
+	ListMembers      *app.ListMembers
+	ChangeMemberRole *app.ChangeMemberRole
+	RemoveMember     *app.RemoveMember
+	InviteMember     *app.InviteMember
+	ListInvitations  *app.ListInvitations
+	RevokeInvitation *app.RevokeInvitation
+	AcceptInvitation *app.AcceptInvitation
+	Cookies          CookieSettings
+	Origins          AllowedOrigins
 
 	CreateAgent       *app.CreateAgent
 	ListAgents        *app.ListAgents
@@ -72,6 +80,7 @@ func NewRouter(h *Handler) chi.Router {
 	r.Post("/v1/auth/password/forgot", h.forgotPassword)
 	r.Post("/v1/auth/password/reset", h.resetPassword)
 	r.With(h.requireUser).Post("/v1/auth/password/change", h.changePassword)
+	r.Post("/v1/invitations/accept", h.acceptInvitation)
 
 	// Placeholders until their requirements arrive.
 	r.With(h.requireUser).Get("/v1/onboarding", notImplemented("Onboarding"))
@@ -98,6 +107,15 @@ func NewRouter(h *Handler) chi.Router {
 
 		r.With(read).Get("/v1/analytics/summary", h.analyticsSummary)
 		r.With(read).Get("/v1/analytics/timeseries", h.analyticsTimeSeries)
+
+		manage := h.allow(domain.PermManageMembers)
+		r.With(read).Get("/v1/members", h.listMembers)
+		r.With(manage).Patch("/v1/members/{id}", h.changeMemberRole)
+		// Anyone may leave; removing others is checked against roles.
+		r.With(read).Delete("/v1/members/{id}", h.removeMember)
+		r.With(manage, verified).Post("/v1/invitations", h.inviteMember)
+		r.With(manage).Get("/v1/invitations", h.listInvitations)
+		r.With(manage).Delete("/v1/invitations/{id}", h.revokeInvitation)
 	})
 	return r
 }

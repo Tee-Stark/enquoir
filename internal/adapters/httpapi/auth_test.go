@@ -42,6 +42,8 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	mailer, outbox, tokens := &apptest.Mailer{}, apptest.NewOutbox(), apptest.NewTokens()
 	deliver := &app.DeliverEmail{Outbox: outbox, Tokens: tokens, Renderer: apptest.Renderer{}, Mailer: mailer,
 		Secrets: secrets, Clock: clock, AppBaseURL: "https://enquoir.etimi.me"}
+	invitations := apptest.NewInvitations()
+	invitations.Accounts = accounts
 	emails := &app.Emails{Outbox: outbox, Dispatcher: &apptest.Dispatcher{Deliver: deliver.Run}, IDs: ids, Clock: clock}
 	h := &Handler{
 		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: clock, Issuer: issuer, Emails: emails},
@@ -50,12 +52,20 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		ForgotPassword: &app.ForgotPassword{Accounts: accounts, Emails: emails},
 		ResetPassword:  &app.ResetPassword{Tokens: tokens, Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: clock},
 		ChangePassword: &app.ChangePassword{Users: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: clock},
-		LogIn:          &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
-		LogOut:         &app.LogOut{Sessions: sessions, Clock: clock},
-		ResolveSession: &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: clock},
-		SwitchOrg:      &app.SwitchOrganisation{Accounts: accounts, Sessions: sessions, Issuer: issuer},
-		MyOrgs:         &app.ListMyOrganisations{Accounts: accounts},
-		Cookies:        CookieSettings{Secure: secureCookies},
+
+		ListMembers:      &app.ListMembers{Members: accounts},
+		ChangeMemberRole: &app.ChangeMemberRole{Members: accounts, Sessions: sessions, Clock: clock},
+		RemoveMember:     &app.RemoveMember{Members: accounts, Sessions: sessions, Clock: clock},
+		InviteMember:     &app.InviteMember{Accounts: accounts, Members: accounts, Invitations: invitations, Emails: emails, IDs: ids, Clock: clock},
+		ListInvitations:  &app.ListInvitations{Invitations: invitations, Clock: clock},
+		RevokeInvitation: &app.RevokeInvitation{Invitations: invitations, Clock: clock},
+		AcceptInvitation: &app.AcceptInvitation{Tokens: tokens, Invitations: invitations, Accounts: accounts, Users: accounts, Hasher: hasher, IDs: ids, Issuer: issuer, Clock: clock},
+		LogIn:            &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
+		LogOut:           &app.LogOut{Sessions: sessions, Clock: clock},
+		ResolveSession:   &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: clock},
+		SwitchOrg:        &app.SwitchOrganisation{Accounts: accounts, Sessions: sessions, Issuer: issuer},
+		MyOrgs:           &app.ListMyOrganisations{Accounts: accounts},
+		Cookies:          CookieSettings{Secure: secureCookies},
 
 		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: clock},
 		ListAgents:        &app.ListAgents{Agents: agents},

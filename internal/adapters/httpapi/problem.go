@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"enquoir/internal/app"
+	"enquoir/internal/domain"
 )
 
 // Problem codes: stable, machine-readable reasons a client can branch
@@ -28,6 +29,8 @@ const (
 	codeEmailUnverified  = "email_unverified"
 	codeAlreadyVerified  = "already_verified"
 	codeTokenInvalid     = "token_invalid"
+	codeLastOwner        = "last_owner"
+	codeAlreadyMember    = "already_member"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.
@@ -70,6 +73,12 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 		writeProblem(w, http.StatusConflict, codeAlreadyVerified, err.Error())
 	case errors.Is(err, app.ErrTokenInvalid):
 		writeProblem(w, http.StatusBadRequest, codeTokenInvalid, err.Error())
+	case errors.Is(err, domain.ErrRoleNotAllowed):
+		writeProblem(w, http.StatusForbidden, codeForbidden, err.Error())
+	case errors.Is(err, app.ErrLastOwner):
+		writeProblem(w, http.StatusConflict, codeLastOwner, err.Error())
+	case errors.Is(err, app.ErrAlreadyMember):
+		writeProblem(w, http.StatusConflict, codeAlreadyMember, err.Error())
 	case errors.Is(err, app.ErrForbidden):
 		writeProblem(w, http.StatusForbidden, codeForbidden, err.Error())
 	case errors.Is(err, app.ErrNoOrganisation):

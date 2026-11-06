@@ -29,6 +29,12 @@ tags:
       Sign up, log in and out of the dashboard. Sessions are an HttpOnly
       cookie, `enquoir_session`, SameSite=Lax. Email verification and
       onboarding are placeholders until their requirements arrive.
+  - name: Members
+    description: |
+      The people in an organisation and their roles (see the Role schema for
+      what each may do). Members are invited by email; a role change or
+      removal signs the member out of the organisation at once. An
+      organisation always keeps at least one owner.
   - name: Agents
     description: |
       The AI agents that submit payments. Each agent has one API key,
@@ -466,6 +472,268 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "501":
           $ref: "#/components/responses/NotImplemented"
+
+  /v1/members:
+    get:
+      tags: [Members]
+      operationId: listMembers
+      summary: List the organisation's members
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The members, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Member"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/members/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The member's user ID.
+        schema:
+          type: string
+    patch:
+      tags: [Members]
+      operationId: changeMemberRole
+      summary: Change a member's role
+      description: Owners and admins. Signs the member out of the organisation so the new role applies at once.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  $ref: "#/components/schemas/Role"
+      responses:
+        "204":
+          description: Changed.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/LastOwner"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Members]
+      operationId: removeMember
+      summary: Remove a member, or leave
+      description: |
+        Any member may remove themselves (leave). Removing someone else needs
+        a role above theirs (owners may remove anyone). The member is signed
+        out of the organisation; their account and other organisations stay.
+      security:
+        - session: []
+      responses:
+        "204":
+          description: Removed.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/LastOwner"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/invitations:
+    post:
+      tags: [Members]
+      operationId: inviteMember
+      summary: Invite someone by email
+      description: |
+        Owners and admins with a verified email. Emails a link to the
+        frontend's `/invitations/accept?token=...`, valid for 7 days. Inviting
+        the same address again replaces the pending invitation. Nobody invites
+        above their own role.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email:
+                  type: string
+                role:
+                  $ref: "#/components/schemas/Role"
+      responses:
+        "201":
+          description: Invited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invitation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The person is already a member (`already_member`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Members]
+      operationId: listInvitations
+      summary: List pending invitations
+      security:
+        - session: []
+      responses:
+        "200":
+          description: Pending invitations, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Invitation"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/invitations/{id}:
+    delete:
+      tags: [Members]
+      operationId: revokeInvitation
+      summary: Revoke a pending invitation
+      description: Its link stops working.
+      security:
+        - session: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Revoked.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: No such pending invitation in this organisation (`not_found`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/invitations/accept:
+    post:
+      tags: [Members]
+      operationId: acceptInvitation
+      summary: Accept an invitation with the emailed link's token
+      description: |
+        No session needed. If the invited address has no account, `password`
+        is required: the account is created (already verified - the link
+        proves the address) and signed in (the session cookie is set). If it
+        has one, the membership is added and the person signs in as usual; no
+        password is needed and no session is issued. A password that fails
+        the policy is rejected before the link is spent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                password:
+                  type: string
+                  description: Required only when the address has no account.
+      responses:
+        "200":
+          description: Joined.
+          headers:
+            Set-Cookie:
+              description: Set only when the account was created.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [organisation, role, user, account_created]
+                properties:
+                  organisation:
+                    $ref: "#/components/schemas/Organisation"
+                  role:
+                    $ref: "#/components/schemas/Role"
+                  user:
+                    $ref: "#/components/schemas/User"
+                  account_created:
+                    type: boolean
+        "400":
+          description: The password fails the policy (`validation_failed`), or the link is invalid, used, expired or revoked (`token_invalid`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Already a member (`already_member`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/agents:
     post:
@@ -1140,6 +1408,12 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
+    LastOwner:
+      description: The change would leave the organisation without an owner (`last_owner`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     Unauthenticated:
       description: No valid session or API key (`unauthenticated`).
       content:
@@ -1191,6 +1465,8 @@ components:
             - email_unverified
             - already_verified
             - token_invalid
+            - last_owner
+            - already_member
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.
@@ -1769,6 +2045,38 @@ components:
             created_at:
               type: string
               format: date-time
+
+    Member:
+      type: object
+      required: [user, role, joined_at]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        role:
+          $ref: "#/components/schemas/Role"
+        joined_at:
+          type: string
+          format: date-time
+
+    Invitation:
+      type: object
+      required: [id, email, role, invited_by, created_at, expires_at]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        role:
+          $ref: "#/components/schemas/Role"
+        invited_by:
+          type: string
+          description: The inviting member's user ID.
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
 
     Role:
       type: string
