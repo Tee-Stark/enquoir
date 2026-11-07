@@ -158,10 +158,14 @@ func TestInvitation_ANewAccount(t *testing.T) {
 	}
 }
 
-func TestInvitation_AnExistingAccountJoinsWithoutANewPasswordOrSession(t *testing.T) {
+func TestInvitation_AnExistingVerifiedAccountJoinsWithoutANewPasswordOrSession(t *testing.T) {
 	f := newMembersFixture(t)
 	ctx := context.Background()
 	f.signUp.Run(ctx, app.SignUpCommand{Email: "carol@example.com", Password: "carols passphrase", OrganisationName: "Carol Co"})
+	// A verified account: it has proved it owns the address.
+	if err := (&app.VerifyEmail{Tokens: f.tokens, Users: f.accounts, Clock: f.clock}).Run(ctx, f.mailer.TokenTo("carol@example.com")); err != nil {
+		t.Fatal(err)
+	}
 	f.invite.Run(ctx, f.owner, "carol@example.com", domain.Viewer)
 	got, err := f.accept.Run(ctx, f.mailer.TokenTo("carol@example.com"), "")
 	if err != nil || got.AccountCreated || got.Session != nil {
