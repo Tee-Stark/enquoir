@@ -210,6 +210,19 @@ func (i *InviteMember) Run(ctx context.Context, p UserPrincipal, rawEmail string
 	}
 
 	now := i.Clock.Now()
+	// Re-inviting replaces the pending invitation: only allowed if the
+	// actor could have sent that one too.
+	pending, err := i.Invitations.ListPendingInvitations(ctx, p.Organisation.ID, now)
+	if err != nil {
+		return Invitation{}, err
+	}
+	for _, other := range pending {
+		if other.Email == email {
+			if err := p.Role.CanInvite(other.Role); err != nil {
+				return Invitation{}, err
+			}
+		}
+	}
 	inv := Invitation{ID: i.IDs.NewID("inv"), OrgID: p.Organisation.ID, OrgName: p.Organisation.Name, Email: email, Role: role,
 		InvitedBy: p.User.ID, CreatedAt: now, ExpiresAt: now.Add(InvitationTTL)}
 	if err := i.Invitations.CreateInvitation(ctx, inv); err != nil {
@@ -242,6 +255,14 @@ type RevokeInvitation struct {
 }
 
 func (r *RevokeInvitation) Run(ctx context.Context, p UserPrincipal, id string) error {
+	inv, err := r.Invitations.GetInvitation(ctx, id)
+	if err != nil || inv.OrgID != p.Organisation.ID {
+		return ErrNotFound
+	}
+	// An invitation is as senior as the role it grants.
+	if err := p.Role.CanInvite(inv.Role); err != nil {
+		return err
+	}
 	if err := r.Invitations.RevokeInvitation(ctx, p.Organisation.ID, id, r.Clock.Now()); err != nil {
 		return err
 	}

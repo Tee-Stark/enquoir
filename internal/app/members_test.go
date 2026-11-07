@@ -249,3 +249,29 @@ func TestInvitation_AnUnverifiedAccountIsClaimedByWhoeverHoldsTheLink(t *testing
 		t.Error("the claimed account is not verified")
 	}
 }
+
+// An invitation is as senior as the role it grants: an admin may not
+// revoke an owner's invitation, nor replace it by re-inviting the same
+// address with a lesser role.
+func TestInvitation_AdminsCannotTouchInvitationsAboveTheirRole(t *testing.T) {
+	f := newMembersFixture(t)
+	ctx := context.Background()
+	admin, _ := f.join(t, domain.Admin)
+	inv, err := f.invite.Run(ctx, f.owner, "cofounder@example.com", domain.Owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.revoke.Run(ctx, admin, inv.ID); !errors.Is(err, domain.ErrRoleNotAllowed) {
+		t.Errorf("admin revoking an owner invitation: %v", err)
+	}
+	if _, err := f.invite.Run(ctx, admin, "cofounder@example.com", domain.Viewer); !errors.Is(err, domain.ErrRoleNotAllowed) {
+		t.Errorf("admin replacing an owner invitation: %v", err)
+	}
+	pending, _ := f.invites.ListPendingInvitations(ctx, f.org, f.clock.Now())
+	if len(pending) != 1 || pending[0].Role != domain.Owner {
+		t.Errorf("pending = %+v, want the owner invitation untouched", pending)
+	}
+	if err := f.revoke.Run(ctx, f.owner, inv.ID); err != nil {
+		t.Errorf("the owner revoking it: %v", err)
+	}
+}
