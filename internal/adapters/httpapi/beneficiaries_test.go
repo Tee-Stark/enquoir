@@ -181,3 +181,25 @@ func TestRegisterBeneficiary_IdenticalDetailsInTwoOrganisationsAreSeparate(t *te
 		t.Errorf("org A got %+v and org B got %+v: one beneficiary shared across organisations", a, b)
 	}
 }
+
+func TestRegisterBeneficiary_FromTheDashboard(t *testing.T) {
+	registrar := &fakeRegistrar{}
+	f, _ := newBeneficiaryFixture(t, registrar)
+	org, owner := f.newOrg(t)
+	viewer := f.memberAs(t, org, domain.Viewer)
+
+	if rec := f.do(t, http.MethodPost, "/v1/beneficiaries", validBeneficiaryBody, owner); rec.Code != http.StatusOK {
+		t.Fatalf("an owner registering a payee: %d %s", rec.Code, rec.Body)
+	}
+	if rec := f.do(t, http.MethodPost, "/v1/beneficiaries", validBeneficiaryBody, viewer); rec.Code != http.StatusForbidden {
+		t.Errorf("a viewer registering a payee: %d, want 403", rec.Code)
+	}
+	unverified := sessionCookie(t, f.do(t, http.MethodPost, "/v1/auth/signup", signUpBody))
+	rec := f.do(t, http.MethodPost, "/v1/beneficiaries", validBeneficiaryBody, unverified)
+	if p := decodeProblem(t, rec); rec.Code != http.StatusForbidden || p.Code != "email_unverified" {
+		t.Errorf("an unverified owner: %d %q", rec.Code, p.Code)
+	}
+	if rec := f.do(t, http.MethodPost, "/v1/beneficiaries", validBeneficiaryBody); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no credentials: %d, want 401", rec.Code)
+	}
+}

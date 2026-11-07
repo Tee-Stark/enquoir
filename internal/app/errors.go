@@ -22,6 +22,13 @@ var (
 
 	// ErrEmailTaken means an account already uses that email.
 	ErrEmailTaken = errors.New("email already registered")
+
+	// ErrNoOrganisation means the credentials are right but the user
+	// belongs to no organisation (they were removed from all of them).
+	ErrNoOrganisation = errors.New("this account belongs to no organisation")
+
+	// ErrForbidden means the signed-in user's role does not allow it.
+	ErrForbidden = errors.New("your role does not allow this")
 )
 
 // ValidationError is input that failed validation, naming the field.

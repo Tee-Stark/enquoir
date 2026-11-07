@@ -25,6 +25,8 @@ type authFixture struct {
 	payees   *apptest.Beneficiaries
 	attempts *apptest.Attempts
 	payments *apptest.Payments
+	accounts *apptest.Accounts
+	mailer   *apptest.Mailer
 }
 
 func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
@@ -36,15 +38,45 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	attempts, payments := apptest.NewAttempts(), apptest.NewPayments()
 	events.Clock = clock
 	analytics := &fixtureAnalytics{}
-	issuer := &app.SessionIssuer{Sessions: sessions, Secrets: secrets, Clock: clock, TTL: 7 * 24 * time.Hour}
+	issuer := &app.SessionIssuer{Sessions: sessions, IDs: ids, Secrets: secrets, Clock: clock, TTL: 7 * 24 * time.Hour}
+	mailer, outbox, tokens := &apptest.Mailer{}, apptest.NewOutbox(), apptest.NewTokens()
+	deliver := &app.DeliverEmail{Outbox: outbox, Tokens: tokens, Renderer: apptest.Renderer{}, Mailer: mailer,
+		Secrets: secrets, Clock: clock, AppBaseURL: "https://enquoir.etimi.me"}
+	audit := &app.Audit{Log: apptest.NewAuditLog(), IDs: ids, Clock: clock}
+	invitations := apptest.NewInvitations()
+	invitations.Accounts = accounts
+	invitations.Tokens = tokens
+	emails := &app.Emails{Outbox: outbox, Dispatcher: &apptest.Dispatcher{Deliver: deliver.Run}, IDs: ids, Clock: clock}
 	h := &Handler{
-		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: clock, Issuer: issuer},
-		LogIn:          &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
-		LogOut:         &app.LogOut{Sessions: sessions, Clock: clock},
-		ResolveSession: &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: clock},
-		Cookies:        CookieSettings{Secure: secureCookies},
+		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: clock, Issuer: issuer, Emails: emails},
+		VerifyEmail:    &app.VerifyEmail{Tokens: tokens, Users: accounts, Clock: clock, Audit: audit},
+		ResendVerify:   &app.ResendVerification{Emails: emails},
+		ForgotPassword: &app.ForgotPassword{Accounts: accounts, Emails: emails},
+		ResetPassword:  &app.ResetPassword{Tokens: tokens, Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: clock},
+		ChangePassword: &app.ChangePassword{Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: clock},
 
-		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: clock},
+		ListSessions:        &app.ListSessions{Sessions: sessions, Clock: clock},
+		RevokeSession:       &app.RevokeSession{Sessions: sessions, Clock: clock},
+		RevokeOtherSessions: &app.RevokeOtherSessions{Sessions: sessions, Clock: clock},
+
+		ListAuditLog:   &app.ListAuditLog{Log: audit.Log},
+		ListMyActivity: &app.ListMyActivity{Log: audit.Log},
+
+		ListMembers:      &app.ListMembers{Members: accounts},
+		ChangeMemberRole: &app.ChangeMemberRole{Members: accounts, Sessions: sessions, Clock: clock},
+		RemoveMember:     &app.RemoveMember{Members: accounts, Sessions: sessions, Clock: clock},
+		InviteMember:     &app.InviteMember{Accounts: accounts, Members: accounts, Invitations: invitations, Emails: emails, IDs: ids, Clock: clock, Audit: audit},
+		ListInvitations:  &app.ListInvitations{Invitations: invitations, Clock: clock},
+		RevokeInvitation: &app.RevokeInvitation{Invitations: invitations, Clock: clock},
+		AcceptInvitation: &app.AcceptInvitation{Tokens: tokens, Invitations: invitations, Accounts: accounts, Sessions: sessions, Hasher: hasher, IDs: ids, Issuer: issuer, Clock: clock},
+		LogIn:            &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
+		LogOut:           &app.LogOut{Sessions: sessions, Clock: clock},
+		ResolveSession:   &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: clock},
+		SwitchOrg:        &app.SwitchOrganisation{Accounts: accounts, Sessions: sessions, Issuer: issuer},
+		MyOrgs:           &app.ListMyOrganisations{Accounts: accounts},
+		Cookies:          CookieSettings{Secure: secureCookies},
+
+		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
 		ListAgents:        &app.ListAgents{Agents: agents},
 		GetAgent:          &app.GetAgent{Agents: agents},
 		RotateAgentKey:    &app.RotateAgentKey{Agents: agents, IDs: ids, Secrets: secrets, Clock: clock},
@@ -62,7 +94,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		TimeSeries:        &app.GetTimeSeries{Analytics: analytics, Clock: clock},
 		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
 	}
-	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments}
+	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments, accounts: accounts, mailer: mailer}
 }
 
 var testEmailCounter atomic.Int64
@@ -83,6 +115,7 @@ func (f *authFixture) newAgent(t *testing.T) (domain.OrgID, string) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &signed); err != nil {
 		t.Fatalf("decoding signup response: %v", err)
 	}
+	f.verify(t, email)
 	issued := f.createAgent(t, sessionCookie(t, rec), "Test Agent")
 	org := domain.OrgID(signed.Organisation.ID)
 	// By convention every test organisation owns a payee "payee-1".
@@ -237,5 +270,14 @@ func TestSession_ExpiresAfterItsTTL(t *testing.T) {
 	f.clock.Advance(7*24*time.Hour + time.Second)
 	if rec := f.do(t, http.MethodGet, "/v1/auth/session", "", cookie); rec.Code != http.StatusUnauthorized {
 		t.Errorf("expired session: %d, want 401", rec.Code)
+	}
+}
+
+// verify follows the verification link last emailed to email.
+func (f *authFixture) verify(t *testing.T, email string) {
+	t.Helper()
+	token := f.mailer.TokenTo(domain.Email(email))
+	if rec := f.do(t, http.MethodPost, "/v1/auth/verify-email", fmt.Sprintf(`{"token":%q}`, token)); rec.Code != http.StatusNoContent {
+		t.Fatalf("verifying %s: %d %s", email, rec.Code, rec.Body)
 	}
 }

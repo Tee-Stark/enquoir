@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"enquoir/internal/app"
+	"enquoir/internal/domain"
 )
 
 // Handler holds the use cases the API calls into.
@@ -20,8 +21,32 @@ type Handler struct {
 	LogIn          *app.LogIn
 	LogOut         *app.LogOut
 	ResolveSession *app.ResolveSession
-	Cookies        CookieSettings
-	Origins        AllowedOrigins
+	SwitchOrg      *app.SwitchOrganisation
+	MyOrgs         *app.ListMyOrganisations
+	VerifyEmail    *app.VerifyEmail
+	ResendVerify   *app.ResendVerification
+	ForgotPassword *app.ForgotPassword
+	ResetPassword  *app.ResetPassword
+	ChangePassword *app.ChangePassword
+
+	ListSessions        *app.ListSessions
+	RevokeSession       *app.RevokeSession
+	RevokeOtherSessions *app.RevokeOtherSessions
+
+	ListAuditLog   *app.ListAuditLog
+	ListMyActivity *app.ListMyActivity
+
+	ListMembers      *app.ListMembers
+	ChangeMemberRole *app.ChangeMemberRole
+	RemoveMember     *app.RemoveMember
+	InviteMember     *app.InviteMember
+	ListInvitations  *app.ListInvitations
+	RevokeInvitation *app.RevokeInvitation
+	AcceptInvitation *app.AcceptInvitation
+	Cookies          CookieSettings
+	Origins          AllowedOrigins
+	Throttle         *app.Throttle
+	ClientIPHeader   string // the proxy header carrying the client IP, if any
 
 	CreateAgent       *app.CreateAgent
 	ListAgents        *app.ListAgents
@@ -41,7 +66,7 @@ type Handler struct {
 
 func NewRouter(h *Handler) chi.Router {
 	r := chi.NewRouter()
-	r.Use(limitBody, h.cors, h.checkOrigin)
+	r.Use(limitBody, h.cors, h.checkOrigin, h.withActor)
 	r.Get("/healthz", h.healthz)
 	r.Get("/openapi.yaml", serveSpec)
 	r.Get("/docs", serveDocs)
@@ -50,36 +75,64 @@ func NewRouter(h *Handler) chi.Router {
 		r.Use(h.requireAgent)
 		r.Post("/v1/intents", h.submitIntent)
 		r.Get("/v1/intents/{key}", h.getIntent)
-		r.Post("/v1/beneficiaries", h.registerBeneficiary)
 	})
+	// Agents register payees with their key; members from the
+	// dashboard, as operator or above with a verified email.
+	r.With(h.agentOrMember(domain.PermWrite)).Post("/v1/beneficiaries", h.registerBeneficiary)
 
-	r.Post("/v1/auth/signup", h.signUp)
-	r.Post("/v1/auth/login", h.logIn)
+	r.With(h.limitIP(app.RuleSignUpPerIP)).Post("/v1/auth/signup", h.signUp)
+	r.With(h.limitIP(app.RuleLoginPerIP)).Post("/v1/auth/login", h.logIn)
 	r.Post("/v1/auth/logout", h.logOut)
 	r.With(h.requireUser).Get("/v1/auth/session", h.getSession)
+	r.With(h.requireUser).Post("/v1/auth/switch-organisation", h.switchOrganisation)
+
+	r.Post("/v1/auth/verify-email", h.verifyEmail)
+	r.With(h.requireUser).Post("/v1/auth/verify-email/resend", h.resendVerification)
+	r.Post("/v1/auth/password/forgot", h.forgotPassword)
+	r.Post("/v1/auth/password/reset", h.resetPassword)
+	r.With(h.requireUser).Post("/v1/auth/password/change", h.changePassword)
+	r.With(h.requireUser).Get("/v1/auth/sessions", h.listSessions)
+	r.With(h.requireUser).Get("/v1/auth/activity", h.listMyActivity)
+	r.With(h.requireUser).Delete("/v1/auth/sessions", h.revokeOtherSessions)
+	r.With(h.requireUser).Delete("/v1/auth/sessions/{id}", h.revokeSession)
+	r.Post("/v1/invitations/accept", h.acceptInvitation)
 
 	// Placeholders until their requirements arrive.
-	r.Post("/v1/auth/verify-email", notImplemented("Email verification"))
-	r.With(h.requireUser).Post("/v1/auth/verify-email/resend", notImplemented("Email verification"))
 	r.With(h.requireUser).Get("/v1/onboarding", notImplemented("Onboarding"))
 	r.With(h.requireUser).Put("/v1/onboarding", notImplemented("Onboarding"))
 
+	// The dashboard. Every route names the permission it needs; the
+	// table of who has which is domain.Role.
 	r.Group(func(r chi.Router) {
 		r.Use(h.requireUser)
-		r.Post("/v1/agents", h.createAgent)
-		r.Get("/v1/agents", h.listAgents)
-		r.Get("/v1/agents/{id}", h.getAgent)
-		r.Delete("/v1/agents/{id}", h.revokeAgent)
-		r.Post("/v1/agents/{id}/rotate-key", h.rotateAgentKey)
+		read, write := h.allow(domain.PermRead), h.allow(domain.PermWrite)
+		verified := requireVerified
 
-		r.Get("/v1/payments", h.listPayments)
-		r.Get("/v1/payments/{key}", h.getPayment)
-		r.Get("/v1/payments/{key}/replay", h.replayPayment)
-		r.Get("/v1/attempts", h.listAttempts)
-		r.Get("/v1/beneficiaries", h.listBeneficiaries)
+		r.With(write, verified).Post("/v1/agents", h.createAgent)
+		r.With(read).Get("/v1/agents", h.listAgents)
+		r.With(read).Get("/v1/agents/{id}", h.getAgent)
+		r.With(write).Delete("/v1/agents/{id}", h.revokeAgent)
+		r.With(write, verified).Post("/v1/agents/{id}/rotate-key", h.rotateAgentKey)
 
-		r.Get("/v1/analytics/summary", h.analyticsSummary)
-		r.Get("/v1/analytics/timeseries", h.analyticsTimeSeries)
+		r.With(read).Get("/v1/payments", h.listPayments)
+		r.With(read).Get("/v1/payments/{key}", h.getPayment)
+		r.With(read).Get("/v1/payments/{key}/replay", h.replayPayment)
+		r.With(read).Get("/v1/attempts", h.listAttempts)
+		r.With(read).Get("/v1/beneficiaries", h.listBeneficiaries)
+
+		r.With(read).Get("/v1/analytics/summary", h.analyticsSummary)
+		r.With(read).Get("/v1/analytics/timeseries", h.analyticsTimeSeries)
+
+		manage := h.allow(domain.PermManageMembers)
+		r.With(read).Get("/v1/members", h.listMembers)
+		r.With(manage).Patch("/v1/members/{id}", h.changeMemberRole)
+		// Anyone may leave; removing others is checked against roles.
+		r.With(read).Delete("/v1/members/{id}", h.removeMember)
+		r.With(manage, verified).Post("/v1/invitations", h.inviteMember)
+		r.With(manage).Get("/v1/invitations", h.listInvitations)
+		r.With(manage).Delete("/v1/invitations/{id}", h.revokeInvitation)
+
+		r.With(h.allow(domain.PermViewAuditLog)).Get("/v1/audit-log", h.listAuditLog)
 	})
 	return r
 }

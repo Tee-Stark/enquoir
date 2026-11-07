@@ -35,8 +35,14 @@ each agent an API key, and watch every payment those agents attempt.
 - Structured logging with log/slog
 
 Keep dependencies minimal. Approved additions: `github.com/getkin/kin-openapi`,
-test-only, to validate the OpenAPI spec and responses against it. Passwords
-are hashed with the standard library (`crypto/pbkdf2`), behind a port.
+test-only, to validate the OpenAPI spec and responses against it;
+`github.com/redis/go-redis/v9`, for rate limits and the session/API-key cache.
+Passwords are hashed with the standard library (`crypto/pbkdf2`), behind a port.
+Email goes through Resend's HTTP API with the standard library, no SDK.
+
+Redis is a cache and a rate limiter, never a record: sessions, API keys,
+one-time tokens and everything auditable live in Postgres. If Redis is down,
+authentication falls back to Postgres and keeps working.
 
 ## Architecture: domain-driven design, clean architecture
 
@@ -84,6 +90,10 @@ outside the standard library.
 - **Credentials are stored hashed.** Passwords (slow, salted hash), session
   tokens and API keys (SHA-256 of a high-entropy secret). Plaintext secrets
   are shown once, at creation, and never logged.
+- **Secrets never rest in plaintext.** One-time link tokens (verification,
+  invitations, password reset) are minted when the email is sent and stored
+  only as hashes; the email outbox stores a template ID and non-secret values,
+  never a link. Templates are embedded in the binary (`go:embed`), not stored.
 - **The OpenAPI spec is the contract.** Every route is in api/openapi.yaml
   and every documented route exists; a test enforces both, and handler
   tests validate responses against the spec. Update the spec with the route.
@@ -140,7 +150,23 @@ each one you depend on, and record differences in docs/rail-notes.md.
   FAILED. Read failure_type and failure_reason.
 - Limits: 20 requests per second overall, 10 per endpoint, 10 concurrent.
 
-## Phase 4: Enquoir Cloud (current)
+## Phase 5: authentication hardening (current)
+
+- Organisation members with roles: owner, admin, operator (read and write),
+  viewer (read only). One person may belong to several organisations; a
+  session is bound to one. Nobody grants a role above their own; an
+  organisation always keeps an owner; a role change or removal signs the
+  member out everywhere.
+- Invitations by email; accepting adds the membership (or creates the
+  account). Only verified accounts may create agents, invite, or register
+  payees, so only an organisation's own agents can create its intents.
+- Email verification, password reset and change, through Resend, with
+  embedded templates and a durable send. Links point at `APP_BASE_URL`.
+- Rate limits on log-in, sign-up, verification resends and resets; an
+  account locks for an hour after 10 failed log-ins.
+- Session listing and revocation; an audit log of account actions.
+
+## Phase 4: Enquoir Cloud (done)
 
 - An OpenAPI 3.1 spec for every endpoint, kept current with each addition.
 - Accounts: sign up, log in and log out with email and password; cookie
@@ -158,10 +184,10 @@ each one you depend on, and record differences in docs/rail-notes.md.
 
 ## Out of scope until told otherwise
 
-Webhooks, currency conversion, compensation, the full policy engine, any UI,
-the MCP proxy, cards, connected accounts, per-organisation Airwallex
-credentials, sending email, and the self-hosted edition. Leave clear seams
-where they will attach.
+Webhooks, currency conversion, compensation, the full policy engine and
+escalation to humans (next phase), any UI, the MCP proxy, cards, connected
+accounts, per-organisation Airwallex credentials, two-factor authentication,
+and the self-hosted edition. Leave clear seams where they will attach.
 
 ## How to work
 

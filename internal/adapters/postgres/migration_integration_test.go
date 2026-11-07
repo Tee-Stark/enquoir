@@ -140,3 +140,28 @@ func TestMigration0005_EmptyDatabaseGetsNoPreTenancyOrg(t *testing.T) {
 		t.Errorf("%d organisations after migrating an empty database, want 0", n)
 	}
 }
+
+// Every user from before memberships becomes the owner of the
+// organisation they belonged to, and existing sessions keep working.
+func TestMigration0009_BackfillsOwnersAndSessionIDs(t *testing.T) {
+	ctx := context.Background()
+	pool := poolInFreshSchema(t)
+	applyUpTo(t, pool, "0009")
+
+	pool.Exec(ctx, `INSERT INTO organisations (id, name, created_at) VALUES ('org_old', 'Old Co', now())`)
+	pool.Exec(ctx, `INSERT INTO users (id, org_id, email, password_hash, created_at) VALUES ('usr_old', 'org_old', 'old@example.com', 'h', now())`)
+	pool.Exec(ctx, `INSERT INTO sessions (token_hash, user_id, org_id, created_at, expires_at) VALUES ('hash_old', 'usr_old', 'org_old', now(), now() + interval '1 day')`)
+
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	store := NewAccountStore(pool)
+	m, err := store.Membership(ctx, "org_old", "usr_old")
+	if err != nil || m.Role != domain.Owner {
+		t.Errorf("backfilled membership = %+v, %v; want owner", m, err)
+	}
+	sess, err := NewSessionStore(pool).Get(ctx, "hash_old")
+	if err != nil || sess.ID == "" || sess.OrgID != "org_old" {
+		t.Errorf("existing session = %+v, %v; want it kept, with an ID", sess, err)
+	}
+}

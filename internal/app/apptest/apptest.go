@@ -5,6 +5,7 @@ package apptest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -75,27 +76,56 @@ func (c *Clock) Advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
+// Accounts is an in-memory app.AccountStore with memberships.
 type Accounts struct {
-	mu    sync.Mutex
-	orgs  map[domain.OrgID]app.Organisation
-	users map[domain.UserID]app.User
+	mu          sync.Mutex
+	orgs        map[domain.OrgID]app.Organisation
+	users       map[domain.UserID]app.User
+	memberships []app.Membership
 }
 
 func NewAccounts() *Accounts {
 	return &Accounts{orgs: map[domain.OrgID]app.Organisation{}, users: map[domain.UserID]app.User{}}
 }
 
+func (a *Accounts) emailTaken(email domain.Email) bool {
+	for _, u := range a.users {
+		if u.Email == email {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *Accounts) CreateOrganisationWithOwner(ctx context.Context, org app.Organisation, owner app.User) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for _, u := range a.users {
-		if u.Email == owner.Email {
-			return app.ErrEmailTaken
-		}
+	if a.emailTaken(owner.Email) {
+		return app.ErrEmailTaken
 	}
 	a.orgs[org.ID] = org
 	a.users[owner.ID] = owner
+	a.memberships = append(a.memberships, app.Membership{Organisation: org, UserID: owner.ID, Role: domain.Owner, CreatedAt: owner.CreatedAt})
 	return nil
+}
+
+// AddMember adds user (who must exist) to org with role.
+func (a *Accounts) AddMember(org domain.OrgID, user domain.UserID, role domain.Role, at time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.memberships = append(a.memberships, app.Membership{Organisation: a.orgs[org], UserID: user, Role: role, CreatedAt: at})
+}
+
+// RemoveMembershipForTest drops a membership directly.
+func (a *Accounts) RemoveMembershipForTest(org domain.OrgID, user domain.UserID) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, m := range a.memberships {
+		if m.Organisation.ID == org && m.UserID == user {
+			a.memberships = append(a.memberships[:i], a.memberships[i+1:]...)
+			return
+		}
+	}
 }
 
 func (a *Accounts) UserByEmail(ctx context.Context, email domain.Email) (app.User, error) {
@@ -109,19 +139,53 @@ func (a *Accounts) UserByEmail(ctx context.Context, email domain.Email) (app.Use
 	return app.User{}, app.ErrNotFound
 }
 
-func (a *Accounts) UserWithOrganisation(ctx context.Context, id domain.UserID) (app.User, app.Organisation, error) {
+func (a *Accounts) UserByID(ctx context.Context, id domain.UserID) (app.User, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	u, ok := a.users[id]
 	if !ok {
-		return app.User{}, app.Organisation{}, app.ErrNotFound
+		return app.User{}, app.ErrNotFound
 	}
-	return u, a.orgs[u.OrgID], nil
+	return u, nil
+}
+
+func (a *Accounts) Membership(ctx context.Context, org domain.OrgID, user domain.UserID) (app.Membership, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, m := range a.memberships {
+		if m.Organisation.ID == org && m.UserID == user {
+			m.Organisation = a.orgs[org]
+			return m, nil
+		}
+	}
+	return app.Membership{}, app.ErrNotFound
+}
+
+func (a *Accounts) MembershipsOf(ctx context.Context, user domain.UserID) ([]app.Membership, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []app.Membership
+	for _, m := range a.memberships {
+		if m.UserID == user {
+			m.Organisation = a.orgs[m.Organisation.ID]
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 
 type Sessions struct {
 	mu       sync.Mutex
 	sessions map[string]app.Session
+	// BeforeRevoke, if set, runs at the start of every revoke, before it
+	// takes effect: a request racing the revoke.
+	BeforeRevoke func()
+}
+
+func (s *Sessions) beforeRevoke() {
+	if s.BeforeRevoke != nil {
+		s.BeforeRevoke()
+	}
 }
 
 func NewSessions() *Sessions { return &Sessions{sessions: map[string]app.Session{}} }
@@ -144,6 +208,7 @@ func (s *Sessions) Get(ctx context.Context, tokenHash string) (app.Session, erro
 }
 
 func (s *Sessions) Revoke(ctx context.Context, tokenHash string, at time.Time) error {
+	s.beforeRevoke()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if sess, ok := s.sessions[tokenHash]; ok {
@@ -547,4 +612,640 @@ func (r *Payments) GetPayment(ctx context.Context, org domain.OrgID, key domain.
 		}
 	}
 	return app.Payment{}, app.ErrNotFound
+}
+
+// Outbox is an in-memory app.EmailOutbox.
+type Outbox struct {
+	mu     sync.Mutex
+	emails map[string]app.Email
+	order  []string
+}
+
+func NewOutbox() *Outbox { return &Outbox{emails: map[string]app.Email{}} }
+
+func (o *Outbox) Queue(ctx context.Context, e app.Email) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.emails[e.ID] = e
+	o.order = append(o.order, e.ID)
+	return nil
+}
+
+func (o *Outbox) Get(ctx context.Context, id string) (app.Email, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e, ok := o.emails[id]
+	if !ok {
+		return app.Email{}, app.ErrNotFound
+	}
+	return e, nil
+}
+
+func (o *Outbox) MarkSent(ctx context.Context, id, providerID string, at time.Time) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e := o.emails[id]
+	e.Status, e.ProviderID, e.SentAt = app.EmailSent, providerID, &at
+	o.emails[id] = e
+	return nil
+}
+
+func (o *Outbox) MarkFailed(ctx context.Context, id, reason string, at time.Time) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e := o.emails[id]
+	e.Status, e.Error = app.EmailFailed, reason
+	o.emails[id] = e
+	return nil
+}
+
+// All returns every queued email, oldest first.
+func (o *Outbox) All() []app.Email {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	out := make([]app.Email, len(o.order))
+	for i, id := range o.order {
+		out[i] = o.emails[id]
+	}
+	return out
+}
+
+// Dispatcher records dispatched email IDs. Err, if set, is returned.
+type Dispatcher struct {
+	mu  sync.Mutex
+	ids []string
+	Err error
+	// Deliver, if set, is run for each dispatch: a synchronous stand-in
+	// for the durable send.
+	Deliver func(ctx context.Context, id string) error
+}
+
+func (d *Dispatcher) Dispatch(ctx context.Context, id string) error {
+	d.mu.Lock()
+	d.ids = append(d.ids, id)
+	d.mu.Unlock()
+	if d.Err != nil {
+		return d.Err
+	}
+	if d.Deliver != nil {
+		return d.Deliver(ctx, id)
+	}
+	return nil
+}
+
+func (d *Dispatcher) Dispatched() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.ids...)
+}
+
+// Mailer records sent emails. Err, if set, is returned instead.
+type Mailer struct {
+	mu   sync.Mutex
+	sent []app.OutgoingEmail
+	n    int
+	Err  error
+}
+
+func (m *Mailer) Send(ctx context.Context, e app.OutgoingEmail) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return "", m.Err
+	}
+	m.sent = append(m.sent, e)
+	m.n++
+	return fmt.Sprintf("msg_%d", m.n), nil
+}
+
+func (m *Mailer) Sent() []app.OutgoingEmail {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]app.OutgoingEmail(nil), m.sent...)
+}
+
+// LastTo returns the link in the last email sent to addr.
+func (m *Mailer) LastLinkTo(addr domain.Email) string {
+	sent := m.Sent()
+	for i := len(sent) - 1; i >= 0; i-- {
+		if sent[i].To == addr {
+			return LinkIn(sent[i].Text)
+		}
+	}
+	return ""
+}
+
+// TokenFrom is the token in the last link sent to addr.
+func (m *Mailer) TokenTo(addr domain.Email) string {
+	link := m.LastLinkTo(addr)
+	if i := strings.Index(link, "token="); i >= 0 {
+		return link[i+len("token="):]
+	}
+	return ""
+}
+
+// LinkIn returns the first URL with a token in text.
+func LinkIn(text string) string {
+	for _, f := range strings.Fields(text) {
+		if strings.Contains(f, "token=") {
+			return f
+		}
+	}
+	return ""
+}
+
+// Renderer renders any template as its params, one per line, so tests
+// can read them back.
+type Renderer struct{}
+
+func (Renderer) Render(id app.TemplateID, params map[string]string) (app.RenderedEmail, error) {
+	var b strings.Builder
+	for k, v := range params {
+		fmt.Fprintf(&b, "%s: %s\n", k, v)
+	}
+	if params["link"] != "" {
+		b.WriteString(params["link"] + "\n")
+	}
+	return app.RenderedEmail{Subject: string(id), HTML: "<p>" + string(id) + "</p>", Text: b.String()}, nil
+}
+
+// Tokens is an in-memory app.TokenStore.
+type Tokens struct {
+	mu     sync.Mutex
+	tokens map[string]app.OneTimeToken
+}
+
+func NewTokens() *Tokens { return &Tokens{tokens: map[string]app.OneTimeToken{}} }
+
+func (s *Tokens) Create(ctx context.Context, t app.OneTimeToken) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tokens[t.Hash] = t
+	return nil
+}
+
+func (s *Tokens) Consume(ctx context.Context, hash string, purpose app.TokenPurpose, now time.Time) (app.OneTimeToken, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tokens[hash]
+	if !ok || t.Purpose != purpose || t.UsedAt != nil || !now.Before(t.ExpiresAt) {
+		return app.OneTimeToken{}, app.ErrTokenInvalid
+	}
+	for h, other := range s.tokens {
+		if other.Purpose == t.Purpose && other.Subject == t.Subject && other.UsedAt == nil {
+			other.UsedAt = &now
+			s.tokens[h] = other
+		}
+	}
+	t.UsedAt = &now
+	return t, nil
+}
+
+func (s *Tokens) Count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.tokens)
+}
+
+// StoresPlaintext reports whether any stored token hash is token.
+func (s *Tokens) StoresPlaintext(token string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.tokens[token]
+	return ok
+}
+
+// MarkEmailVerified and SetPassword make Accounts an app.UserStore.
+func (a *Accounts) MarkEmailVerified(ctx context.Context, user domain.UserID, at time.Time) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	u, ok := a.users[user]
+	if !ok {
+		return app.ErrNotFound
+	}
+	u.EmailVerified = true
+	a.users[user] = u
+	return nil
+}
+
+func (a *Accounts) SetPassword(ctx context.Context, user domain.UserID, hash string, at time.Time) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	u, ok := a.users[user]
+	if !ok {
+		return app.ErrNotFound
+	}
+	u.PasswordHash = hash
+	a.users[user] = u
+	return nil
+}
+
+func (s *Sessions) RevokeAllForUser(ctx context.Context, user domain.UserID, except string, at time.Time) error {
+	s.beforeRevoke()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for h, sess := range s.sessions {
+		if sess.UserID == user && sess.ID != except && sess.RevokedAt == nil {
+			sess.RevokedAt = &at
+			s.sessions[h] = sess
+		}
+	}
+	return nil
+}
+
+func (s *Tokens) Peek(ctx context.Context, hash string, purpose app.TokenPurpose, now time.Time) (app.OneTimeToken, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tokens[hash]
+	if !ok || t.Purpose != purpose || t.UsedAt != nil || !now.Before(t.ExpiresAt) {
+		return app.OneTimeToken{}, app.ErrTokenInvalid
+	}
+	return t, nil
+}
+
+func (s *Sessions) RevokeForMember(ctx context.Context, org domain.OrgID, user domain.UserID, at time.Time) error {
+	s.beforeRevoke()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for h, sess := range s.sessions {
+		if sess.UserID == user && sess.OrgID == org && sess.RevokedAt == nil {
+			sess.RevokedAt = &at
+			s.sessions[h] = sess
+		}
+	}
+	return nil
+}
+
+func (a *Accounts) owners(org domain.OrgID) int {
+	n := 0
+	for _, m := range a.memberships {
+		if m.Organisation.ID == org && m.Role == domain.Owner {
+			n++
+		}
+	}
+	return n
+}
+
+func (a *Accounts) ListMembers(ctx context.Context, org domain.OrgID) ([]app.Member, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []app.Member
+	for _, m := range a.memberships {
+		if m.Organisation.ID == org {
+			out = append(out, app.Member{User: a.users[m.UserID], Role: m.Role, JoinedAt: m.CreatedAt})
+		}
+	}
+	return out, nil
+}
+
+func (a *Accounts) ChangeRole(ctx context.Context, org domain.OrgID, user domain.UserID, to domain.Role, check app.MembershipCheck) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, m := range a.memberships {
+		if m.Organisation.ID == org && m.UserID == user {
+			if err := check(m.Role, a.owners(org)); err != nil {
+				return err
+			}
+			a.memberships[i].Role = to
+			return nil
+		}
+	}
+	return app.ErrNotFound
+}
+
+func (a *Accounts) RemoveMember(ctx context.Context, org domain.OrgID, user domain.UserID, check app.MembershipCheck) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, m := range a.memberships {
+		if m.Organisation.ID == org && m.UserID == user {
+			if err := check(m.Role, a.owners(org)); err != nil {
+				return err
+			}
+			a.memberships = append(a.memberships[:i], a.memberships[i+1:]...)
+			return nil
+		}
+	}
+	return app.ErrNotFound
+}
+
+// Invitations is an in-memory app.InvitationStore, joined to an
+// Accounts for acceptance.
+type Invitations struct {
+	mu       sync.Mutex
+	invs     map[string]app.Invitation
+	Accounts *Accounts
+	Tokens   *Tokens
+}
+
+func NewInvitations() *Invitations { return &Invitations{invs: map[string]app.Invitation{}} }
+
+func (s *Invitations) CreateInvitation(ctx context.Context, inv app.Invitation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, other := range s.invs {
+		if other.OrgID == inv.OrgID && other.Email == inv.Email && other.Pending(inv.CreatedAt) {
+			at := inv.CreatedAt
+			other.RevokedAt = &at
+			s.invs[id] = other
+		}
+	}
+	s.invs[inv.ID] = inv
+	return nil
+}
+
+func (s *Invitations) ListPendingInvitations(ctx context.Context, org domain.OrgID, now time.Time) ([]app.Invitation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []app.Invitation
+	for _, inv := range s.invs {
+		if inv.OrgID == org && inv.Pending(now) {
+			out = append(out, inv)
+		}
+	}
+	return out, nil
+}
+
+func (s *Invitations) GetInvitation(ctx context.Context, id string) (app.Invitation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inv, ok := s.invs[id]
+	if !ok {
+		return app.Invitation{}, app.ErrNotFound
+	}
+	return inv, nil
+}
+
+func (s *Invitations) RevokeInvitation(ctx context.Context, org domain.OrgID, id string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inv, ok := s.invs[id]
+	if !ok || inv.OrgID != org || !inv.Pending(at) {
+		return app.ErrNotFound
+	}
+	inv.RevokedAt = &at
+	s.invs[id] = inv
+	return nil
+}
+
+func (s *Invitations) AcceptInvitation(ctx context.Context, cmd app.AcceptInvitationCommand) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inv, ok := s.invs[cmd.InvitationID]
+	if !ok || !inv.Pending(cmd.At) {
+		return app.ErrTokenInvalid
+	}
+	if _, err := s.Accounts.Membership(ctx, inv.OrgID, cmd.UserID); err == nil {
+		return app.ErrAlreadyMember
+	}
+	// Spend the token, all-or-nothing with the rest: check first.
+	s.Tokens.mu.Lock()
+	t, ok := s.Tokens.tokens[cmd.TokenHash]
+	if !ok || t.Purpose != app.PurposeInvitation || t.Subject != inv.ID || t.UsedAt != nil || !cmd.At.Before(t.ExpiresAt) {
+		s.Tokens.mu.Unlock()
+		return app.ErrTokenInvalid
+	}
+	s.Accounts.mu.Lock()
+	switch {
+	case cmd.NewUser != nil:
+		if s.Accounts.emailTaken(cmd.NewUser.Email) {
+			s.Accounts.mu.Unlock()
+			s.Tokens.mu.Unlock()
+			return app.ErrEmailTaken
+		}
+		u := *cmd.NewUser
+		u.EmailVerified = true
+		s.Accounts.users[u.ID] = u
+	case cmd.ClaimPasswordHash != "":
+		u := s.Accounts.users[cmd.UserID]
+		if u.EmailVerified {
+			s.Accounts.mu.Unlock()
+			s.Tokens.mu.Unlock()
+			return fmt.Errorf("the account was verified meanwhile; try again")
+		}
+		u.PasswordHash, u.EmailVerified = cmd.ClaimPasswordHash, true
+		s.Accounts.users[cmd.UserID] = u
+	}
+	s.Accounts.mu.Unlock()
+	for h, other := range s.Tokens.tokens {
+		if other.Purpose == app.PurposeInvitation && other.Subject == inv.ID && other.UsedAt == nil {
+			at := cmd.At
+			other.UsedAt = &at
+			s.Tokens.tokens[h] = other
+		}
+	}
+	s.Tokens.mu.Unlock()
+	s.Accounts.AddMember(inv.OrgID, cmd.UserID, inv.Role, cmd.At)
+	inv.AcceptedAt = &cmd.At
+	s.invs[cmd.InvitationID] = inv
+	return nil
+}
+
+// Counter is an in-memory app.Counter driven by a Clock.
+type Counter struct {
+	mu    sync.Mutex
+	Clock *Clock
+	hits  map[string]counterEntry
+	locks map[string]time.Time
+	// Err, if set, fails every call: a counter that is down.
+	Err error
+}
+
+type counterEntry struct {
+	n     int64
+	until time.Time
+}
+
+func NewCounter(c *Clock) *Counter {
+	return &Counter{Clock: c, hits: map[string]counterEntry{}, locks: map[string]time.Time{}}
+}
+
+func (c *Counter) Hit(ctx context.Context, key string, window time.Duration) (int64, time.Duration, error) {
+	if c.Err != nil {
+		return 0, 0, c.Err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.Clock.Now()
+	e := c.hits[key]
+	if !now.Before(e.until) {
+		e = counterEntry{until: now.Add(window)}
+	}
+	e.n++
+	c.hits[key] = e
+	return e.n, e.until.Sub(now), nil
+}
+
+func (c *Counter) Lock(ctx context.Context, key string, ttl time.Duration) error {
+	if c.Err != nil {
+		return c.Err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.locks[key] = c.Clock.Now().Add(ttl)
+	return nil
+}
+
+func (c *Counter) Locked(ctx context.Context, key string) (time.Duration, error) {
+	if c.Err != nil {
+		return 0, c.Err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if left := c.locks[key].Sub(c.Clock.Now()); left > 0 {
+		return left, nil
+	}
+	return 0, nil
+}
+
+func (c *Counter) Reset(ctx context.Context, key string) error {
+	if c.Err != nil {
+		return c.Err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.hits, key)
+	delete(c.locks, key)
+	return nil
+}
+
+// PrincipalStore is an in-memory app.PrincipalStore with owner
+// versions, like the Redis one. Gets counts cache reads that hit.
+type PrincipalStore struct {
+	mu       sync.Mutex
+	entries  map[string]principalEntry
+	versions map[string]int
+	Hits     int
+}
+
+type principalEntry struct {
+	owner   string
+	version int
+	value   []byte
+}
+
+func NewPrincipalStore() *PrincipalStore {
+	return &PrincipalStore{entries: map[string]principalEntry{}, versions: map[string]int{}}
+}
+
+func (s *PrincipalStore) Get(ctx context.Context, key string, into any) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.entries[key]
+	if !ok || e.version != s.versions[e.owner] {
+		return false
+	}
+	if json.Unmarshal(e.value, into) != nil {
+		return false
+	}
+	s.Hits++
+	return true
+}
+
+func (s *PrincipalStore) Put(ctx context.Context, key, owner string, value any, ttl time.Duration) {
+	b, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries[key] = principalEntry{owner: owner, version: s.versions[owner], value: b}
+}
+
+func (s *PrincipalStore) Forget(ctx context.Context, key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.entries, key)
+}
+
+func (s *PrincipalStore) InvalidateOwner(ctx context.Context, owner string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.versions[owner]++
+}
+
+// Contains reports whether any cached value contains needle.
+func (s *PrincipalStore) Contains(needle string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.entries {
+		if strings.Contains(string(e.value), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// Orgs lets Sessions name organisations when listing.
+func (s *Sessions) ActiveForUser(ctx context.Context, user domain.UserID, now time.Time) ([]app.SessionInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []app.SessionInfo
+	for _, sess := range s.sessions {
+		if sess.UserID == user && sess.RevokedAt == nil && now.Before(sess.ExpiresAt) {
+			out = append(out, app.SessionInfo{ID: sess.ID, Organisation: app.Organisation{ID: sess.OrgID}, CreatedAt: sess.CreatedAt, ExpiresAt: sess.ExpiresAt})
+		}
+	}
+	return out, nil
+}
+
+func (s *Sessions) RevokeByID(ctx context.Context, user domain.UserID, id string, at time.Time) error {
+	s.beforeRevoke()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for h, sess := range s.sessions {
+		if sess.ID == id && sess.UserID == user && sess.RevokedAt == nil {
+			sess.RevokedAt = &at
+			s.sessions[h] = sess
+			return nil
+		}
+	}
+	return app.ErrNotFound
+}
+
+// AuditLog is an in-memory app.AuditLog.
+type AuditLog struct {
+	mu     sync.Mutex
+	events []app.AuditEvent
+}
+
+func NewAuditLog() *AuditLog { return &AuditLog{} }
+
+func (l *AuditLog) Record(ctx context.Context, e app.AuditEvent) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.events = append(l.events, e)
+	return nil
+}
+
+func (l *AuditLog) List(ctx context.Context, org domain.OrgID, f app.AuditFilter) (app.AuditPage, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []app.AuditEvent
+	for i := len(l.events) - 1; i >= 0; i-- {
+		e := l.events[i]
+		if e.OrgID == org && (f.Action == "" || e.Action == f.Action) && (f.Actor == "" || e.ActorUserID == f.Actor) {
+			out = append(out, e)
+		}
+	}
+	return app.AuditPage{Events: out}, nil
+}
+
+// All returns every event, oldest first.
+func (l *AuditLog) All() []app.AuditEvent {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]app.AuditEvent(nil), l.events...)
+}
+
+func (l *AuditLog) ListForUser(ctx context.Context, user domain.UserID, f app.AuditFilter) (app.AuditPage, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []app.AuditEvent
+	for i := len(l.events) - 1; i >= 0; i-- {
+		e := l.events[i]
+		if e.ActorUserID == user || (e.TargetType == "user" && e.TargetID == string(user)) {
+			out = append(out, e)
+		}
+	}
+	return app.AuditPage{Events: out}, nil
 }

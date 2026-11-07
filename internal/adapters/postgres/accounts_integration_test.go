@@ -22,7 +22,7 @@ func newTestOrg(t *testing.T, store *AccountStore) (app.Organisation, app.User) 
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	org := app.Organisation{ID: domain.OrgID(ids.NewID("org")), Name: "Test " + t.Name(), CreatedAt: now}
 	user := app.User{
-		ID: domain.UserID(ids.NewID("usr")), OrgID: org.ID,
+		ID:           domain.UserID(ids.NewID("usr")),
 		Email:        domain.Email(fmt.Sprintf("%s@example.com", ids.NewID("u"))),
 		PasswordHash: "hashed", CreatedAt: now,
 	}
@@ -38,12 +38,22 @@ func TestAccountStore_CreateAndFind(t *testing.T) {
 	org, user := newTestOrg(t, store)
 
 	got, err := store.UserByEmail(ctx, user.Email)
-	if err != nil || got.ID != user.ID || got.OrgID != org.ID || got.PasswordHash != "hashed" || got.EmailVerified {
+	if err != nil || got.ID != user.ID || got.PasswordHash != "hashed" || got.EmailVerified {
 		t.Errorf("UserByEmail = %+v, %v", got, err)
 	}
-	u, o, err := store.UserWithOrganisation(ctx, user.ID)
-	if err != nil || u.Email != user.Email || o.Name != org.Name || !o.CreatedAt.Equal(org.CreatedAt) {
-		t.Errorf("UserWithOrganisation = %+v, %+v, %v", u, o, err)
+	if u, err := store.UserByID(ctx, user.ID); err != nil || u.Email != user.Email {
+		t.Errorf("UserByID = %+v, %v", u, err)
+	}
+	m, err := store.Membership(ctx, org.ID, user.ID)
+	if err != nil || m.Role != domain.Owner || m.Organisation.Name != org.Name || !m.Organisation.CreatedAt.Equal(org.CreatedAt) {
+		t.Errorf("Membership = %+v, %v", m, err)
+	}
+	other, _ := newTestOrg(t, store)
+	if _, err := store.Membership(ctx, other.ID, user.ID); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("membership in an organisation the user is not in: %v", err)
+	}
+	if ms, err := store.MembershipsOf(ctx, user.ID); err != nil || len(ms) != 1 || ms[0].Organisation.ID != org.ID {
+		t.Errorf("MembershipsOf = %+v, %v", ms, err)
 	}
 	if _, err := store.UserByEmail(ctx, "nobody-"+user.Email); !errors.Is(err, app.ErrNotFound) {
 		t.Errorf("UserByEmail(unknown) err = %v, want ErrNotFound", err)
@@ -58,7 +68,7 @@ func TestAccountStore_TakenEmailStoresNothing(t *testing.T) {
 	_, user := newTestOrg(t, store)
 
 	org2 := app.Organisation{ID: domain.OrgID(ids.NewID("org")), Name: "Second", CreatedAt: time.Now()}
-	dup := app.User{ID: domain.UserID(ids.NewID("usr")), OrgID: org2.ID, Email: user.Email, PasswordHash: "x", CreatedAt: time.Now()}
+	dup := app.User{ID: domain.UserID(ids.NewID("usr")), Email: user.Email, PasswordHash: "x", CreatedAt: time.Now()}
 	if err := store.CreateOrganisationWithOwner(ctx, org2, dup); !errors.Is(err, app.ErrEmailTaken) {
 		t.Fatalf("err = %v, want ErrEmailTaken", err)
 	}
@@ -72,16 +82,16 @@ func TestAccountStore_TakenEmailStoresNothing(t *testing.T) {
 func TestSessionStore_CreateGetRevoke(t *testing.T) {
 	ctx := context.Background()
 	pool := testPool(t)
-	_, user := newTestOrg(t, NewAccountStore(pool))
+	org, user := newTestOrg(t, NewAccountStore(pool))
 	sessions := NewSessionStore(pool)
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	s := app.Session{TokenHash: app.HashSecret(ids.NewID("ses")), UserID: user.ID, OrgID: user.OrgID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	s := app.Session{ID: ids.NewID("ses"), TokenHash: app.HashSecret(ids.NewID("ses")), UserID: user.ID, OrgID: org.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
 	if err := sessions.Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}
 	got, err := sessions.Get(ctx, s.TokenHash)
-	if err != nil || got.UserID != user.ID || !got.ExpiresAt.Equal(s.ExpiresAt) || got.RevokedAt != nil {
+	if err != nil || got.UserID != user.ID || got.ID != s.ID || got.OrgID != org.ID || !got.ExpiresAt.Equal(s.ExpiresAt) || got.RevokedAt != nil {
 		t.Fatalf("Get = %+v, %v", got, err)
 	}
 	if err := sessions.Revoke(ctx, s.TokenHash, now); err != nil {
@@ -96,5 +106,76 @@ func TestSessionStore_CreateGetRevoke(t *testing.T) {
 	}
 	if _, err := sessions.Get(ctx, "unknown"); !errors.Is(err, app.ErrNotFound) {
 		t.Errorf("Get(unknown) err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestAccountStore_VerifyAndSetPassword(t *testing.T) {
+	ctx := context.Background()
+	store := NewAccountStore(testPool(t))
+	_, user := newTestOrg(t, store)
+	now := time.Now()
+	if err := store.MarkEmailVerified(ctx, user.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPassword(ctx, user.ID, "new-hash", now); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := store.UserByID(ctx, user.ID)
+	if !u.EmailVerified || u.PasswordHash != "new-hash" {
+		t.Errorf("user = %+v", u)
+	}
+	if err := store.SetPassword(ctx, "usr_nobody", "x", now); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("unknown user: %v", err)
+	}
+}
+
+func TestSessionStore_RevokeAllForUserKeepsOne(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	org, user := newTestOrg(t, NewAccountStore(pool))
+	sessions := NewSessionStore(pool)
+	now := time.Now()
+	var hashes []string
+	var keep string
+	for i := 0; i < 3; i++ {
+		s := app.Session{ID: ids.NewID("ses"), TokenHash: app.HashSecret(ids.NewID("t")), UserID: user.ID, OrgID: org.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+		sessions.Create(ctx, s)
+		hashes = append(hashes, s.TokenHash)
+		keep = s.ID
+	}
+	if err := sessions.RevokeAllForUser(ctx, user.ID, keep, now); err != nil {
+		t.Fatal(err)
+	}
+	for i, h := range hashes {
+		s, _ := sessions.Get(ctx, h)
+		if (s.RevokedAt == nil) != (i == 2) {
+			t.Errorf("session %d revoked = %v", i, s.RevokedAt != nil)
+		}
+	}
+}
+
+func TestSessionStore_ListAndRevokeByID(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	org, user := newTestOrg(t, NewAccountStore(pool))
+	_, other := newTestOrg(t, NewAccountStore(pool))
+	sessions := NewSessionStore(pool)
+	now := time.Now()
+	a := app.Session{ID: ids.NewID("ses"), TokenHash: app.HashSecret(ids.NewID("t")), UserID: user.ID, OrgID: org.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	expired := app.Session{ID: ids.NewID("ses"), TokenHash: app.HashSecret(ids.NewID("t")), UserID: user.ID, OrgID: org.ID, CreatedAt: now, ExpiresAt: now.Add(-time.Second)}
+	sessions.Create(ctx, a)
+	sessions.Create(ctx, expired)
+	list, err := sessions.ActiveForUser(ctx, user.ID, now)
+	if err != nil || len(list) != 1 || list[0].ID != a.ID || list[0].Organisation.Name != org.Name {
+		t.Fatalf("active = %+v, %v", list, err)
+	}
+	if err := sessions.RevokeByID(ctx, other.ID, a.ID, now); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("another user revoking it: %v", err)
+	}
+	if err := sessions.RevokeByID(ctx, user.ID, a.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := sessions.ActiveForUser(ctx, user.ID, now); len(list) != 0 {
+		t.Errorf("still listed after revoking: %+v", list)
 	}
 }

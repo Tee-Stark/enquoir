@@ -32,7 +32,7 @@ func (h *Handler) registerBeneficiary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b, err := domain.NewBeneficiary(agentFrom(r.Context()).OrgID, req.Name, req.AccountNumber, req.RoutingNumber, domain.AccountCategory(req.Category), domain.BeneficiaryAddress{
+	b, err := domain.NewBeneficiary(orgOf(r.Context()), req.Name, req.AccountNumber, req.RoutingNumber, domain.AccountCategory(req.Category), domain.BeneficiaryAddress{
 		Street:   req.Address.Street,
 		City:     req.Address.City,
 		State:    req.Address.State,

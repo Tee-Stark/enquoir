@@ -4,3 +4,5 @@
 *.test
 *.out
 .DS_Store
+email-previews/
+mail.jsonl

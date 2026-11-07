@@ -29,6 +29,7 @@ type RegisterBeneficiary struct {
 	Registrar     BeneficiaryRegistrar
 	Beneficiaries BeneficiaryStore
 	Clock         Clock
+	Audit         *Audit
 }
 
 func (r *RegisterBeneficiary) Run(ctx context.Context, b domain.Beneficiary) (RegisterBeneficiaryResult, error) {
@@ -48,6 +49,7 @@ func (r *RegisterBeneficiary) Run(ctx context.Context, b domain.Beneficiary) (Re
 	}); err != nil {
 		return RegisterBeneficiaryResult{}, err
 	}
+	r.Audit.record(ctx, b.OrgID, AuditPayeeRegistered, "payee", id, map[string]string{"name": b.Name, "account_last4": b.AccountNumber[len(b.AccountNumber)-4:]})
 	return RegisterBeneficiaryResult{ID: id, Key: b.Key}, nil
 }
 

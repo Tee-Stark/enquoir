@@ -795,3 +795,125 @@ SIGTERM shutdown, the dev ports refused from the LAN address, and
   revoking all sessions on a password change (there is no password
   change or reset yet - both belong here).
 - Audit trail of account actions (key created/rotated/revoked, sign-ins).
+
+## Phase 5: authentication hardening - done (2026-11-07)
+
+Branch `feat/auth`, from `main` after PR #8 merged.
+
+### What exists
+
+- **Roles and memberships.** owner, admin, operator (read and write),
+  viewer (read only) - one table in `domain.Role`. A person may belong to
+  several organisations; a session is bound to one
+  (`POST /v1/auth/switch-organisation`). Nobody grants above their own
+  role; only an owner changes a member at their own level or above; an
+  organisation always keeps an owner, enforced under a lock on its
+  memberships. Every dashboard route names its permission.
+- **Members and invitations.** List, change role, remove or leave;
+  invite by email (7 days); accept creates the account (verified, signed
+  in) or adds the membership. A role change or removal signs the member
+  out of that organisation at once.
+- **Email, through Resend.** Four templates (verify, invitation, reset,
+  password changed), embedded with `go:embed`, placeholder styling with
+  every visual choice in `internal/adapters/emailtmpl/brand.go`;
+  `make emails` writes previews. The outbox stores a template ID and
+  non-secret values; `SendEmailWorkflow` sends with
+  `Idempotency-Key: email/<id>` and mints the link's token at send time,
+  storing only its hash - no address, link or token enters Temporal's
+  history. Retries stop inside Resend's 24-hour idempotency window.
+  `EMAIL_PROVIDER=resend|file`; `MAIL_FILE` keeps a local copy.
+- **Verification.** Sign-up sends a link (24 h). Unverified users can
+  look around but cannot create or rotate agent keys, invite, or register
+  payees - so only an organisation's own agents, created by its verified
+  members, can create its intents.
+- **Passwords.** Forgot (always 202), reset (1 h; policy checked before
+  the link is spent; signs out everywhere; lifts a lockout), change
+  (current password; signs out other sessions); a notice is emailed.
+- **Limits.** Log-in 5/min per email and 30/min per IP; 10 failures lock
+  the email for an hour (unknown emails too); sign-up 5/h per IP;
+  resend 1/min and 5/day; reset requests 3/h per email. 429 with
+  Retry-After.
+- **Redis**, a cache and a rate limiter, never a record: shared counters,
+  and resolved sessions and agent keys cached up to 60 s (never with a
+  password hash), invalidated at once on every access change by bumping
+  the owner's version. Every call is bounded to 250 ms; failures are
+  misses or allowed hits; without Redis the API keeps per-process limits
+  and no cache. Compose runs it on loopback, without persistence.
+- **Sessions.** List, revoke one, sign out everywhere else.
+- **Audit log.** Account actions with actor (a member, or an agent acting
+  with its key), target, details, IP and user agent;
+  `GET /v1/audit-log` for owners and admins.
+- **Dashboard payee registration** for operators and up, verified.
+- `docs/frontend.md`: the email link pages, the invitation-accept flow,
+  roles to show, and how errors and limits arrive.
+
+### Verified
+
+- `make test` and `make test-integration` (including concurrent
+  demotions keeping an owner, single-use tokens under a race, Redis
+  windows and cross-instance invalidation), at every commit.
+- Live against Resend: a send to a Resend test inbox, and that reusing an
+  idempotency key with a changed body returns
+  `invalid_idempotent_request` - which is what makes a retried send with
+  a fresh link unable to deliver twice.
+- Live, `make e2e` (25 steps): unverified sign-up refused keys, verified
+  from the emailed link, the payment flow, the dashboard, a viewer
+  invited and limited, the audit log naming the acting agent, a password
+  reset from the emailed link, and a second organisation isolated. Every
+  email went through Resend. Also live: the lockout (Retry-After 3600,
+  even the right password refused), a viewer's cached session ending the
+  moment their role changed, a revoked agent's cached key failing at
+  once, no password hash in Redis.
+- `make chaos`, all four points, unchanged.
+
+### Choices and limits worth knowing
+
+- Resend's testing sender (`onboarding@resend.dev`) only delivers to the
+  account owner's address and Resend's test inboxes; real invitations
+  need a verified domain (planned: `no-reply@enquoir.etimi.me`).
+- Audit events are written after the action; a failed write does not
+  undo it. Account-level events without an organisation (a reset before
+  signing in, verification) are recorded but not yet listed anywhere.
+- Re-registering an existing payee records `payee.registered` again.
+- Per-IP limits trust a proxy header only when `CLIENT_IP_HEADER` names
+  one; set it behind a reverse proxy, or every client shares its IP.
+- `make e2e` clears the dev Redis sign-up counter so repeated runs are
+  not limited.
+- Two-factor authentication and API key scopes/expiry are not built.
+
+## Security audit of Phase 5 (2026-11-07)
+
+Fixed before merging PR #9:
+
+- **High - invitations trusted a pre-registered account** (`0636b74`).
+  Accepting an invitation for an address with an existing account
+  verified it and gave it the membership without proof it belonged to
+  the address: signing up first with a colleague's predictable email
+  captured their invitation. Now an unverified account is *claimed*: the
+  link holder must choose a password, which replaces the old one, every
+  session of the account ends, and it is verified. A verified account
+  still joins with the link alone. Spending the link, accepting and
+  creating or claiming the account are one transaction. A test that
+  encoded the vulnerable behaviour (joining an unverified account on the
+  link alone) was corrected in its own commit first (`8a1bc7b`).
+  Verified live: the squatter's session and password stop working; the
+  real owner holds the account as operator.
+- **Medium - cache cleared before the revoke** (`259c977`): log-out,
+  switching organisation, password change and reset, role change. Each
+  now commits the revoke, then clears the cache; a deterministic race
+  test failed for all five before.
+- **Medium - unset `EMAIL_PROVIDER` meant file mode** (`c15c5de`),
+  writing live links to a local file. The worker now refuses to start
+  without it.
+- **Low - a Redis outage switched limits and lockout off silently**
+  (`c88057a`). A per-process fallback keeps them, and the outage is
+  logged once a minute. Verified by stopping Redis mid-run.
+- Review points: admins can no longer revoke or replace an invitation
+  above their role (`4949539`); account-level audit events are visible
+  to their owner at `GET /v1/auth/activity` (`9d6f0d1`); guesses at the
+  current password when changing it are limited to 5 per 15 minutes
+  (`35da57d`).
+
+Deferred to the deployment phase, as agreed: whether the reverse proxy
+overwrites or appends the header named by `CLIENT_IP_HEADER` (decides
+whether per-IP limits can be spoofed).

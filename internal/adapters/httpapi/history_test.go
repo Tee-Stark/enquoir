@@ -17,6 +17,7 @@ func (f *authFixture) newOrg(t *testing.T) (domain.OrgID, *http.Cookie) {
 	t.Helper()
 	email := fmt.Sprintf("owner-%d@example.com", testEmailCounter.Add(1))
 	rec := f.do(t, http.MethodPost, "/v1/auth/signup", fmt.Sprintf(`{"email":%q,"password":"correct horse battery","organisation_name":"Org"}`, email))
+	f.verify(t, email)
 	var body authBody
 	json.Unmarshal(rec.Body.Bytes(), &body)
 	return domain.OrgID(body.Organisation.ID), sessionCookie(t, rec)

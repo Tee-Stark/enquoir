@@ -19,6 +19,11 @@ info:
     (`403 forbidden_origin`).
 
     **Errors** are RFC 9457 problem details; branch on their `code`.
+
+    **Limits.** Log-in: 5 a minute per email, 30 a minute per IP; 10 failures
+    lock the email for an hour. Sign-up: 5 an hour per IP. Verification
+    resends: 1 a minute, 5 a day. Password reset requests: 3 an hour per
+    email. Password changes: 5 attempts per 15 minutes. Over a limit: 429 with Retry-After.
     Request bodies are limited to 64 KiB (`413 body_too_large`).
 servers:
   - url: http://localhost:8090
@@ -29,6 +34,12 @@ tags:
       Sign up, log in and out of the dashboard. Sessions are an HttpOnly
       cookie, `enquoir_session`, SameSite=Lax. Email verification and
       onboarding are placeholders until their requirements arrive.
+  - name: Members
+    description: |
+      The people in an organisation and their roles (see the Role schema for
+      what each may do). Members are invited by email; a role change or
+      removal signs the member out of the organisation at once. An
+      organisation always keeps at least one owner.
   - name: Agents
     description: |
       The AI agents that submit payments. Each agent has one API key,
@@ -102,9 +113,10 @@ paths:
       operationId: signUp
       summary: Create an organisation and its owner
       description: |
-        Creates a new organisation with the signing-up user as its owner, and
-        signs them in (sets the session cookie). The email starts unverified;
-        nothing is gated on verification yet.
+        Creates a new organisation with the signing-up user as its owner, signs
+        them in (sets the session cookie), and emails a verification link.
+        Until they verify, they cannot create agents, invite anyone or register
+        payees.
       requestBody:
         required: true
         content:
@@ -115,7 +127,7 @@ paths:
         "413":
           $ref: "#/components/responses/BodyTooLarge"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "201":
           description: Signed up and signed in.
           headers:
@@ -133,6 +145,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -151,7 +165,7 @@ paths:
         "413":
           $ref: "#/components/responses/BodyTooLarge"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: Signed in.
           headers:
@@ -172,6 +186,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -183,7 +199,7 @@ paths:
       description: Revokes the current session and clears the cookie. Succeeds without a session too.
       responses:
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "204":
           description: Logged out.
           headers:
@@ -191,6 +207,168 @@ paths:
               description: Clears `enquoir_session`.
               schema:
                 type: string
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/switch-organisation:
+    post:
+      tags: [Accounts]
+      operationId: switchOrganisation
+      summary: Move the session to another organisation you belong to
+      description: Issues a session bound to that organisation (a new cookie) and revokes the current one.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organisation_id]
+              properties:
+                organisation_id:
+                  type: string
+      responses:
+        "200":
+          description: Switched.
+          headers:
+            Set-Cookie:
+              $ref: "#/components/headers/SetSessionCookie"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: You are not a member of that organisation (`not_found`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/sessions:
+    get:
+      tags: [Accounts]
+      operationId: listSessions
+      summary: List your active sessions
+      description: In every organisation, newest first; `current` marks the one making this request. Tokens are never shown.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: Your sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SessionInfo"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Accounts]
+      operationId: revokeOtherSessions
+      summary: Sign out everywhere else
+      description: Revokes every session but the current one.
+      security:
+        - session: []
+      responses:
+        "204":
+          description: Revoked.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/sessions/{id}:
+    delete:
+      tags: [Accounts]
+      operationId: revokeSession
+      summary: Sign out one of your sessions
+      security:
+        - session: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Revoked.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Not one of your active sessions (`not_found`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/activity:
+    get:
+      tags: [Accounts]
+      operationId: listMyActivity
+      summary: The security events on your own account
+      description: |
+        Everything done by you or to your account, in any organisation - and
+        account-level events no organisation's log shows: email verified,
+        password reset, account locked. Newest first.
+      security:
+        - session: []
+      parameters:
+        - name: action
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of events.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditEvent"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -202,6 +380,8 @@ paths:
       security:
         - session: []
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The current session.
           content:
@@ -217,39 +397,176 @@ paths:
     post:
       tags: [Accounts]
       operationId: verifyEmail
-      summary: Verify an email address (placeholder)
-      description: Not built yet - returns 501 until its requirements arrive. Will take the token from the verification email.
+      summary: Verify an email address with the emailed link's token
+      description: |
+        The frontend's `/verify-email?token=...` page posts the token here.
+        A link works once and expires after 24 hours; asking for a new one
+        spends the old. No session needed.
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [token]
               properties:
                 token:
                   type: string
       responses:
+        "204":
+          description: Verified.
+        "400":
+          description: The body is malformed, or the link is invalid, used or expired (`token_invalid`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "413":
           $ref: "#/components/responses/BodyTooLarge"
-        "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/auth/verify-email/resend:
     post:
       tags: [Accounts]
       operationId: resendVerificationEmail
-      summary: Resend the verification email (placeholder)
-      description: Not built yet - returns 501 until its requirements arrive.
+      summary: Send a fresh verification link
       security:
         - session: []
       responses:
+        "202":
+          description: Queued for sending.
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Already verified (`already_verified`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/password/forgot:
+    post:
+      tags: [Accounts]
+      operationId: forgotPassword
+      summary: Email a password-reset link
+      description: |
+        Always 202, whether or not the address has an account, so the answer
+        never reveals which do. If it does, a link to the frontend's
+        `/reset-password?token=...` is emailed; it works once and expires in
+        1 hour.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+      responses:
+        "202":
+          description: Accepted.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/password/reset:
+    post:
+      tags: [Accounts]
+      operationId: resetPassword
+      summary: Set a new password with a reset link's token
+      description: |
+        Signs the account out everywhere and emails a notice that the password
+        changed. A password that fails the policy is rejected before the link
+        is spent, so the user can try again with the same link.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token:
+                  type: string
+                password:
+                  type: string
+                  minLength: 12
+                  maxLength: 128
+      responses:
+        "204":
+          description: Password set.
+        "400":
+          description: The password fails the policy (`validation_failed`), or the link is invalid, used or expired (`token_invalid`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/password/change:
+    post:
+      tags: [Accounts]
+      operationId: changePassword
+      summary: Change your password
+      description: Needs the current password. Signs out every other session and emails a notice.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password:
+                  type: string
+                new_password:
+                  type: string
+                  minLength: 12
+                  maxLength: 128
+      responses:
+        "204":
+          description: Changed.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Not signed in (`unauthenticated`), or the current password is wrong (`invalid_credentials`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/onboarding:
     get:
@@ -260,6 +577,8 @@ paths:
       security:
         - session: []
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "501":
@@ -282,9 +601,335 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "501":
           $ref: "#/components/responses/NotImplemented"
+
+  /v1/members:
+    get:
+      tags: [Members]
+      operationId: listMembers
+      summary: List the organisation's members
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The members, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Member"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/members/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The member's user ID.
+        schema:
+          type: string
+    patch:
+      tags: [Members]
+      operationId: changeMemberRole
+      summary: Change a member's role
+      description: Owners and admins. Signs the member out of the organisation so the new role applies at once.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  $ref: "#/components/schemas/Role"
+      responses:
+        "204":
+          description: Changed.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/LastOwner"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Members]
+      operationId: removeMember
+      summary: Remove a member, or leave
+      description: |
+        Any member may remove themselves (leave). Removing someone else needs
+        a role above theirs (owners may remove anyone). The member is signed
+        out of the organisation; their account and other organisations stay.
+      security:
+        - session: []
+      responses:
+        "204":
+          description: Removed.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/LastOwner"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/invitations:
+    post:
+      tags: [Members]
+      operationId: inviteMember
+      summary: Invite someone by email
+      description: |
+        Owners and admins with a verified email. Emails a link to the
+        frontend's `/invitations/accept?token=...`, valid for 7 days. Inviting
+        the same address again replaces the pending invitation. Nobody invites
+        above their own role.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email:
+                  type: string
+                role:
+                  $ref: "#/components/schemas/Role"
+      responses:
+        "201":
+          description: Invited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invitation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The person is already a member (`already_member`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Members]
+      operationId: listInvitations
+      summary: List pending invitations
+      security:
+        - session: []
+      responses:
+        "200":
+          description: Pending invitations, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Invitation"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/invitations/{id}:
+    delete:
+      tags: [Members]
+      operationId: revokeInvitation
+      summary: Revoke a pending invitation
+      description: Its link stops working.
+      security:
+        - session: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Revoked.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: No such pending invitation in this organisation (`not_found`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/invitations/accept:
+    post:
+      tags: [Members]
+      operationId: acceptInvitation
+      summary: Accept an invitation with the emailed link's token
+      description: |
+        No session needed. Holding the link proves the invited address, so:
+
+        - **No account** at that address: `password` is required. The
+          account is created, already verified, and signed in (the session
+          cookie is set). `account_created: true`.
+        - **An unverified account** at that address: `password` is required,
+          and the account is claimed - the password replaces its password,
+          every one of its sessions ends, and it is verified and signed in.
+          `account_claimed: true`. Nobody had proved that account owns the
+          address; without this, whoever signed up with someone else's email
+          first would receive their invitation.
+        - **A verified account**: it joins with the link alone; no password,
+          no session - the person signs in as usual.
+
+        A password that fails the policy is rejected before the link is spent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                password:
+                  type: string
+                  description: Required only when the address has no account.
+      responses:
+        "200":
+          description: Joined.
+          headers:
+            Set-Cookie:
+              description: Set when the account was created or claimed.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [organisation, role, user, account_created, account_claimed]
+                properties:
+                  organisation:
+                    $ref: "#/components/schemas/Organisation"
+                  role:
+                    $ref: "#/components/schemas/Role"
+                  user:
+                    $ref: "#/components/schemas/User"
+                  account_created:
+                    type: boolean
+                  account_claimed:
+                    type: boolean
+                    description: An unverified account at the address was claimed by the link's holder.
+        "400":
+          description: The password fails the policy (`validation_failed`), or the link is invalid, used, expired or revoked (`token_invalid`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Already a member (`already_member`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/audit-log:
+    get:
+      tags: [Members]
+      operationId: listAuditLog
+      summary: Account actions in the organisation
+      description: |
+        Owners and admins. Newest first. Actions: auth.logged_in,
+        auth.password_changed, auth.sessions_revoked, member.invited,
+        invitation.revoked, invitation.accepted, member.role_changed,
+        member.removed, member.left, agent.created, agent.key_rotated,
+        agent.revoked, payee.registered. Payments have their own history
+        (GET /v1/payments/{key}).
+      security:
+        - session: []
+      parameters:
+        - name: action
+          in: query
+          schema:
+            type: string
+        - name: actor_id
+          in: query
+          description: A user ID.
+          schema:
+            type: string
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of events.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditEvent"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/agents:
     post:
@@ -310,7 +955,7 @@ paths:
         "413":
           $ref: "#/components/responses/BodyTooLarge"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "201":
           description: Created.
           content:
@@ -331,6 +976,8 @@ paths:
       security:
         - session: []
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The agents.
           content:
@@ -358,6 +1005,8 @@ paths:
       security:
         - session: []
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The agent.
           content:
@@ -381,7 +1030,7 @@ paths:
         - session: []
       responses:
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "204":
           description: Revoked.
         "401":
@@ -403,7 +1052,7 @@ paths:
         - session: []
       responses:
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: Rotated.
           content:
@@ -463,6 +1112,8 @@ paths:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: One page of payments.
           content:
@@ -499,6 +1150,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IntentKey"
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The payment.
           content:
@@ -533,6 +1186,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IntentKey"
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The replay.
           content:
@@ -559,6 +1214,8 @@ paths:
         - $ref: "#/components/parameters/To"
         - $ref: "#/components/parameters/TZ"
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The summary.
           content:
@@ -617,6 +1274,8 @@ paths:
         - $ref: "#/components/parameters/To"
         - $ref: "#/components/parameters/TZ"
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The series.
           content:
@@ -672,6 +1331,8 @@ paths:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: One page of attempts.
           content:
@@ -718,7 +1379,7 @@ paths:
         "413":
           $ref: "#/components/responses/BodyTooLarge"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: Accepted, or recognised as an intent already submitted.
           content:
@@ -776,6 +1437,8 @@ paths:
       security:
         - session: []
       responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The payees.
           content:
@@ -805,8 +1468,12 @@ paths:
         The payee belongs to the registering organisation: only its agents can
         pay it. The same details registered by another organisation are a
         separate beneficiary.
+
+        Agents register payees with their API key; members can too, from the
+        dashboard, as operator or above with a verified email.
       security:
         - agentKey: []
+        - session: []
       requestBody:
         required: true
         content:
@@ -817,7 +1484,7 @@ paths:
         "413":
           $ref: "#/components/responses/BodyTooLarge"
         "403":
-          $ref: "#/components/responses/ForbiddenOrigin"
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: Registered, or found already registered.
           content:
@@ -924,14 +1591,38 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
-    ForbiddenOrigin:
-      description: A browser sent this from an origin not in CORS_ALLOWED_ORIGINS (`forbidden_origin`).
+    Forbidden:
+      description: |
+        Your role does not allow this (`forbidden`; see Role), a browser sent
+        it from an origin not in CORS_ALLOWED_ORIGINS (`forbidden_origin`),
+        on log-in, the account belongs to no organisation (`no_organisation`),
+        or the action needs a verified email address (`email_unverified`:
+        creating or rotating agent keys, inviting, registering payees).
       content:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
     NotImplemented:
       description: A placeholder; not built yet (`not_implemented`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    TooManyRequests:
+      description: |
+        Rate limited (`rate_limited`), or, on log-in, the account is locked
+        for an hour after 10 failed log-ins (`account_locked`). Retry-After
+        says when to try again, in seconds.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    LastOwner:
+      description: The change would leave the organisation without an owner (`last_owner`).
       content:
         application/problem+json:
           schema:
@@ -982,6 +1673,15 @@ components:
             - forbidden_origin
             - not_implemented
             - body_too_large
+            - forbidden
+            - no_organisation
+            - email_unverified
+            - already_verified
+            - token_invalid
+            - last_owner
+            - already_member
+            - rate_limited
+            - account_locked
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.
@@ -1023,7 +1723,9 @@ components:
           type: string
         email_verified:
           type: boolean
-          description: Always false until email verification is built.
+          description: |
+            Until true, the user can look around but cannot create agents,
+            invite anyone or register payees.
         created_at:
           type: string
           format: date-time
@@ -1559,14 +2261,143 @@ components:
               type: string
               format: date-time
 
+    AuditEvent:
+      type: object
+      required: [id, action, actor, target, details, ip, at]
+      properties:
+        id:
+          type: string
+        action:
+          type: string
+        actor:
+          description: Who did it - a member, or an agent acting with its key.
+          oneOf:
+            - type: object
+              required: [type, id, email, name]
+              properties:
+                type:
+                  type: string
+                  enum: [user, agent]
+                id:
+                  type: string
+                email:
+                  type: [string, "null"]
+                  description: For a user.
+                name:
+                  type: [string, "null"]
+                  description: For an agent.
+            - type: "null"
+        target:
+          description: What it was done to.
+          oneOf:
+            - type: object
+              required: [type, id]
+              properties:
+                type:
+                  type: string
+                  enum: [user, agent, invitation, payee]
+                id:
+                  type: string
+            - type: "null"
+        details:
+          type: object
+          additionalProperties:
+            type: string
+        ip:
+          type: [string, "null"]
+        at:
+          type: string
+          format: date-time
+
+    SessionInfo:
+      type: object
+      required: [id, organisation, created_at, expires_at, current]
+      properties:
+        id:
+          type: string
+        organisation:
+          $ref: "#/components/schemas/Organisation"
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        current:
+          type: boolean
+
+    Member:
+      type: object
+      required: [user, role, joined_at]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        role:
+          $ref: "#/components/schemas/Role"
+        joined_at:
+          type: string
+          format: date-time
+
+    Invitation:
+      type: object
+      required: [id, email, role, invited_by, created_at, expires_at]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        role:
+          $ref: "#/components/schemas/Role"
+        invited_by:
+          type: string
+          description: The inviting member's user ID.
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+
+    Role:
+      type: string
+      description: |
+        A member's role in an organisation.
+
+        | | owner | admin | operator | viewer |
+        |---|---|---|---|---|
+        | View payments, attempts, replay, analytics, payees, agents, members | ✓ | ✓ | ✓ | ✓ |
+        | Create, rotate, revoke agents; register payees | ✓ | ✓ | ✓ | |
+        | Invite and remove members, change roles up to admin; audit log | ✓ | ✓ | | |
+        | Manage admins and owners | ✓ | | | |
+
+        Nobody grants a role above their own; only an owner changes a member
+        at their own level or above; an organisation always keeps an owner.
+      enum: [owner, admin, operator, viewer]
+
     AuthSession:
       type: object
-      required: [user, organisation, session]
+      required: [user, organisation, role, session]
       properties:
         user:
           $ref: "#/components/schemas/User"
         organisation:
+          description: The organisation this session is bound to.
           $ref: "#/components/schemas/Organisation"
+        role:
+          $ref: "#/components/schemas/Role"
+        organisations:
+          type: array
+          description: Every organisation the user belongs to (GET /v1/auth/session only).
+          items:
+            type: object
+            required: [id, name, role]
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              role:
+                $ref: "#/components/schemas/Role"
         session:
           type: object
           required: [expires_at]

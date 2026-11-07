@@ -17,7 +17,9 @@ import (
 	"enquoir/internal/adapters/airwallex"
 	"enquoir/internal/adapters/clock"
 	"enquoir/internal/adapters/credentials"
+	"enquoir/internal/adapters/emailtmpl"
 	"enquoir/internal/adapters/postgres"
+	"enquoir/internal/app"
 	"enquoir/internal/chaos"
 	enquoirworkflow "enquoir/internal/workflow"
 )
@@ -63,6 +65,21 @@ func main() {
 	}
 	defer temporalClient.Close()
 
+	mailer, mode, err := mailerFromEnv(os.Getenv)
+	if err != nil {
+		logger.Error("configuring email", "error", err)
+		os.Exit(1)
+	}
+	if mode == "file" {
+		logger.Warn("EMAIL_PROVIDER=file: emails are written to MAIL_FILE, not sent; the links in it are live credentials - development only",
+			"mail_file", os.Getenv("MAIL_FILE"))
+	}
+	appBaseURL := os.Getenv("APP_BASE_URL")
+	if appBaseURL == "" {
+		appBaseURL = "https://enquoir.etimi.me"
+	}
+	outbox := postgres.NewEmailOutbox(pool)
+
 	activities := &enquoirworkflow.Activities{
 		Intents:       postgres.NewIntentRepository(pool),
 		Events:        postgres.NewEventLog(pool),
@@ -71,17 +88,54 @@ func main() {
 		Attempts:      postgres.NewAttemptLog(pool),
 		IDs:           credentials.RandomIDs{},
 		Clock:         clock.System{},
+
+		EmailDelivery: &app.DeliverEmail{
+			Outbox: outbox, Tokens: postgres.NewTokenStore(pool), Renderer: emailtmpl.New(), Mailer: mailer,
+			Secrets: credentials.RandomSecrets{}, Clock: clock.System{}, AppBaseURL: appBaseURL,
+		},
+		EmailGiveUp: &app.GiveUpEmail{Outbox: outbox, Clock: clock.System{}},
 	}
+
+	stopSweep := make(chan struct{})
+	defer close(stopSweep)
+	go sweepQueuedEmails(logger, outbox, &enquoirworkflow.EmailDispatcher{Client: temporalClient}, stopSweep)
 
 	w := worker.New(temporalClient, enquoirworkflow.TaskQueue, worker.Options{})
 	w.RegisterWorkflow(enquoirworkflow.PaymentWorkflow)
 	w.RegisterWorkflow(enquoirworkflow.BeneficiaryWorkflow)
+	w.RegisterWorkflow(enquoirworkflow.SendEmailWorkflow)
 	w.RegisterActivity(activities)
 
 	logger.Info("worker starting", "task_queue", enquoirworkflow.TaskQueue)
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		logger.Error("worker stopped", "error", err)
 		os.Exit(1)
+	}
+}
+
+// sweepQueuedEmails re-dispatches emails left queued - their durable
+// send never started (Temporal was unreachable when they were queued).
+// Dispatching one already sending attaches, so this is always safe.
+func sweepQueuedEmails(logger *slog.Logger, outbox *postgres.EmailOutbox, d *enquoirworkflow.EmailDispatcher, stop <-chan struct{}) {
+	tick := time.NewTicker(5 * time.Minute)
+	defer tick.Stop()
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		ids, err := outbox.Queued(ctx, time.Now().Add(-2*time.Minute), 100)
+		if err != nil {
+			logger.Warn("sweeping queued emails", "error", err)
+		}
+		for _, id := range ids {
+			if err := d.Dispatch(ctx, id); err != nil {
+				logger.Warn("re-dispatching a queued email", "email", id, "error", err)
+			}
+		}
+		cancel()
+		select {
+		case <-stop:
+			return
+		case <-tick.C:
+		}
 	}
 }
 

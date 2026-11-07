@@ -3,9 +3,13 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
+	"strconv"
+	"time"
 
 	"enquoir/internal/app"
+	"enquoir/internal/domain"
 )
 
 // Problem codes: stable, machine-readable reasons a client can branch
@@ -23,6 +27,15 @@ const (
 	codeForbiddenOrigin  = "forbidden_origin"
 	codeNotImplemented   = "not_implemented"
 	codeBodyTooLarge     = "body_too_large"
+	codeForbidden        = "forbidden"
+	codeNoOrganisation   = "no_organisation"
+	codeEmailUnverified  = "email_unverified"
+	codeAlreadyVerified  = "already_verified"
+	codeTokenInvalid     = "token_invalid"
+	codeLastOwner        = "last_owner"
+	codeAlreadyMember    = "already_member"
+	codeRateLimited      = "rate_limited"
+	codeAccountLocked    = "account_locked"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.
@@ -52,13 +65,37 @@ func writeProblemBody(w http.ResponseWriter, p problem) {
 // error text, which may carry internals.
 func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 	var verr *app.ValidationError
+	var limited *app.RateLimitedError
+	var locked *app.AccountLockedError
 	switch {
+	case errors.As(err, &limited):
+		w.Header().Set("Retry-After", retryAfter(limited.RetryAfter))
+		writeProblem(w, http.StatusTooManyRequests, codeRateLimited, limited.Error())
+	case errors.As(err, &locked):
+		w.Header().Set("Retry-After", retryAfter(locked.RetryAfter))
+		writeProblem(w, http.StatusTooManyRequests, codeAccountLocked, locked.Error()+"; reset your password to unlock it sooner")
 	case errors.As(err, &verr):
 		writeProblemBody(w, problem{Status: http.StatusBadRequest, Code: codeValidationFailed, Detail: verr.Error(), Field: verr.Field})
 	case errors.Is(err, app.ErrUnauthenticated):
 		writeProblem(w, http.StatusUnauthorized, codeUnauthenticated, "sign in, or send a valid API key")
 	case errors.Is(err, app.ErrInvalidCredentials):
 		writeProblem(w, http.StatusUnauthorized, codeInvalidCreds, err.Error())
+	case errors.Is(err, app.ErrEmailUnverified):
+		writeProblem(w, http.StatusForbidden, codeEmailUnverified, err.Error()+": follow the link we emailed, or ask for a new one")
+	case errors.Is(err, app.ErrAlreadyVerified):
+		writeProblem(w, http.StatusConflict, codeAlreadyVerified, err.Error())
+	case errors.Is(err, app.ErrTokenInvalid):
+		writeProblem(w, http.StatusBadRequest, codeTokenInvalid, err.Error())
+	case errors.Is(err, domain.ErrRoleNotAllowed):
+		writeProblem(w, http.StatusForbidden, codeForbidden, err.Error())
+	case errors.Is(err, app.ErrLastOwner):
+		writeProblem(w, http.StatusConflict, codeLastOwner, err.Error())
+	case errors.Is(err, app.ErrAlreadyMember):
+		writeProblem(w, http.StatusConflict, codeAlreadyMember, err.Error())
+	case errors.Is(err, app.ErrForbidden):
+		writeProblem(w, http.StatusForbidden, codeForbidden, err.Error())
+	case errors.Is(err, app.ErrNoOrganisation):
+		writeProblem(w, http.StatusForbidden, codeNoOrganisation, err.Error()+"; accept an invitation to join one")
 	case errors.Is(err, app.ErrEmailTaken):
 		writeProblem(w, http.StatusConflict, codeEmailTaken, err.Error())
 	case errors.Is(err, app.ErrPayeeUnknown):
@@ -75,4 +112,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+func retryAfter(d time.Duration) string {
+	secs := int(math.Ceil(d.Seconds()))
+	if secs < 1 {
+		secs = 1
+	}
+	return strconv.Itoa(secs)
 }

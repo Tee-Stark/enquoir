@@ -24,7 +24,7 @@ const demoOrgName = "Enquoir Demo"
 // under, without needing its own sign-up flow.
 func EnsureDemoOrg(ctx context.Context, accounts app.AccountStore, ids app.IDGenerator, clock app.Clock) (domain.OrgID, error) {
 	if user, err := accounts.UserByEmail(ctx, demoEmail); err == nil {
-		return user.OrgID, nil
+		return ownedOrg(ctx, accounts, user.ID)
 	} else if !errors.Is(err, app.ErrNotFound) {
 		return "", fmt.Errorf("looking up the demo organisation: %w", err)
 	}
@@ -32,7 +32,7 @@ func EnsureDemoOrg(ctx context.Context, accounts app.AccountStore, ids app.IDGen
 	now := clock.Now()
 	org := app.Organisation{ID: domain.OrgID(ids.NewID("org")), Name: demoOrgName, CreatedAt: now}
 	owner := app.User{
-		ID: domain.UserID(ids.NewID("usr")), OrgID: org.ID,
+		ID:    domain.UserID(ids.NewID("usr")),
 		Email: demoEmail, PasswordHash: app.DummyPasswordHash, CreatedAt: now,
 	}
 
@@ -49,5 +49,17 @@ func EnsureDemoOrg(ctx context.Context, accounts app.AccountStore, ids app.IDGen
 	if err != nil {
 		return "", fmt.Errorf("looking up the demo organisation after losing the race to create it: %w", err)
 	}
-	return user.OrgID, nil
+	return ownedOrg(ctx, accounts, user.ID)
+}
+
+// ownedOrg is the demo owner's organisation: their first membership.
+func ownedOrg(ctx context.Context, accounts app.AccountStore, user domain.UserID) (domain.OrgID, error) {
+	ms, err := accounts.MembershipsOf(ctx, user)
+	if err != nil {
+		return "", fmt.Errorf("looking up the demo organisation: %w", err)
+	}
+	if len(ms) == 0 {
+		return "", errors.New("the demo owner belongs to no organisation")
+	}
+	return ms[0].Organisation.ID, nil
 }
