@@ -1236,3 +1236,16 @@ func (l *AuditLog) All() []app.AuditEvent {
 	defer l.mu.Unlock()
 	return append([]app.AuditEvent(nil), l.events...)
 }
+
+func (l *AuditLog) ListForUser(ctx context.Context, user domain.UserID, f app.AuditFilter) (app.AuditPage, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []app.AuditEvent
+	for i := len(l.events) - 1; i >= 0; i-- {
+		e := l.events[i]
+		if e.ActorUserID == user || (e.TargetType == "user" && e.TargetID == string(user)) {
+			out = append(out, e)
+		}
+	}
+	return app.AuditPage{Events: out}, nil
+}

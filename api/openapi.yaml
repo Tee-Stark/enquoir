@@ -328,6 +328,50 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/auth/activity:
+    get:
+      tags: [Accounts]
+      operationId: listMyActivity
+      summary: The security events on your own account
+      description: |
+        Everything done by you or to your account, in any organisation - and
+        account-level events no organisation's log shows: email verified,
+        password reset, account locked. Newest first.
+      security:
+        - session: []
+      parameters:
+        - name: action
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of events.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditEvent"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/auth/session:
     get:
       tags: [Accounts]

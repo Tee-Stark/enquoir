@@ -162,6 +162,18 @@ type targetDTO struct {
 }
 
 func (h *Handler) listAuditLog(w http.ResponseWriter, r *http.Request) {
+	h.serveAudit(w, r, func(f app.AuditFilter) (app.AuditPage, error) {
+		return h.ListAuditLog.Run(r.Context(), userFrom(r.Context()).Organisation.ID, f)
+	})
+}
+
+func (h *Handler) listMyActivity(w http.ResponseWriter, r *http.Request) {
+	h.serveAudit(w, r, func(f app.AuditFilter) (app.AuditPage, error) {
+		return h.ListMyActivity.Run(r.Context(), userFrom(r.Context()).User.ID, f)
+	})
+}
+
+func (h *Handler) serveAudit(w http.ResponseWriter, r *http.Request, list func(app.AuditFilter) (app.AuditPage, error)) {
 	q := &query{v: r.URL.Query()}
 	f := app.AuditFilter{Action: q.str("action"), Actor: domain.UserID(q.str("actor_id")),
 		From: q.time("from"), To: q.time("to"), Limit: q.int("limit"), Cursor: q.str("cursor")}
@@ -169,7 +181,7 @@ func (h *Handler) listAuditLog(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, q.err, "")
 		return
 	}
-	page, err := h.ListAuditLog.Run(r.Context(), userFrom(r.Context()).Organisation.ID, f)
+	page, err := list(f)
 	if err != nil {
 		writeAppError(w, err, "could not list the audit log")
 		return

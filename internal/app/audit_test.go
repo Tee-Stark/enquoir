@@ -62,3 +62,24 @@ func TestAudit_FailedAndRefusedChangesAreNotRecordedAsDone(t *testing.T) {
 		t.Errorf("%d events for a refused change", n)
 	}
 }
+
+// Events about a person's own account - verifying, resetting the
+// password, being locked out - have no organisation, so the
+// organisation's log cannot show them. Each person can see their own.
+func TestAudit_AccountEventsAreVisibleToTheirOwner(t *testing.T) {
+	f := newMembersFixture(t)
+	log := apptest.NewAuditLog()
+	audit := &app.Audit{Log: log, IDs: &apptest.IDs{}, Clock: f.clock}
+	ctx := context.Background()
+	verify := &app.VerifyEmail{Tokens: f.tokens, Users: f.accounts, Clock: f.clock, Audit: audit}
+	if err := verify.Run(ctx, f.mailer.TokenTo(f.owner.User.Email)); err != nil {
+		t.Fatal(err)
+	}
+	other, _ := f.join(t, domain.Viewer)
+	log.Record(ctx, app.AuditEvent{ID: "aud_x", ActorUserID: other.User.ID, Action: app.AuditPasswordReset, TargetType: "user", TargetID: string(other.User.ID)})
+
+	page, err := (&app.ListMyActivity{Log: log}).Run(ctx, f.owner.User.ID, app.AuditFilter{})
+	if err != nil || len(page.Events) != 1 || page.Events[0].Action != app.AuditEmailVerified {
+		t.Errorf("own activity = %+v, %v; want only the owner's verification", page.Events, err)
+	}
+}

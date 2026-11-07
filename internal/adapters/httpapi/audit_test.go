@@ -79,3 +79,14 @@ func TestAuditLog_NamesTheAgentWhenAnAgentActs(t *testing.T) {
 		t.Errorf("payee.registered = %+v, want the agent as actor", page.Data)
 	}
 }
+
+func TestMyActivity_ShowsAccountLevelEvents(t *testing.T) {
+	f := newAuthFixture(t, true)
+	_, cookie := f.newOrg(t) // signs up and verifies
+	var page struct{ Data []struct{ Action string } }
+	rec := f.do(t, http.MethodGet, "/v1/auth/activity", "", cookie)
+	json.Unmarshal(rec.Body.Bytes(), &page)
+	if rec.Code != 200 || len(page.Data) == 0 || page.Data[len(page.Data)-1].Action != "auth.email_verified" {
+		t.Errorf("activity: %d %s; want the verification, which has no organisation", rec.Code, rec.Body)
+	}
+}

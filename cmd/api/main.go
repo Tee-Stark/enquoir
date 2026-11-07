@@ -137,7 +137,8 @@ func main() {
 		RevokeSession:       &app.RevokeSession{Sessions: sessions, Clock: sysClock, Cache: cache},
 		RevokeOtherSessions: &app.RevokeOtherSessions{Sessions: sessions, Clock: sysClock, Cache: cache, Audit: audit},
 
-		ListAuditLog: &app.ListAuditLog{Log: auditLog},
+		ListAuditLog:   &app.ListAuditLog{Log: auditLog},
+		ListMyActivity: &app.ListMyActivity{Log: auditLog},
 
 		ListMembers:      &app.ListMembers{Members: accounts},
 		ChangeMemberRole: &app.ChangeMemberRole{Members: accounts, Sessions: sessions, Clock: sysClock, Cache: cache, Audit: audit},
