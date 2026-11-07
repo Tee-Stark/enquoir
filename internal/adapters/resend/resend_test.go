@@ -35,7 +35,7 @@ func TestSend_PostsTheDocumentedRequest(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	m := New("re_test_key", "Enquoir <onboarding@resend.dev>", nil)
+	m := New("re_test_key", "Enquoir <no-reply@enquoir.etimi.me>", nil)
 	m.baseURL = ts.URL
 	id, err := m.Send(t.Context(), msg)
 	if err != nil || id != "49a3999c-0ce1-4ea6-ab68-afcd6dc2e794" {
@@ -45,7 +45,7 @@ func TestSend_PostsTheDocumentedRequest(t *testing.T) {
 		!strings.HasPrefix(headers.Get("User-Agent"), "enquoir/") || headers.Get("Content-Type") != "application/json" {
 		t.Errorf("headers = %v", headers)
 	}
-	if got.From != "Enquoir <onboarding@resend.dev>" || len(got.To) != 1 || got.To[0] != "ada@example.com" ||
+	if got.From != "Enquoir <no-reply@enquoir.etimi.me>" || len(got.To) != 1 || got.To[0] != "ada@example.com" ||
 		got.Subject != msg.Subject || got.HTML != msg.HTML || got.Text != msg.Text {
 		t.Errorf("body = %+v", got)
 	}
@@ -77,7 +77,7 @@ func TestSend_ClassifiesFailures(t *testing.T) {
 				w.Write([]byte(tc.body))
 			}))
 			defer ts.Close()
-			m := New("re_test_key", "Enquoir <onboarding@resend.dev>", nil)
+			m := New("re_test_key", "Enquoir <no-reply@enquoir.etimi.me>", nil)
 			m.baseURL = ts.URL
 			_, err := m.Send(t.Context(), msg)
 			if !errors.Is(err, tc.want) {
