@@ -177,6 +177,15 @@ func (a *Accounts) MembershipsOf(ctx context.Context, user domain.UserID) ([]app
 type Sessions struct {
 	mu       sync.Mutex
 	sessions map[string]app.Session
+	// BeforeRevoke, if set, runs at the start of every revoke, before it
+	// takes effect: a request racing the revoke.
+	BeforeRevoke func()
+}
+
+func (s *Sessions) beforeRevoke() {
+	if s.BeforeRevoke != nil {
+		s.BeforeRevoke()
+	}
 }
 
 func NewSessions() *Sessions { return &Sessions{sessions: map[string]app.Session{}} }
@@ -199,6 +208,7 @@ func (s *Sessions) Get(ctx context.Context, tokenHash string) (app.Session, erro
 }
 
 func (s *Sessions) Revoke(ctx context.Context, tokenHash string, at time.Time) error {
+	s.beforeRevoke()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if sess, ok := s.sessions[tokenHash]; ok {
@@ -831,6 +841,7 @@ func (a *Accounts) SetPassword(ctx context.Context, user domain.UserID, hash str
 }
 
 func (s *Sessions) RevokeAllForUser(ctx context.Context, user domain.UserID, except string, at time.Time) error {
+	s.beforeRevoke()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for h, sess := range s.sessions {
@@ -853,6 +864,7 @@ func (s *Tokens) Peek(ctx context.Context, hash string, purpose app.TokenPurpose
 }
 
 func (s *Sessions) RevokeForMember(ctx context.Context, org domain.OrgID, user domain.UserID, at time.Time) error {
+	s.beforeRevoke()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for h, sess := range s.sessions {
@@ -1177,6 +1189,7 @@ func (s *Sessions) ActiveForUser(ctx context.Context, user domain.UserID, now ti
 }
 
 func (s *Sessions) RevokeByID(ctx context.Context, user domain.UserID, id string, at time.Time) error {
+	s.beforeRevoke()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for h, sess := range s.sessions {

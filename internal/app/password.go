@@ -78,11 +78,10 @@ func (r *ResetPassword) Run(ctx context.Context, token, newPassword string) erro
 	if err != nil {
 		return err
 	}
-	r.Cache.InvalidateUser(ctx, user.ID)
 	// The link proved the address: lift any log-in lockout.
 	r.Throttle.unlock(ctx, user.Email)
 	r.Audit.recordAs(ctx, user, "", AuditPasswordReset, "user", string(user.ID), nil)
-	return setPassword(ctx, r.Users, r.Sessions, r.Hasher, r.Emails, user, newPassword, "", now)
+	return setPassword(ctx, r.Users, r.Sessions, r.Cache, r.Hasher, r.Emails, user, newPassword, "", now)
 }
 
 // ChangePassword changes the signed-in user's password, given the
@@ -112,12 +111,11 @@ func (c *ChangePassword) Run(ctx context.Context, p UserPrincipal, current, newP
 	if err := domain.ValidatePassword(newPassword); err != nil {
 		return invalid("new_password", err)
 	}
-	c.Cache.InvalidateUser(ctx, user.ID)
 	c.Audit.record(ctx, p.Organisation.ID, AuditPasswordChanged, "user", string(user.ID), nil)
-	return setPassword(ctx, c.Users, c.Sessions, c.Hasher, c.Emails, user, newPassword, p.SessionID, c.Clock.Now())
+	return setPassword(ctx, c.Users, c.Sessions, c.Cache, c.Hasher, c.Emails, user, newPassword, p.SessionID, c.Clock.Now())
 }
 
-func setPassword(ctx context.Context, users UserStore, sessions SessionStore, hasher PasswordHasher, emails *Emails,
+func setPassword(ctx context.Context, users UserStore, sessions SessionStore, cache *Cache, hasher PasswordHasher, emails *Emails,
 	user User, password, keepSession string, now time.Time) error {
 	hash, err := hasher.Hash(password)
 	if err != nil {
@@ -129,6 +127,7 @@ func setPassword(ctx context.Context, users UserStore, sessions SessionStore, ha
 	if err := sessions.RevokeAllForUser(ctx, user.ID, keepSession, now); err != nil {
 		return err
 	}
+	cache.InvalidateUser(ctx, user.ID)
 	_, err = emails.Send(ctx, passwordChangedEmail(user))
 	return err
 }

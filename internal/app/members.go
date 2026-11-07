@@ -80,9 +80,12 @@ func (c *ChangeMemberRole) Run(ctx context.Context, p UserPrincipal, user domain
 	if err != nil {
 		return err
 	}
+	if err := c.Sessions.RevokeForMember(ctx, org, user, c.Clock.Now()); err != nil {
+		return err
+	}
 	c.Cache.InvalidateUser(ctx, user)
 	c.Audit.record(ctx, org, AuditRoleChanged, "user", string(user), map[string]string{"from": string(was), "to": string(to)})
-	return c.Sessions.RevokeForMember(ctx, org, user, c.Clock.Now())
+	return nil
 }
 
 // RemoveMember removes a member - or, when the target is the actor,
@@ -114,13 +117,16 @@ func (r *RemoveMember) Run(ctx context.Context, p UserPrincipal, user domain.Use
 	if err != nil {
 		return err
 	}
+	if err := r.Sessions.RevokeForMember(ctx, org, user, r.Clock.Now()); err != nil {
+		return err
+	}
 	r.Cache.InvalidateUser(ctx, user)
 	action := AuditMemberRemoved
 	if user == p.User.ID {
 		action = AuditMemberLeft
 	}
 	r.Audit.record(ctx, org, action, "user", string(user), map[string]string{"role": string(was)})
-	return r.Sessions.RevokeForMember(ctx, org, user, r.Clock.Now())
+	return nil
 }
 
 // Invitation asks someone, by email, to join an organisation.

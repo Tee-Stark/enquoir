@@ -23,6 +23,7 @@ type membersFixture struct {
 	org        domain.OrgID
 	owner      app.UserPrincipal
 	ownerToken string
+	raceHook   func()
 }
 
 func newMembersFixture(t *testing.T) *membersFixture {

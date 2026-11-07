@@ -15,6 +15,7 @@ func (f *membersFixture) withCache() *apptest.PrincipalStore {
 	store := apptest.NewPrincipalStore()
 	c := &app.Cache{Store: store}
 	f.resolve.Cache, f.logOut.Cache, f.change.Cache, f.remove.Cache, f.accept.Cache = c, c, c, c, c
+	f.issuer.Sessions = f.sessions
 	return store
 }
 
