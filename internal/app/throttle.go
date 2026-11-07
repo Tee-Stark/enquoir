@@ -71,20 +71,62 @@ func (e *AccountLockedError) Unwrap() error { return ErrAccountLocked }
 
 // Throttle applies rules. A nil Throttle allows everything (tooling,
 // tests that are not about limits).
-type Throttle struct{ Counter Counter }
+//
+// Counter is the shared store (Redis). When it fails, Fallback (a
+// per-process counter) takes over, so limits and the lockout keep
+// holding - per instance rather than across them - instead of
+// switching off; OnError hears every failure. With no Fallback, a
+// failing Counter allows: rate limiting must never take
+// authentication down with it.
+type Throttle struct {
+	Counter  Counter
+	Fallback Counter
+	OnError  func(error)
+}
+
+func (t *Throttle) on() bool { return t != nil && t.Counter != nil }
+
+func (t *Throttle) failed(err error) Counter {
+	if t.OnError != nil {
+		t.OnError(err)
+	}
+	return t.Fallback
+}
+
+func (t *Throttle) hit(ctx context.Context, key string, window time.Duration) (int64, time.Duration, bool) {
+	n, left, err := t.Counter.Hit(ctx, key, window)
+	if err == nil {
+		return n, left, true
+	}
+	if fb := t.failed(err); fb != nil {
+		if n, left, err := fb.Hit(ctx, key, window); err == nil {
+			return n, left, true
+		}
+	}
+	return 0, 0, false
+}
+
+func (t *Throttle) each(ctx context.Context, op func(Counter) error) {
+	if err := op(t.Counter); err != nil {
+		if fb := t.failed(err); fb != nil {
+			_ = op(fb)
+		}
+		return
+	}
+	// Keep the fallback in step, so an outage starts from what is known.
+	if t.Fallback != nil {
+		_ = op(t.Fallback)
+	}
+}
 
 // Check records a hit for subject under rule and refuses it past the
-// limit. A counter that fails allows the hit: rate limiting must not
-// take authentication down with it.
+// limit.
 func (t *Throttle) Check(ctx context.Context, rule Rule, subject string) error {
-	if t == nil || t.Counter == nil {
+	if !t.on() {
 		return nil
 	}
-	n, resetIn, err := t.Counter.Hit(ctx, "rl:"+rule.Name+":"+subject, rule.Window)
-	if err != nil {
-		return nil
-	}
-	if n > rule.Limit {
+	n, resetIn, ok := t.hit(ctx, "rl:"+rule.Name+":"+subject, rule.Window)
+	if ok && n > rule.Limit {
 		return &RateLimitedError{Rule: rule.Name, RetryAfter: resetIn}
 	}
 	return nil
@@ -93,14 +135,17 @@ func (t *Throttle) Check(ctx context.Context, rule Rule, subject string) error {
 func lockKey(email domain.Email) string     { return "login-locked:" + string(email) }
 func failuresKey(email domain.Email) string { return "login-failures:" + string(email) }
 
-// lockedFor reports how long email's log-in lock has left.
+// lockedFor reports how long email's log-in lock has left, from
+// whichever counter knows of it.
 func (t *Throttle) lockedFor(ctx context.Context, email domain.Email) time.Duration {
-	if t == nil || t.Counter == nil {
+	if !t.on() {
 		return 0
 	}
 	d, err := t.Counter.Locked(ctx, lockKey(email))
 	if err != nil {
-		return 0
+		if fb := t.failed(err); fb != nil {
+			d, _ = fb.Locked(ctx, lockKey(email))
+		}
 	}
 	return d
 }
@@ -108,28 +153,28 @@ func (t *Throttle) lockedFor(ctx context.Context, email domain.Email) time.Durat
 // failedLogIn counts a failure and locks the email at the threshold.
 // It reports whether the email is now locked.
 func (t *Throttle) failedLogIn(ctx context.Context, email domain.Email) bool {
-	if t == nil || t.Counter == nil {
+	if !t.on() {
 		return false
 	}
-	n, _, err := t.Counter.Hit(ctx, failuresKey(email), LockoutWindow)
-	if err != nil || n < LockoutThreshold {
+	n, _, ok := t.hit(ctx, failuresKey(email), LockoutWindow)
+	if !ok || n < LockoutThreshold {
 		return false
 	}
-	_ = t.Counter.Lock(ctx, lockKey(email), LockoutDuration)
-	_ = t.Counter.Reset(ctx, failuresKey(email))
+	t.each(ctx, func(c Counter) error { return c.Lock(ctx, lockKey(email), LockoutDuration) })
+	t.each(ctx, func(c Counter) error { return c.Reset(ctx, failuresKey(email)) })
 	return true
 }
 
 // unlock lifts email's log-in lock and forgets its failures.
 func (t *Throttle) unlock(ctx context.Context, email domain.Email) {
-	if t != nil && t.Counter != nil {
-		_ = t.Counter.Reset(ctx, lockKey(email))
-		_ = t.Counter.Reset(ctx, failuresKey(email))
+	if t.on() {
+		t.each(ctx, func(c Counter) error { return c.Reset(ctx, lockKey(email)) })
+		t.each(ctx, func(c Counter) error { return c.Reset(ctx, failuresKey(email)) })
 	}
 }
 
 func (t *Throttle) succeededLogIn(ctx context.Context, email domain.Email) {
-	if t != nil && t.Counter != nil {
-		_ = t.Counter.Reset(ctx, failuresKey(email))
+	if t.on() {
+		t.each(ctx, func(c Counter) error { return c.Reset(ctx, failuresKey(email)) })
 	}
 }

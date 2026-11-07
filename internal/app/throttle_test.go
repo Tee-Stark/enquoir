@@ -89,14 +89,32 @@ func TestLogIn_FiveAttemptsAMinutePerEmail(t *testing.T) {
 	}
 }
 
-// Rate limiting must never take authentication down with it.
-func TestThrottle_ACounterThatIsDownAllows(t *testing.T) {
+// Rate limiting must never take authentication down with it - but a
+// counter that is down must not switch limits and lockout off either:
+// the fallback keeps them, per process, and the failure is reported.
+func TestThrottle_ACounterThatIsDownFallsBackAndIsReported(t *testing.T) {
 	f := newAccountsFixture()
-	c := withThrottle(f)
-	c.Err = errors.New("redis: connection refused")
-	f.signUp.Run(context.Background(), validSignUp)
-	if _, err := f.logIn.Run(context.Background(), "ada@example.com", validSignUp.Password); err != nil {
-		t.Errorf("log-in with the counter down: %v", err)
+	primary := apptest.NewCounter(f.clock)
+	primary.Err = errors.New("redis: connection refused")
+	var reported []error
+	th := &app.Throttle{Counter: primary, Fallback: apptest.NewCounter(f.clock), OnError: func(err error) { reported = append(reported, err) }}
+	f.logIn.Throttle = th
+	ctx := context.Background()
+	f.signUp.Run(ctx, validSignUp)
+
+	if _, err := f.logIn.Run(ctx, "ada@example.com", validSignUp.Password); err != nil {
+		t.Fatalf("log-in with the counter down: %v", err)
+	}
+	if len(reported) == 0 {
+		t.Error("the counter failure was not reported")
+	}
+	var err error
+	for i := 0; i < 10; i++ {
+		f.clock.Advance(13 * time.Second)
+		_, err = f.logIn.Run(ctx, "ada@example.com", "wrong wrong wrong")
+	}
+	if !errors.Is(err, app.ErrAccountLocked) {
+		t.Errorf("ten failures with the counter down: %v, want the lockout to hold", err)
 	}
 }
 

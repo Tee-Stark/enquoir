@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 	// Analytics resolve any IANA time zone, even in an image with no
@@ -223,5 +224,31 @@ func connectRedis(logger *slog.Logger) (*app.Throttle, *app.Cache) {
 		return &app.Throttle{Counter: redisstore.NewMemoryCounter()}, nil
 	}
 	logger.Info("redis connected: shared rate limits and principal cache")
-	return &app.Throttle{Counter: redisstore.NewCounter(rdb)}, &app.Cache{Store: redisstore.NewPrincipalStore(rdb)}
+	throttle := &app.Throttle{
+		Counter: redisstore.NewCounter(rdb),
+		// During a Redis outage, limits and the lockout hold per process.
+		Fallback: redisstore.NewMemoryCounter(),
+		OnError: everyMinute(func(err error) {
+			logger.Warn("redis rate limiting failed: using per-process limits until it is back", "error", err)
+		}),
+	}
+	return throttle, &app.Cache{Store: redisstore.NewPrincipalStore(rdb)}
+}
+
+// everyMinute calls report at most once a minute, so an outage is
+// visible in the logs without flooding them.
+func everyMinute(report func(error)) func(error) {
+	var mu sync.Mutex
+	var last time.Time
+	return func(err error) {
+		mu.Lock()
+		due := time.Since(last) >= time.Minute
+		if due {
+			last = time.Now()
+		}
+		mu.Unlock()
+		if due {
+			report(err)
+		}
+	}
 }
