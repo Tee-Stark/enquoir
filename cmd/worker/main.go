@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -19,9 +18,7 @@ import (
 	"enquoir/internal/adapters/clock"
 	"enquoir/internal/adapters/credentials"
 	"enquoir/internal/adapters/emailtmpl"
-	"enquoir/internal/adapters/mailfile"
 	"enquoir/internal/adapters/postgres"
-	"enquoir/internal/adapters/resend"
 	"enquoir/internal/app"
 	"enquoir/internal/chaos"
 	enquoirworkflow "enquoir/internal/workflow"
@@ -68,10 +65,14 @@ func main() {
 	}
 	defer temporalClient.Close()
 
-	mailer, err := newMailer()
+	mailer, mode, err := mailerFromEnv(os.Getenv)
 	if err != nil {
 		logger.Error("configuring email", "error", err)
 		os.Exit(1)
+	}
+	if mode == "file" {
+		logger.Warn("EMAIL_PROVIDER=file: emails are written to MAIL_FILE, not sent; the links in it are live credentials - development only",
+			"mail_file", os.Getenv("MAIL_FILE"))
 	}
 	appBaseURL := os.Getenv("APP_BASE_URL")
 	if appBaseURL == "" {
@@ -109,32 +110,6 @@ func main() {
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		logger.Error("worker stopped", "error", err)
 		os.Exit(1)
-	}
-}
-
-// newMailer picks how email leaves: EMAIL_PROVIDER=resend (with
-// RESEND_API_KEY and EMAIL_FROM) or file (MAIL_FILE, for development).
-// With resend, MAIL_FILE, if set, also keeps a copy of what was sent.
-func newMailer() (app.Mailer, error) {
-	file := os.Getenv("MAIL_FILE")
-	switch provider := os.Getenv("EMAIL_PROVIDER"); provider {
-	case "resend":
-		key, from := os.Getenv("RESEND_API_KEY"), os.Getenv("EMAIL_FROM")
-		if key == "" || from == "" {
-			return nil, fmt.Errorf("EMAIL_PROVIDER=resend needs RESEND_API_KEY and EMAIL_FROM")
-		}
-		var m app.Mailer = resend.New(key, from, nil)
-		if file != "" {
-			m = mailfile.Copy(m, file)
-		}
-		return m, nil
-	case "file", "":
-		if file == "" {
-			file = "mail.jsonl"
-		}
-		return mailfile.New(file), nil
-	default:
-		return nil, fmt.Errorf("unknown EMAIL_PROVIDER %q: use resend or file", provider)
 	}
 }
 
