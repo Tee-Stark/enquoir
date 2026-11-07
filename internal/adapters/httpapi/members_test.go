@@ -122,3 +122,39 @@ func TestInvitations_Rules(t *testing.T) {
 		t.Errorf("an unverified owner inviting: %d, want 403", rec.Code)
 	}
 }
+
+// The audit's high finding, through the API: pre-registering someone's
+// address does not get the pre-registerer their invitation.
+func TestInvitations_PreRegisteringTheAddressDoesNotCaptureTheInvitation(t *testing.T) {
+	f := newAuthFixture(t, true)
+	_, owner := f.newOrg(t)
+	squatter := sessionCookie(t, f.do(t, http.MethodPost, "/v1/auth/signup",
+		`{"email":"victim@example.com","password":"attackers passphrase","organisation_name":"Trap"}`))
+
+	f.do(t, http.MethodPost, "/v1/invitations", `{"email":"victim@example.com","role":"operator"}`, owner)
+	token := f.mailer.TokenTo("victim@example.com")
+
+	rec := f.do(t, http.MethodPost, "/v1/invitations/accept", fmt.Sprintf(`{"token":%q}`, token))
+	if p := decodeProblem(t, rec); rec.Code != 400 || p.Code != "validation_failed" {
+		t.Fatalf("accepting without a password: %d %q, want a password required", rec.Code, p.Code)
+	}
+	rec = f.do(t, http.MethodPost, "/v1/invitations/accept", fmt.Sprintf(`{"token":%q,"password":"the victims passphrase"}`, token))
+	var out struct {
+		AccountClaimed bool `json:"account_claimed"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != 200 || !out.AccountClaimed {
+		t.Fatalf("accept: %d %s", rec.Code, rec.Body)
+	}
+	victim := sessionCookie(t, rec)
+
+	if rec := f.do(t, http.MethodGet, "/v1/auth/session", "", squatter); rec.Code != http.StatusUnauthorized {
+		t.Errorf("the squatter's session: %d, want 401", rec.Code)
+	}
+	if rec := f.do(t, http.MethodPost, "/v1/auth/login", `{"email":"victim@example.com","password":"attackers passphrase"}`); rec.Code != http.StatusUnauthorized {
+		t.Errorf("the squatter's password: %d, want 401", rec.Code)
+	}
+	if rec := f.do(t, http.MethodPost, "/v1/agents", `{"name":"victims bot"}`, victim); rec.Code != http.StatusCreated {
+		t.Errorf("the real owner, verified by the link, creating an agent: %d", rec.Code)
+	}
+}

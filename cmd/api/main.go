@@ -144,7 +144,7 @@ func main() {
 		InviteMember:     &app.InviteMember{Accounts: accounts, Members: accounts, Invitations: invitations, Emails: emails, IDs: ids, Clock: sysClock, Audit: audit},
 		ListInvitations:  &app.ListInvitations{Invitations: invitations, Clock: sysClock},
 		RevokeInvitation: &app.RevokeInvitation{Invitations: invitations, Clock: sysClock, Audit: audit},
-		AcceptInvitation: &app.AcceptInvitation{Tokens: tokens, Invitations: invitations, Accounts: accounts, Users: accounts, Hasher: hasher, IDs: ids, Issuer: issuer, Clock: sysClock, Cache: cache, Audit: audit},
+		AcceptInvitation: &app.AcceptInvitation{Tokens: tokens, Invitations: invitations, Accounts: accounts, Sessions: sessions, Hasher: hasher, IDs: ids, Issuer: issuer, Clock: sysClock, Cache: cache, Audit: audit},
 		LogIn:            &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer, Throttle: throttle, Audit: audit},
 		LogOut:           &app.LogOut{Sessions: sessions, Clock: sysClock, Cache: cache},
 		ResolveSession:   &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: sysClock, Cache: cache},

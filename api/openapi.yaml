@@ -761,12 +761,21 @@ paths:
       operationId: acceptInvitation
       summary: Accept an invitation with the emailed link's token
       description: |
-        No session needed. If the invited address has no account, `password`
-        is required: the account is created (already verified - the link
-        proves the address) and signed in (the session cookie is set). If it
-        has one, the membership is added and the person signs in as usual; no
-        password is needed and no session is issued. A password that fails
-        the policy is rejected before the link is spent.
+        No session needed. Holding the link proves the invited address, so:
+
+        - **No account** at that address: `password` is required. The
+          account is created, already verified, and signed in (the session
+          cookie is set). `account_created: true`.
+        - **An unverified account** at that address: `password` is required,
+          and the account is claimed - the password replaces its password,
+          every one of its sessions ends, and it is verified and signed in.
+          `account_claimed: true`. Nobody had proved that account owns the
+          address; without this, whoever signed up with someone else's email
+          first would receive their invitation.
+        - **A verified account**: it joins with the link alone; no password,
+          no session - the person signs in as usual.
+
+        A password that fails the policy is rejected before the link is spent.
       requestBody:
         required: true
         content:
@@ -785,14 +794,14 @@ paths:
           description: Joined.
           headers:
             Set-Cookie:
-              description: Set only when the account was created.
+              description: Set when the account was created or claimed.
               schema:
                 type: string
           content:
             application/json:
               schema:
                 type: object
-                required: [organisation, role, user, account_created]
+                required: [organisation, role, user, account_created, account_claimed]
                 properties:
                   organisation:
                     $ref: "#/components/schemas/Organisation"
@@ -802,6 +811,9 @@ paths:
                     $ref: "#/components/schemas/User"
                   account_created:
                     type: boolean
+                  account_claimed:
+                    type: boolean
+                    description: An unverified account at the address was claimed by the link's holder.
         "400":
           description: The password fails the policy (`validation_failed`), or the link is invalid, used, expired or revoked (`token_invalid`).
           content:

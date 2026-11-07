@@ -30,10 +30,11 @@ func newMembersFixture(t *testing.T) *membersFixture {
 	f := &membersFixture{accountsFixture: newAccountsFixture(), invites: apptest.NewInvitations()}
 	f.invites.Accounts = f.accounts
 	f.withEmail()
+	f.invites.Tokens = f.tokens
 	f.change = &app.ChangeMemberRole{Members: f.accounts, Sessions: f.sessions, Clock: f.clock}
 	f.remove = &app.RemoveMember{Members: f.accounts, Sessions: f.sessions, Clock: f.clock}
 	f.invite = &app.InviteMember{Accounts: f.accounts, Members: f.accounts, Invitations: f.invites, Emails: f.emails, IDs: &apptest.IDs{}, Clock: f.clock}
-	f.accept = &app.AcceptInvitation{Tokens: f.tokens, Invitations: f.invites, Accounts: f.accounts, Users: f.accounts, Hasher: f.hasher, IDs: &apptest.IDs{}, Issuer: f.issuer, Clock: f.clock}
+	f.accept = &app.AcceptInvitation{Tokens: f.tokens, Invitations: f.invites, Accounts: f.accounts, Sessions: f.sessions, Hasher: f.hasher, IDs: &apptest.IDs{}, Issuer: f.issuer, Clock: f.clock}
 	f.revoke = &app.RevokeInvitation{Invitations: f.invites, Clock: f.clock}
 	signed, _ := f.signUp.Run(context.Background(), validSignUp)
 	f.org = signed.Organisation.ID
@@ -205,5 +206,45 @@ func TestInvitation_Rules(t *testing.T) {
 	f.clock.Advance(7*24*time.Hour + time.Second)
 	if _, err := f.accept.Run(ctx, f.mailer.TokenTo("erin@example.com"), "erins long passphrase"); !errors.Is(err, app.ErrTokenInvalid) {
 		t.Errorf("an expired invitation: %v", err)
+	}
+}
+
+// An attacker pre-registers the address someone will be invited at,
+// with their own password, and never verifies it (they can't: the link
+// goes to the real owner). The invitation link proves who owns the
+// address, so accepting it claims the account for them: a new password
+// replaces the attacker's, and the attacker's sessions end.
+func TestInvitation_AnUnverifiedAccountIsClaimedByWhoeverHoldsTheLink(t *testing.T) {
+	f := newMembersFixture(t)
+	ctx := context.Background()
+	attacker, err := f.signUp.Run(ctx, app.SignUpCommand{Email: "bob@example.com", Password: "attacker passphrase", OrganisationName: "Trap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.invite.Run(ctx, f.owner, "bob@example.com", domain.Operator)
+	token := f.mailer.TokenTo("bob@example.com")
+
+	var verr *app.ValidationError
+	if _, err := f.accept.Run(ctx, token, ""); !errors.As(err, &verr) || verr.Field != "password" {
+		t.Fatalf("accepting for an unverified account without a password: %v, want a password to be required", err)
+	}
+	got, err := f.accept.Run(ctx, token, "the real bobs passphrase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AccountClaimed || got.AccountCreated || got.Session == nil || got.Role != domain.Operator || got.User.ID != attacker.User.ID {
+		t.Errorf("accepted = %+v; want the account claimed, signed in, as operator", got)
+	}
+	if _, err := f.resolve.Run(ctx, attacker.Session.Token); !errors.Is(err, app.ErrUnauthenticated) {
+		t.Error("the pre-registering attacker's session survived the claim")
+	}
+	if _, err := f.logIn.Run(ctx, "bob@example.com", "attacker passphrase"); !errors.Is(err, app.ErrInvalidCredentials) {
+		t.Errorf("the attacker's password still works: %v", err)
+	}
+	if _, err := f.logIn.Run(ctx, "bob@example.com", "the real bobs passphrase"); err != nil {
+		t.Errorf("the real owner's password: %v", err)
+	}
+	if bob, _ := f.accounts.UserByEmail(ctx, "bob@example.com"); !bob.EmailVerified {
+		t.Error("the claimed account is not verified")
 	}
 }

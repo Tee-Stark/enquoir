@@ -194,28 +194,56 @@ func (s *InvitationStore) RevokeInvitation(ctx context.Context, org domain.OrgID
 	return err
 }
 
-func (s *InvitationStore) AcceptInvitation(ctx context.Context, id string, user domain.UserID, newUser *app.User, at time.Time) error {
+func (s *InvitationStore) AcceptInvitation(ctx context.Context, cmd app.AcceptInvitationCommand) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		var org, role string
 		err := tx.QueryRow(ctx, `
 			UPDATE invitations SET accepted_at = $2
 			WHERE id = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > $2
-			RETURNING org_id, role`, id, at).Scan(&org, &role)
+			RETURNING org_id, role`, cmd.InvitationID, cmd.At).Scan(&org, &role)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return app.ErrTokenInvalid
 		}
 		if err != nil {
 			return err
 		}
-		if newUser != nil {
-			if err := insertUser(ctx, tx, *newUser); err != nil {
+		// Spend this invitation's link - and any other for it - in the
+		// same transaction: the link works once, and only together with
+		// everything else here.
+		tag, err := tx.Exec(ctx, `
+			UPDATE one_time_tokens SET used_at = $3
+			WHERE purpose = 'invitation' AND subject = $1 AND used_at IS NULL
+			  AND expires_at > $3 AND EXISTS (
+				SELECT 1 FROM one_time_tokens t WHERE t.token_hash = $2 AND t.purpose = 'invitation'
+				  AND t.subject = $1 AND t.used_at IS NULL AND t.expires_at > $3)`,
+			cmd.InvitationID, cmd.TokenHash, cmd.At)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return app.ErrTokenInvalid
+		}
+
+		switch {
+		case cmd.NewUser != nil:
+			if err := insertUser(ctx, tx, *cmd.NewUser); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `UPDATE users SET email_verified_at = $2 WHERE id = $1`, string(newUser.ID), at); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE users SET email_verified_at = $2 WHERE id = $1`, string(cmd.NewUser.ID), cmd.At); err != nil {
 				return err
+			}
+		case cmd.ClaimPasswordHash != "":
+			tag, err := tx.Exec(ctx, `
+				UPDATE users SET password_hash = $2, password_changed_at = $3, email_verified_at = $3
+				WHERE id = $1 AND email_verified_at IS NULL`, string(cmd.UserID), cmd.ClaimPasswordHash, cmd.At)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() == 0 {
+				return fmt.Errorf("the account was verified meanwhile; try again")
 			}
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO memberships (org_id, user_id, role, created_at) VALUES ($1, $2, $3, $4)`, org, string(user), role, at)
+		_, err = tx.Exec(ctx, `INSERT INTO memberships (org_id, user_id, role, created_at) VALUES ($1, $2, $3, $4)`, org, string(cmd.UserID), role, cmd.At)
 		if isUniqueViolation(err, "memberships_pkey") {
 			return app.ErrAlreadyMember
 		}

@@ -45,6 +45,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	audit := &app.Audit{Log: apptest.NewAuditLog(), IDs: ids, Clock: clock}
 	invitations := apptest.NewInvitations()
 	invitations.Accounts = accounts
+	invitations.Tokens = tokens
 	emails := &app.Emails{Outbox: outbox, Dispatcher: &apptest.Dispatcher{Deliver: deliver.Run}, IDs: ids, Clock: clock}
 	h := &Handler{
 		SignUp:         &app.SignUp{Accounts: accounts, Hasher: hasher, IDs: ids, Clock: clock, Issuer: issuer, Emails: emails},
@@ -66,7 +67,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		InviteMember:     &app.InviteMember{Accounts: accounts, Members: accounts, Invitations: invitations, Emails: emails, IDs: ids, Clock: clock, Audit: audit},
 		ListInvitations:  &app.ListInvitations{Invitations: invitations, Clock: clock},
 		RevokeInvitation: &app.RevokeInvitation{Invitations: invitations, Clock: clock},
-		AcceptInvitation: &app.AcceptInvitation{Tokens: tokens, Invitations: invitations, Accounts: accounts, Users: accounts, Hasher: hasher, IDs: ids, Issuer: issuer, Clock: clock},
+		AcceptInvitation: &app.AcceptInvitation{Tokens: tokens, Invitations: invitations, Accounts: accounts, Sessions: sessions, Hasher: hasher, IDs: ids, Issuer: issuer, Clock: clock},
 		LogIn:            &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer},
 		LogOut:           &app.LogOut{Sessions: sessions, Clock: clock},
 		ResolveSession:   &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: clock},

@@ -135,6 +135,7 @@ func (h *Handler) acceptInvitation(w http.ResponseWriter, r *http.Request) {
 		"role":            string(acc.Role),
 		"user":            userDTO{ID: string(u.ID), Email: string(u.Email), EmailVerified: u.EmailVerified, CreatedAt: u.CreatedAt.UTC()},
 		"account_created": acc.AccountCreated,
+		"account_claimed": acc.AccountClaimed,
 	})
 }
 
