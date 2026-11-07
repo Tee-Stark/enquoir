@@ -7,9 +7,9 @@ obvious.
 
 ## Where it runs
 
-- The frontend is served at `APP_BASE_URL` (planned:
-  `https://enquoir.etimi.me`). Every link in Enquoir's emails points
-  there.
+- The frontend is served at `APP_BASE_URL` (`https://enquoir.etimi.me`).
+  Every link in Enquoir's emails points there; emails come from
+  `no-reply@enquoir.etimi.me`.
 - The API is a separate origin. List the frontend's origin in the API's
   `CORS_ALLOWED_ORIGINS`; a state-changing request a browser sends from
   any other origin is refused (`403 forbidden_origin`).
