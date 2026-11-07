@@ -880,3 +880,40 @@ Branch `feat/auth`, from `main` after PR #8 merged.
 - `make e2e` clears the dev Redis sign-up counter so repeated runs are
   not limited.
 - Two-factor authentication and API key scopes/expiry are not built.
+
+## Security audit of Phase 5 (2026-11-07)
+
+Fixed before merging PR #9:
+
+- **High - invitations trusted a pre-registered account** (`0636b74`).
+  Accepting an invitation for an address with an existing account
+  verified it and gave it the membership without proof it belonged to
+  the address: signing up first with a colleague's predictable email
+  captured their invitation. Now an unverified account is *claimed*: the
+  link holder must choose a password, which replaces the old one, every
+  session of the account ends, and it is verified. A verified account
+  still joins with the link alone. Spending the link, accepting and
+  creating or claiming the account are one transaction. A test that
+  encoded the vulnerable behaviour (joining an unverified account on the
+  link alone) was corrected in its own commit first (`8a1bc7b`).
+  Verified live: the squatter's session and password stop working; the
+  real owner holds the account as operator.
+- **Medium - cache cleared before the revoke** (`259c977`): log-out,
+  switching organisation, password change and reset, role change. Each
+  now commits the revoke, then clears the cache; a deterministic race
+  test failed for all five before.
+- **Medium - unset `EMAIL_PROVIDER` meant file mode** (`c15c5de`),
+  writing live links to a local file. The worker now refuses to start
+  without it.
+- **Low - a Redis outage switched limits and lockout off silently**
+  (`c88057a`). A per-process fallback keeps them, and the outage is
+  logged once a minute. Verified by stopping Redis mid-run.
+- Review points: admins can no longer revoke or replace an invitation
+  above their role (`4949539`); account-level audit events are visible
+  to their owner at `GET /v1/auth/activity` (`9d6f0d1`); guesses at the
+  current password when changing it are limited to 5 per 15 minutes
+  (`35da57d`).
+
+Deferred to the deployment phase, as agreed: whether the reverse proxy
+overwrites or appends the header named by `CLIENT_IP_HEADER` (decides
+whether per-IP limits can be spoofed).
