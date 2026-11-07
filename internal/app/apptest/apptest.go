@@ -177,6 +177,15 @@ func (a *Accounts) MembershipsOf(ctx context.Context, user domain.UserID) ([]app
 type Sessions struct {
 	mu       sync.Mutex
 	sessions map[string]app.Session
+	// BeforeRevoke, if set, runs at the start of every revoke, before it
+	// takes effect: a request racing the revoke.
+	BeforeRevoke func()
+}
+
+func (s *Sessions) beforeRevoke() {
+	if s.BeforeRevoke != nil {
+		s.BeforeRevoke()
+	}
 }
 
 func NewSessions() *Sessions { return &Sessions{sessions: map[string]app.Session{}} }
@@ -199,6 +208,7 @@ func (s *Sessions) Get(ctx context.Context, tokenHash string) (app.Session, erro
 }
 
 func (s *Sessions) Revoke(ctx context.Context, tokenHash string, at time.Time) error {
+	s.beforeRevoke()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if sess, ok := s.sessions[tokenHash]; ok {
@@ -831,6 +841,7 @@ func (a *Accounts) SetPassword(ctx context.Context, user domain.UserID, hash str
 }
 
 func (s *Sessions) RevokeAllForUser(ctx context.Context, user domain.UserID, except string, at time.Time) error {
+	s.beforeRevoke()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for h, sess := range s.sessions {
@@ -853,6 +864,7 @@ func (s *Tokens) Peek(ctx context.Context, hash string, purpose app.TokenPurpose
 }
 
 func (s *Sessions) RevokeForMember(ctx context.Context, org domain.OrgID, user domain.UserID, at time.Time) error {
+	s.beforeRevoke()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for h, sess := range s.sessions {
@@ -922,6 +934,7 @@ type Invitations struct {
 	mu       sync.Mutex
 	invs     map[string]app.Invitation
 	Accounts *Accounts
+	Tokens   *Tokens
 }
 
 func NewInvitations() *Invitations { return &Invitations{invs: map[string]app.Invitation{}} }
@@ -974,28 +987,56 @@ func (s *Invitations) RevokeInvitation(ctx context.Context, org domain.OrgID, id
 	return nil
 }
 
-func (s *Invitations) AcceptInvitation(ctx context.Context, id string, user domain.UserID, newUser *app.User, at time.Time) error {
+func (s *Invitations) AcceptInvitation(ctx context.Context, cmd app.AcceptInvitationCommand) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	inv, ok := s.invs[id]
-	if !ok || !inv.Pending(at) {
+	inv, ok := s.invs[cmd.InvitationID]
+	if !ok || !inv.Pending(cmd.At) {
 		return app.ErrTokenInvalid
 	}
-	if _, err := s.Accounts.Membership(ctx, inv.OrgID, user); err == nil {
+	if _, err := s.Accounts.Membership(ctx, inv.OrgID, cmd.UserID); err == nil {
 		return app.ErrAlreadyMember
 	}
-	if newUser != nil {
-		s.Accounts.mu.Lock()
-		if s.Accounts.emailTaken(newUser.Email) {
+	// Spend the token, all-or-nothing with the rest: check first.
+	s.Tokens.mu.Lock()
+	t, ok := s.Tokens.tokens[cmd.TokenHash]
+	if !ok || t.Purpose != app.PurposeInvitation || t.Subject != inv.ID || t.UsedAt != nil || !cmd.At.Before(t.ExpiresAt) {
+		s.Tokens.mu.Unlock()
+		return app.ErrTokenInvalid
+	}
+	s.Accounts.mu.Lock()
+	switch {
+	case cmd.NewUser != nil:
+		if s.Accounts.emailTaken(cmd.NewUser.Email) {
 			s.Accounts.mu.Unlock()
+			s.Tokens.mu.Unlock()
 			return app.ErrEmailTaken
 		}
-		s.Accounts.users[newUser.ID] = *newUser
-		s.Accounts.mu.Unlock()
+		u := *cmd.NewUser
+		u.EmailVerified = true
+		s.Accounts.users[u.ID] = u
+	case cmd.ClaimPasswordHash != "":
+		u := s.Accounts.users[cmd.UserID]
+		if u.EmailVerified {
+			s.Accounts.mu.Unlock()
+			s.Tokens.mu.Unlock()
+			return fmt.Errorf("the account was verified meanwhile; try again")
+		}
+		u.PasswordHash, u.EmailVerified = cmd.ClaimPasswordHash, true
+		s.Accounts.users[cmd.UserID] = u
 	}
-	s.Accounts.AddMember(inv.OrgID, user, inv.Role, at)
-	inv.AcceptedAt = &at
-	s.invs[id] = inv
+	s.Accounts.mu.Unlock()
+	for h, other := range s.Tokens.tokens {
+		if other.Purpose == app.PurposeInvitation && other.Subject == inv.ID && other.UsedAt == nil {
+			at := cmd.At
+			other.UsedAt = &at
+			s.Tokens.tokens[h] = other
+		}
+	}
+	s.Tokens.mu.Unlock()
+	s.Accounts.AddMember(inv.OrgID, cmd.UserID, inv.Role, cmd.At)
+	inv.AcceptedAt = &cmd.At
+	s.invs[cmd.InvitationID] = inv
 	return nil
 }
 
@@ -1148,6 +1189,7 @@ func (s *Sessions) ActiveForUser(ctx context.Context, user domain.UserID, now ti
 }
 
 func (s *Sessions) RevokeByID(ctx context.Context, user domain.UserID, id string, at time.Time) error {
+	s.beforeRevoke()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for h, sess := range s.sessions {
@@ -1193,4 +1235,17 @@ func (l *AuditLog) All() []app.AuditEvent {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]app.AuditEvent(nil), l.events...)
+}
+
+func (l *AuditLog) ListForUser(ctx context.Context, user domain.UserID, f app.AuditFilter) (app.AuditPage, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []app.AuditEvent
+	for i := len(l.events) - 1; i >= 0; i-- {
+		e := l.events[i]
+		if e.ActorUserID == user || (e.TargetType == "user" && e.TargetID == string(user)) {
+			out = append(out, e)
+		}
+	}
+	return app.AuditPage{Events: out}, nil
 }

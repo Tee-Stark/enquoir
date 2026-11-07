@@ -42,6 +42,16 @@ func (l *AuditLog) Record(ctx context.Context, e app.AuditEvent) error {
 func (l *AuditLog) List(ctx context.Context, org domain.OrgID, f app.AuditFilter) (app.AuditPage, error) {
 	w := &where{}
 	w.add("a.org_id = ?", string(org))
+	return l.list(ctx, w, f)
+}
+
+func (l *AuditLog) ListForUser(ctx context.Context, user domain.UserID, f app.AuditFilter) (app.AuditPage, error) {
+	w := &where{}
+	w.add("(a.actor_user_id = ? OR (a.target_type = 'user' AND a.target_id = ?))", string(user), string(user))
+	return l.list(ctx, w, f)
+}
+
+func (l *AuditLog) list(ctx context.Context, w *where, f app.AuditFilter) (app.AuditPage, error) {
 	if f.Action != "" {
 		w.add("a.action = ?", f.Action)
 	}

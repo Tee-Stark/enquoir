@@ -7,6 +7,10 @@ import (
 	"enquoir/internal/domain"
 )
 
+// Ordering rule: every change that ends access is committed to the
+// store first, and the cache cleared after. Cleared first, a request
+// racing the change could re-cache the old access as still valid.
+
 // PrincipalCacheTTL bounds how long a resolved session or agent key is
 // served from the cache. Every change that affects access invalidates
 // it at once; the TTL only bounds a missed invalidation.

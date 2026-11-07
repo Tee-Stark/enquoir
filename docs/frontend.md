@@ -34,9 +34,14 @@ address already has an account, so:
 2. If the answer is `200` with `account_created: false`, the person was
    added to the organisation. Send them to sign in.
 3. If the answer is `400 validation_failed` with `field: "password"`, the
-   address has no account yet. Ask them to choose a password and post
-   `{token, password}`. A `200` with `account_created: true` sets the
+   address has no account yet, or only an unverified one. Ask them to
+   choose a password and post `{token, password}`. A `200` sets the
    session cookie: they are signed in, already verified.
+   `account_created: true` means a new account. `account_claimed: true`
+   means an unverified account at that address was taken over by the
+   link's holder: its old password no longer works and its old sessions
+   are signed out. Worth saying so on the page ("we've secured the
+   account at this address with your new password").
 
 A weak password never spends the link, so the page can simply ask again.
 

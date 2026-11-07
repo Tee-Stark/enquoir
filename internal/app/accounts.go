@@ -270,8 +270,11 @@ func (l *LogOut) Run(ctx context.Context, token string) error {
 	if token == "" {
 		return nil
 	}
+	if err := l.Sessions.Revoke(ctx, HashSecret(token), l.Clock.Now()); err != nil {
+		return err
+	}
 	l.Cache.ForgetSession(ctx, token)
-	return l.Sessions.Revoke(ctx, HashSecret(token), l.Clock.Now())
+	return nil
 }
 
 // UserPrincipal is a signed-in dashboard user, the organisation their
@@ -362,10 +365,10 @@ func (s *SwitchOrganisation) Run(ctx context.Context, p UserPrincipal, currentTo
 	if err != nil {
 		return SignedIn{}, err
 	}
-	s.Cache.ForgetSession(ctx, currentToken)
 	if err := s.Sessions.Revoke(ctx, HashSecret(currentToken), s.Issuer.Clock.Now()); err != nil {
 		return SignedIn{}, err
 	}
+	s.Cache.ForgetSession(ctx, currentToken)
 	return SignedIn{User: p.User, Organisation: m.Organisation, Role: m.Role, Session: session}, nil
 }
 

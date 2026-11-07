@@ -23,6 +23,7 @@ type membersFixture struct {
 	org        domain.OrgID
 	owner      app.UserPrincipal
 	ownerToken string
+	raceHook   func()
 }
 
 func newMembersFixture(t *testing.T) *membersFixture {
@@ -30,10 +31,11 @@ func newMembersFixture(t *testing.T) *membersFixture {
 	f := &membersFixture{accountsFixture: newAccountsFixture(), invites: apptest.NewInvitations()}
 	f.invites.Accounts = f.accounts
 	f.withEmail()
+	f.invites.Tokens = f.tokens
 	f.change = &app.ChangeMemberRole{Members: f.accounts, Sessions: f.sessions, Clock: f.clock}
 	f.remove = &app.RemoveMember{Members: f.accounts, Sessions: f.sessions, Clock: f.clock}
 	f.invite = &app.InviteMember{Accounts: f.accounts, Members: f.accounts, Invitations: f.invites, Emails: f.emails, IDs: &apptest.IDs{}, Clock: f.clock}
-	f.accept = &app.AcceptInvitation{Tokens: f.tokens, Invitations: f.invites, Accounts: f.accounts, Users: f.accounts, Hasher: f.hasher, IDs: &apptest.IDs{}, Issuer: f.issuer, Clock: f.clock}
+	f.accept = &app.AcceptInvitation{Tokens: f.tokens, Invitations: f.invites, Accounts: f.accounts, Sessions: f.sessions, Hasher: f.hasher, IDs: &apptest.IDs{}, Issuer: f.issuer, Clock: f.clock}
 	f.revoke = &app.RevokeInvitation{Invitations: f.invites, Clock: f.clock}
 	signed, _ := f.signUp.Run(context.Background(), validSignUp)
 	f.org = signed.Organisation.ID
@@ -158,10 +160,14 @@ func TestInvitation_ANewAccount(t *testing.T) {
 	}
 }
 
-func TestInvitation_AnExistingAccountJoinsWithoutANewPasswordOrSession(t *testing.T) {
+func TestInvitation_AnExistingVerifiedAccountJoinsWithoutANewPasswordOrSession(t *testing.T) {
 	f := newMembersFixture(t)
 	ctx := context.Background()
 	f.signUp.Run(ctx, app.SignUpCommand{Email: "carol@example.com", Password: "carols passphrase", OrganisationName: "Carol Co"})
+	// A verified account: it has proved it owns the address.
+	if err := (&app.VerifyEmail{Tokens: f.tokens, Users: f.accounts, Clock: f.clock}).Run(ctx, f.mailer.TokenTo("carol@example.com")); err != nil {
+		t.Fatal(err)
+	}
 	f.invite.Run(ctx, f.owner, "carol@example.com", domain.Viewer)
 	got, err := f.accept.Run(ctx, f.mailer.TokenTo("carol@example.com"), "")
 	if err != nil || got.AccountCreated || got.Session != nil {
@@ -201,5 +207,71 @@ func TestInvitation_Rules(t *testing.T) {
 	f.clock.Advance(7*24*time.Hour + time.Second)
 	if _, err := f.accept.Run(ctx, f.mailer.TokenTo("erin@example.com"), "erins long passphrase"); !errors.Is(err, app.ErrTokenInvalid) {
 		t.Errorf("an expired invitation: %v", err)
+	}
+}
+
+// An attacker pre-registers the address someone will be invited at,
+// with their own password, and never verifies it (they can't: the link
+// goes to the real owner). The invitation link proves who owns the
+// address, so accepting it claims the account for them: a new password
+// replaces the attacker's, and the attacker's sessions end.
+func TestInvitation_AnUnverifiedAccountIsClaimedByWhoeverHoldsTheLink(t *testing.T) {
+	f := newMembersFixture(t)
+	ctx := context.Background()
+	attacker, err := f.signUp.Run(ctx, app.SignUpCommand{Email: "bob@example.com", Password: "attacker passphrase", OrganisationName: "Trap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.invite.Run(ctx, f.owner, "bob@example.com", domain.Operator)
+	token := f.mailer.TokenTo("bob@example.com")
+
+	var verr *app.ValidationError
+	if _, err := f.accept.Run(ctx, token, ""); !errors.As(err, &verr) || verr.Field != "password" {
+		t.Fatalf("accepting for an unverified account without a password: %v, want a password to be required", err)
+	}
+	got, err := f.accept.Run(ctx, token, "the real bobs passphrase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AccountClaimed || got.AccountCreated || got.Session == nil || got.Role != domain.Operator || got.User.ID != attacker.User.ID {
+		t.Errorf("accepted = %+v; want the account claimed, signed in, as operator", got)
+	}
+	if _, err := f.resolve.Run(ctx, attacker.Session.Token); !errors.Is(err, app.ErrUnauthenticated) {
+		t.Error("the pre-registering attacker's session survived the claim")
+	}
+	if _, err := f.logIn.Run(ctx, "bob@example.com", "attacker passphrase"); !errors.Is(err, app.ErrInvalidCredentials) {
+		t.Errorf("the attacker's password still works: %v", err)
+	}
+	if _, err := f.logIn.Run(ctx, "bob@example.com", "the real bobs passphrase"); err != nil {
+		t.Errorf("the real owner's password: %v", err)
+	}
+	if bob, _ := f.accounts.UserByEmail(ctx, "bob@example.com"); !bob.EmailVerified {
+		t.Error("the claimed account is not verified")
+	}
+}
+
+// An invitation is as senior as the role it grants: an admin may not
+// revoke an owner's invitation, nor replace it by re-inviting the same
+// address with a lesser role.
+func TestInvitation_AdminsCannotTouchInvitationsAboveTheirRole(t *testing.T) {
+	f := newMembersFixture(t)
+	ctx := context.Background()
+	admin, _ := f.join(t, domain.Admin)
+	inv, err := f.invite.Run(ctx, f.owner, "cofounder@example.com", domain.Owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.revoke.Run(ctx, admin, inv.ID); !errors.Is(err, domain.ErrRoleNotAllowed) {
+		t.Errorf("admin revoking an owner invitation: %v", err)
+	}
+	if _, err := f.invite.Run(ctx, admin, "cofounder@example.com", domain.Viewer); !errors.Is(err, domain.ErrRoleNotAllowed) {
+		t.Errorf("admin replacing an owner invitation: %v", err)
+	}
+	pending, _ := f.invites.ListPendingInvitations(ctx, f.org, f.clock.Now())
+	if len(pending) != 1 || pending[0].Role != domain.Owner {
+		t.Errorf("pending = %+v, want the owner invitation untouched", pending)
+	}
+	if err := f.revoke.Run(ctx, f.owner, inv.ID); err != nil {
+		t.Errorf("the owner revoking it: %v", err)
 	}
 }

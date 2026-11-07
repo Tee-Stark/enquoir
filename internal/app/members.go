@@ -80,9 +80,12 @@ func (c *ChangeMemberRole) Run(ctx context.Context, p UserPrincipal, user domain
 	if err != nil {
 		return err
 	}
+	if err := c.Sessions.RevokeForMember(ctx, org, user, c.Clock.Now()); err != nil {
+		return err
+	}
 	c.Cache.InvalidateUser(ctx, user)
 	c.Audit.record(ctx, org, AuditRoleChanged, "user", string(user), map[string]string{"from": string(was), "to": string(to)})
-	return c.Sessions.RevokeForMember(ctx, org, user, c.Clock.Now())
+	return nil
 }
 
 // RemoveMember removes a member - or, when the target is the actor,
@@ -114,13 +117,16 @@ func (r *RemoveMember) Run(ctx context.Context, p UserPrincipal, user domain.Use
 	if err != nil {
 		return err
 	}
+	if err := r.Sessions.RevokeForMember(ctx, org, user, r.Clock.Now()); err != nil {
+		return err
+	}
 	r.Cache.InvalidateUser(ctx, user)
 	action := AuditMemberRemoved
 	if user == p.User.ID {
 		action = AuditMemberLeft
 	}
 	r.Audit.record(ctx, org, action, "user", string(user), map[string]string{"role": string(was)})
-	return r.Sessions.RevokeForMember(ctx, org, user, r.Clock.Now())
+	return nil
 }
 
 // Invitation asks someone, by email, to join an organisation.
@@ -153,11 +159,27 @@ type InvitationStore interface {
 	// RevokeInvitation returns ErrNotFound unless the invitation is
 	// org's and pending.
 	RevokeInvitation(ctx context.Context, org domain.OrgID, id string, at time.Time) error
-	// AcceptInvitation marks it accepted and adds the membership - and,
-	// when newUser is not nil, creates that user, verified - all or
-	// nothing. ErrTokenInvalid unless pending; ErrAlreadyMember if the
-	// user is already in the organisation.
-	AcceptInvitation(ctx context.Context, id string, user domain.UserID, newUser *User, at time.Time) error
+	// AcceptInvitation spends the invitation's link token, marks the
+	// invitation accepted and adds the membership - creating the user,
+	// or claiming an unverified one - all in one transaction.
+	// ErrTokenInvalid unless the token and invitation are both live;
+	// ErrAlreadyMember if the user is already in the organisation.
+	AcceptInvitation(ctx context.Context, cmd AcceptInvitationCommand) error
+}
+
+// AcceptInvitationCommand is everything one acceptance changes.
+type AcceptInvitationCommand struct {
+	InvitationID string
+	TokenHash    string
+	UserID       domain.UserID
+	// NewUser, when set, is created (verified).
+	NewUser *User
+	// ClaimPasswordHash, when set, replaces the password of the existing,
+	// unverified user and verifies them. It applies only while the user
+	// is still unverified; otherwise the acceptance fails and nothing
+	// changes.
+	ClaimPasswordHash string
+	At                time.Time
 }
 
 // InviteMember invites someone by email.
@@ -188,6 +210,19 @@ func (i *InviteMember) Run(ctx context.Context, p UserPrincipal, rawEmail string
 	}
 
 	now := i.Clock.Now()
+	// Re-inviting replaces the pending invitation: only allowed if the
+	// actor could have sent that one too.
+	pending, err := i.Invitations.ListPendingInvitations(ctx, p.Organisation.ID, now)
+	if err != nil {
+		return Invitation{}, err
+	}
+	for _, other := range pending {
+		if other.Email == email {
+			if err := p.Role.CanInvite(other.Role); err != nil {
+				return Invitation{}, err
+			}
+		}
+	}
 	inv := Invitation{ID: i.IDs.NewID("inv"), OrgID: p.Organisation.ID, OrgName: p.Organisation.Name, Email: email, Role: role,
 		InvitedBy: p.User.ID, CreatedAt: now, ExpiresAt: now.Add(InvitationTTL)}
 	if err := i.Invitations.CreateInvitation(ctx, inv); err != nil {
@@ -220,6 +255,14 @@ type RevokeInvitation struct {
 }
 
 func (r *RevokeInvitation) Run(ctx context.Context, p UserPrincipal, id string) error {
+	inv, err := r.Invitations.GetInvitation(ctx, id)
+	if err != nil || inv.OrgID != p.Organisation.ID {
+		return ErrNotFound
+	}
+	// An invitation is as senior as the role it grants.
+	if err := p.Role.CanInvite(inv.Role); err != nil {
+		return err
+	}
 	if err := r.Invitations.RevokeInvitation(ctx, p.Organisation.ID, id, r.Clock.Now()); err != nil {
 		return err
 	}
@@ -228,24 +271,33 @@ func (r *RevokeInvitation) Run(ctx context.Context, p UserPrincipal, id string) 
 }
 
 // AcceptedInvitation is the result of accepting: the organisation and
-// role, and - only when the acceptance created the account - a session
-// for it. An existing account signs in as usual.
+// role, and - when the acceptance created or claimed the account - a
+// session for it. An existing verified account signs in as usual.
 type AcceptedInvitation struct {
 	Organisation   Organisation
 	Role           domain.Role
 	User           User
 	AccountCreated bool
+	AccountClaimed bool
 	Session        *IssuedSession
 }
 
-// AcceptInvitation spends an invitation link. Clicking it proves the
-// address, so a new account starts verified, and an existing one is
-// marked verified too.
+// AcceptInvitation spends an invitation link. Holding the link proves
+// the invited address, so:
+//
+//   - no account: one is created with the given password, verified;
+//   - an unverified account: it is claimed. Nobody ever proved that
+//     account owns the address - anyone can sign up with someone else's
+//     email - so the given password replaces its password, every one of
+//     its sessions ends, and it is verified. Otherwise whoever
+//     pre-registered the address would receive the invitation's access;
+//   - a verified account: it already proved the address, and joins with
+//     the link alone.
 type AcceptInvitation struct {
 	Tokens      TokenStore
 	Invitations InvitationStore
 	Accounts    AccountStore
-	Users       UserStore
+	Sessions    SessionStore
 	Hasher      PasswordHasher
 	IDs         IDGenerator
 	Issuer      *SessionIssuer
@@ -257,8 +309,7 @@ type AcceptInvitation struct {
 func (a *AcceptInvitation) Run(ctx context.Context, token, password string) (AcceptedInvitation, error) {
 	now := a.Clock.Now()
 	hash := HashSecret(token)
-	// Look before spending: a new account's password is checked first,
-	// so a rejected one doesn't cost the invitation.
+	// Look before spending: a rejected password doesn't cost the link.
 	peeked, err := a.Tokens.Peek(ctx, hash, PurposeInvitation, now)
 	if err != nil {
 		return AcceptedInvitation{}, err
@@ -273,8 +324,9 @@ func (a *AcceptInvitation) Run(ctx context.Context, token, password string) (Acc
 	if err != nil && !created {
 		return AcceptedInvitation{}, err
 	}
-	var newUser *User
-	if created {
+	claimed := !created && !user.EmailVerified
+	cmd := AcceptInvitationCommand{InvitationID: inv.ID, TokenHash: hash, At: now}
+	if created || claimed {
 		if err := domain.ValidatePassword(password); err != nil {
 			return AcceptedInvitation{}, invalid("password", err)
 		}
@@ -282,32 +334,34 @@ func (a *AcceptInvitation) Run(ctx context.Context, token, password string) (Acc
 		if err != nil {
 			return AcceptedInvitation{}, err
 		}
-		user = User{ID: domain.UserID(a.IDs.NewID("usr")), Email: inv.Email, PasswordHash: hashed, EmailVerified: true, CreatedAt: now}
-		newUser = &user
+		if created {
+			user = User{ID: domain.UserID(a.IDs.NewID("usr")), Email: inv.Email, PasswordHash: hashed, CreatedAt: now}
+			cmd.NewUser = &user
+		} else {
+			cmd.ClaimPasswordHash = hashed
+		}
+		user.EmailVerified = true
 	}
-
-	if _, err := a.Tokens.Consume(ctx, hash, PurposeInvitation, now); err != nil {
+	cmd.UserID = user.ID
+	if err := a.Invitations.AcceptInvitation(ctx, cmd); err != nil {
 		return AcceptedInvitation{}, err
 	}
-	if err := a.Invitations.AcceptInvitation(ctx, inv.ID, user.ID, newUser, now); err != nil {
-		return AcceptedInvitation{}, err
-	}
-	if !created {
-		if err := a.Users.MarkEmailVerified(ctx, user.ID, now); err != nil {
+	if claimed {
+		// Committed first, then the cache: never the other way round.
+		if err := a.Sessions.RevokeAllForUser(ctx, user.ID, "", now); err != nil {
 			return AcceptedInvitation{}, err
 		}
 		a.Cache.InvalidateUser(ctx, user.ID)
-		user.EmailVerified = true
 	}
 
 	m, err := a.Accounts.Membership(ctx, inv.OrgID, user.ID)
 	if err != nil {
 		return AcceptedInvitation{}, fmt.Errorf("reading the new membership: %w", err)
 	}
-	a.Audit.recordAs(ctx, user, inv.OrgID, AuditInvitationAccepted, "invitation", inv.ID,
-		map[string]string{"role": string(m.Role), "account_created": fmt.Sprint(created)})
-	out := AcceptedInvitation{Organisation: m.Organisation, Role: m.Role, User: user, AccountCreated: created}
-	if created {
+	a.Audit.recordAs(ctx, user, inv.OrgID, AuditInvitationAccepted, "invitation", inv.ID, map[string]string{
+		"role": string(m.Role), "account_created": fmt.Sprint(created), "account_claimed": fmt.Sprint(claimed)})
+	out := AcceptedInvitation{Organisation: m.Organisation, Role: m.Role, User: user, AccountCreated: created, AccountClaimed: claimed}
+	if created || claimed {
 		s, err := a.Issuer.issue(ctx, user, inv.OrgID)
 		if err != nil {
 			return AcceptedInvitation{}, err

@@ -89,14 +89,32 @@ func TestLogIn_FiveAttemptsAMinutePerEmail(t *testing.T) {
 	}
 }
 
-// Rate limiting must never take authentication down with it.
-func TestThrottle_ACounterThatIsDownAllows(t *testing.T) {
+// Rate limiting must never take authentication down with it - but a
+// counter that is down must not switch limits and lockout off either:
+// the fallback keeps them, per process, and the failure is reported.
+func TestThrottle_ACounterThatIsDownFallsBackAndIsReported(t *testing.T) {
 	f := newAccountsFixture()
-	c := withThrottle(f)
-	c.Err = errors.New("redis: connection refused")
-	f.signUp.Run(context.Background(), validSignUp)
-	if _, err := f.logIn.Run(context.Background(), "ada@example.com", validSignUp.Password); err != nil {
-		t.Errorf("log-in with the counter down: %v", err)
+	primary := apptest.NewCounter(f.clock)
+	primary.Err = errors.New("redis: connection refused")
+	var reported []error
+	th := &app.Throttle{Counter: primary, Fallback: apptest.NewCounter(f.clock), OnError: func(err error) { reported = append(reported, err) }}
+	f.logIn.Throttle = th
+	ctx := context.Background()
+	f.signUp.Run(ctx, validSignUp)
+
+	if _, err := f.logIn.Run(ctx, "ada@example.com", validSignUp.Password); err != nil {
+		t.Fatalf("log-in with the counter down: %v", err)
+	}
+	if len(reported) == 0 {
+		t.Error("the counter failure was not reported")
+	}
+	var err error
+	for i := 0; i < 10; i++ {
+		f.clock.Advance(13 * time.Second)
+		_, err = f.logIn.Run(ctx, "ada@example.com", "wrong wrong wrong")
+	}
+	if !errors.Is(err, app.ErrAccountLocked) {
+		t.Errorf("ten failures with the counter down: %v, want the lockout to hold", err)
 	}
 }
 
@@ -153,5 +171,27 @@ func TestResetPassword_UnlocksALockedAccount(t *testing.T) {
 	f.clock.Advance(time.Minute)
 	if _, err := f.logIn.Run(ctx, "ada@example.com", "a brand new passphrase"); err != nil {
 		t.Errorf("logging in after a reset: %v, want the lock cleared", err)
+	}
+}
+
+// A stolen session must not be a way to guess the account's password.
+func TestChangePassword_GuessesAtTheCurrentPasswordAreLimited(t *testing.T) {
+	f, _, _, change := passwordFixture(t)
+	change.Throttle = &app.Throttle{Counter: apptest.NewCounter(f.clock)}
+	ctx := context.Background()
+	signed, _ := f.signUp.Run(ctx, validSignUp)
+	p, _ := f.resolve.Run(ctx, signed.Session.Token)
+	for i := 0; i < 5; i++ {
+		if err := change.Run(ctx, p, "guess guess guess", "a brand new passphrase"); !errors.Is(err, app.ErrInvalidCredentials) {
+			t.Fatalf("guess %d: %v", i, err)
+		}
+	}
+	var limited *app.RateLimitedError
+	if err := change.Run(ctx, p, validSignUp.Password, "a brand new passphrase"); !errors.As(err, &limited) {
+		t.Errorf("a sixth attempt within 15 minutes: %v, want rate limited", err)
+	}
+	f.clock.Advance(15 * time.Minute)
+	if err := change.Run(ctx, p, validSignUp.Password, "a brand new passphrase"); err != nil {
+		t.Errorf("after the window: %v", err)
 	}
 }

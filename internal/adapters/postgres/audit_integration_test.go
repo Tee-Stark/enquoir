@@ -36,3 +36,19 @@ func TestAuditLog_RecordListScopedAndPaged(t *testing.T) {
 		t.Errorf("paging: %+v", second)
 	}
 }
+
+func TestAuditLog_ListForUserIncludesAccountLevelEvents(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	org, me := newTestOrg(t, NewAccountStore(pool))
+	_, other := newTestOrg(t, NewAccountStore(pool))
+	log := NewAuditLog(pool)
+	log.Record(ctx, app.AuditEvent{ID: ids.NewID("aud"), ActorUserID: me.ID, Action: app.AuditPasswordReset, TargetType: "user", TargetID: string(me.ID)})
+	log.Record(ctx, app.AuditEvent{ID: ids.NewID("aud"), OrgID: org.ID, ActorUserID: other.ID, Action: app.AuditRoleChanged, TargetType: "user", TargetID: string(me.ID)})
+	log.Record(ctx, app.AuditEvent{ID: ids.NewID("aud"), ActorUserID: other.ID, Action: app.AuditPasswordReset, TargetType: "user", TargetID: string(other.ID)})
+
+	page, err := log.ListForUser(ctx, me.ID, app.AuditFilter{Limit: 10})
+	if err != nil || len(page.Events) != 2 {
+		t.Fatalf("my events = %+v, %v; want my reset (no organisation) and the role change done to me", page.Events, err)
+	}
+}

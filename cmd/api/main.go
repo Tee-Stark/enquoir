@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 	// Analytics resolve any IANA time zone, even in an image with no
@@ -130,13 +131,14 @@ func main() {
 		ResendVerify:   &app.ResendVerification{Emails: emails, Throttle: throttle},
 		ForgotPassword: &app.ForgotPassword{Accounts: accounts, Emails: emails, Throttle: throttle},
 		ResetPassword:  &app.ResetPassword{Tokens: tokens, Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock, Cache: cache, Throttle: throttle, Audit: audit},
-		ChangePassword: &app.ChangePassword{Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock, Cache: cache, Audit: audit},
+		ChangePassword: &app.ChangePassword{Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock, Cache: cache, Audit: audit, Throttle: throttle},
 
 		ListSessions:        &app.ListSessions{Sessions: sessions, Clock: sysClock},
 		RevokeSession:       &app.RevokeSession{Sessions: sessions, Clock: sysClock, Cache: cache},
 		RevokeOtherSessions: &app.RevokeOtherSessions{Sessions: sessions, Clock: sysClock, Cache: cache, Audit: audit},
 
-		ListAuditLog: &app.ListAuditLog{Log: auditLog},
+		ListAuditLog:   &app.ListAuditLog{Log: auditLog},
+		ListMyActivity: &app.ListMyActivity{Log: auditLog},
 
 		ListMembers:      &app.ListMembers{Members: accounts},
 		ChangeMemberRole: &app.ChangeMemberRole{Members: accounts, Sessions: sessions, Clock: sysClock, Cache: cache, Audit: audit},
@@ -144,7 +146,7 @@ func main() {
 		InviteMember:     &app.InviteMember{Accounts: accounts, Members: accounts, Invitations: invitations, Emails: emails, IDs: ids, Clock: sysClock, Audit: audit},
 		ListInvitations:  &app.ListInvitations{Invitations: invitations, Clock: sysClock},
 		RevokeInvitation: &app.RevokeInvitation{Invitations: invitations, Clock: sysClock, Audit: audit},
-		AcceptInvitation: &app.AcceptInvitation{Tokens: tokens, Invitations: invitations, Accounts: accounts, Users: accounts, Hasher: hasher, IDs: ids, Issuer: issuer, Clock: sysClock, Cache: cache, Audit: audit},
+		AcceptInvitation: &app.AcceptInvitation{Tokens: tokens, Invitations: invitations, Accounts: accounts, Sessions: sessions, Hasher: hasher, IDs: ids, Issuer: issuer, Clock: sysClock, Cache: cache, Audit: audit},
 		LogIn:            &app.LogIn{Accounts: accounts, Hasher: hasher, Issuer: issuer, Throttle: throttle, Audit: audit},
 		LogOut:           &app.LogOut{Sessions: sessions, Clock: sysClock, Cache: cache},
 		ResolveSession:   &app.ResolveSession{Sessions: sessions, Accounts: accounts, Clock: sysClock, Cache: cache},
@@ -223,5 +225,31 @@ func connectRedis(logger *slog.Logger) (*app.Throttle, *app.Cache) {
 		return &app.Throttle{Counter: redisstore.NewMemoryCounter()}, nil
 	}
 	logger.Info("redis connected: shared rate limits and principal cache")
-	return &app.Throttle{Counter: redisstore.NewCounter(rdb)}, &app.Cache{Store: redisstore.NewPrincipalStore(rdb)}
+	throttle := &app.Throttle{
+		Counter: redisstore.NewCounter(rdb),
+		// During a Redis outage, limits and the lockout hold per process.
+		Fallback: redisstore.NewMemoryCounter(),
+		OnError: everyMinute(func(err error) {
+			logger.Warn("redis rate limiting failed: using per-process limits until it is back", "error", err)
+		}),
+	}
+	return throttle, &app.Cache{Store: redisstore.NewPrincipalStore(rdb)}
+}
+
+// everyMinute calls report at most once a minute, so an outage is
+// visible in the logs without flooding them.
+func everyMinute(report func(error)) func(error) {
+	var mu sync.Mutex
+	var last time.Time
+	return func(err error) {
+		mu.Lock()
+		due := time.Since(last) >= time.Minute
+		if due {
+			last = time.Now()
+		}
+		mu.Unlock()
+		if due {
+			report(err)
+		}
+	}
 }

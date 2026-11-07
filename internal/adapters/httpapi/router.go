@@ -33,7 +33,8 @@ type Handler struct {
 	RevokeSession       *app.RevokeSession
 	RevokeOtherSessions *app.RevokeOtherSessions
 
-	ListAuditLog *app.ListAuditLog
+	ListAuditLog   *app.ListAuditLog
+	ListMyActivity *app.ListMyActivity
 
 	ListMembers      *app.ListMembers
 	ChangeMemberRole *app.ChangeMemberRole
@@ -91,6 +92,7 @@ func NewRouter(h *Handler) chi.Router {
 	r.Post("/v1/auth/password/reset", h.resetPassword)
 	r.With(h.requireUser).Post("/v1/auth/password/change", h.changePassword)
 	r.With(h.requireUser).Get("/v1/auth/sessions", h.listSessions)
+	r.With(h.requireUser).Get("/v1/auth/activity", h.listMyActivity)
 	r.With(h.requireUser).Delete("/v1/auth/sessions", h.revokeOtherSessions)
 	r.With(h.requireUser).Delete("/v1/auth/sessions/{id}", h.revokeSession)
 	r.Post("/v1/invitations/accept", h.acceptInvitation)

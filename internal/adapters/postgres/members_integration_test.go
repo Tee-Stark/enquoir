@@ -85,19 +85,74 @@ func TestInvitationStore_AcceptCreatesTheAccountAndMembership(t *testing.T) {
 		t.Fatalf("pending = %+v; re-inviting must replace the earlier invitation", pending)
 	}
 
+	tokens := NewTokenStore(pool)
+	link := app.HashSecret(ids.NewID("tok"))
+	tokens.Create(ctx, app.OneTimeToken{Hash: link, Purpose: app.PurposeInvitation, Subject: second.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+
 	bob := app.User{ID: domain.UserID(ids.NewID("usr")), Email: email, PasswordHash: "h", CreatedAt: now}
-	if err := invites.AcceptInvitation(ctx, second.ID, bob.ID, &bob, now); err != nil {
+	if err := invites.AcceptInvitation(ctx, app.AcceptInvitationCommand{InvitationID: second.ID, TokenHash: "not-the-link", UserID: bob.ID, NewUser: &bob, At: now}); !errors.Is(err, app.ErrTokenInvalid) {
+		t.Fatalf("accepting with the wrong link: %v", err)
+	}
+	if _, err := accounts.UserByID(ctx, bob.ID); !errors.Is(err, app.ErrNotFound) {
+		t.Fatal("a failed acceptance created the user anyway")
+	}
+	if err := invites.AcceptInvitation(ctx, app.AcceptInvitationCommand{InvitationID: second.ID, TokenHash: link, UserID: bob.ID, NewUser: &bob, At: now}); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := tokens.Peek(ctx, link, app.PurposeInvitation, now); !errors.Is(err, app.ErrTokenInvalid) {
+		t.Error("the link still works after acceptance")
 	}
 	u, _ := accounts.UserByID(ctx, bob.ID)
 	m, err := accounts.Membership(ctx, org.ID, bob.ID)
 	if !u.EmailVerified || err != nil || m.Role != domain.Operator {
 		t.Errorf("user %+v, membership %+v, %v", u, m, err)
 	}
-	if err := invites.AcceptInvitation(ctx, second.ID, bob.ID, nil, now); !errors.Is(err, app.ErrTokenInvalid) {
+	if err := invites.AcceptInvitation(ctx, app.AcceptInvitationCommand{InvitationID: second.ID, TokenHash: link, UserID: bob.ID, At: now}); !errors.Is(err, app.ErrTokenInvalid) {
 		t.Errorf("accepting twice: %v", err)
 	}
 	if err := invites.RevokeInvitation(ctx, org.ID, first.ID, now); !errors.Is(err, app.ErrNotFound) {
 		t.Errorf("revoking a replaced invitation: %v", err)
+	}
+}
+
+// Claiming an unverified account replaces its password and verifies it
+// in the same transaction as the membership - and refuses an account
+// that became verified meanwhile, changing nothing.
+func TestInvitationStore_ClaimOnlyAnUnverifiedAccount(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	accounts, invites, tokens := NewAccountStore(pool), NewInvitationStore(pool), NewTokenStore(pool)
+	org, owner := newTestOrg(t, accounts)
+	_, squatter := newTestOrg(t, accounts) // unverified
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	invite := func() (string, string) {
+		inv := app.Invitation{ID: ids.NewID("inv"), OrgID: org.ID, Email: squatter.Email, Role: domain.Operator, InvitedBy: owner.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+		invites.CreateInvitation(ctx, inv)
+		link := app.HashSecret(ids.NewID("tok"))
+		tokens.Create(ctx, app.OneTimeToken{Hash: link, Purpose: app.PurposeInvitation, Subject: inv.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+		return inv.ID, link
+	}
+
+	id, link := invite()
+	if err := invites.AcceptInvitation(ctx, app.AcceptInvitationCommand{InvitationID: id, TokenHash: link, UserID: squatter.ID, ClaimPasswordHash: "claimed-hash", At: now}); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := accounts.UserByID(ctx, squatter.ID)
+	if u.PasswordHash != "claimed-hash" || !u.EmailVerified {
+		t.Errorf("claimed user = %+v", u)
+	}
+
+	// Now verified: a second claim must fail and change nothing.
+	accounts.RemoveMember(ctx, org.ID, squatter.ID, func(domain.Role, int) error { return nil })
+	id, link = invite()
+	if err := invites.AcceptInvitation(ctx, app.AcceptInvitationCommand{InvitationID: id, TokenHash: link, UserID: squatter.ID, ClaimPasswordHash: "second-hash", At: now}); err == nil {
+		t.Fatal("claimed an account that is already verified")
+	}
+	if u, _ := accounts.UserByID(ctx, squatter.ID); u.PasswordHash != "claimed-hash" {
+		t.Error("a refused claim changed the password")
+	}
+	if _, err := tokens.Peek(ctx, link, app.PurposeInvitation, now); err != nil {
+		t.Error("a refused claim spent the link")
 	}
 }

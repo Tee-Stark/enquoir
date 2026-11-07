@@ -88,6 +88,9 @@ type AuditPage struct {
 type AuditLog interface {
 	Record(ctx context.Context, e AuditEvent) error
 	List(ctx context.Context, org domain.OrgID, f AuditFilter) (AuditPage, error)
+	// ListForUser lists events about user's own account - done by them,
+	// or to them - in any organisation or none.
+	ListForUser(ctx context.Context, user domain.UserID, f AuditFilter) (AuditPage, error)
 }
 
 // Audit records events. A nil *Audit records nothing. Events are
@@ -125,6 +128,21 @@ var knownAuditActions = map[string]bool{
 	AuditSessionsRevoked: true, AuditMemberInvited: true, AuditInvitationRevoked: true, AuditInvitationAccepted: true,
 	AuditRoleChanged: true, AuditMemberRemoved: true, AuditMemberLeft: true, AuditAgentCreated: true,
 	AuditAgentKeyRotated: true, AuditAgentRevoked: true, AuditPayeeRegistered: true,
+}
+
+// ListMyActivity lists the events about the signed-in user's account:
+// the only place account-level events (no organisation) are visible.
+type ListMyActivity struct{ Log AuditLog }
+
+func (l *ListMyActivity) Run(ctx context.Context, user domain.UserID, f AuditFilter) (AuditPage, error) {
+	var err error
+	if f.Limit, err = pageSize(f.Limit); err != nil {
+		return AuditPage{}, err
+	}
+	if err := period(f.From, f.To); err != nil {
+		return AuditPage{}, err
+	}
+	return l.Log.ListForUser(ctx, user, f)
 }
 
 // ListAuditLog lists an organisation's audit events.
