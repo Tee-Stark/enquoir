@@ -173,3 +173,25 @@ func TestResetPassword_UnlocksALockedAccount(t *testing.T) {
 		t.Errorf("logging in after a reset: %v, want the lock cleared", err)
 	}
 }
+
+// A stolen session must not be a way to guess the account's password.
+func TestChangePassword_GuessesAtTheCurrentPasswordAreLimited(t *testing.T) {
+	f, _, _, change := passwordFixture(t)
+	change.Throttle = &app.Throttle{Counter: apptest.NewCounter(f.clock)}
+	ctx := context.Background()
+	signed, _ := f.signUp.Run(ctx, validSignUp)
+	p, _ := f.resolve.Run(ctx, signed.Session.Token)
+	for i := 0; i < 5; i++ {
+		if err := change.Run(ctx, p, "guess guess guess", "a brand new passphrase"); !errors.Is(err, app.ErrInvalidCredentials) {
+			t.Fatalf("guess %d: %v", i, err)
+		}
+	}
+	var limited *app.RateLimitedError
+	if err := change.Run(ctx, p, validSignUp.Password, "a brand new passphrase"); !errors.As(err, &limited) {
+		t.Errorf("a sixth attempt within 15 minutes: %v, want rate limited", err)
+	}
+	f.clock.Advance(15 * time.Minute)
+	if err := change.Run(ctx, p, validSignUp.Password, "a brand new passphrase"); err != nil {
+		t.Errorf("after the window: %v", err)
+	}
+}

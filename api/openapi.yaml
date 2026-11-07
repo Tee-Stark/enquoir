@@ -23,7 +23,7 @@ info:
     **Limits.** Log-in: 5 a minute per email, 30 a minute per IP; 10 failures
     lock the email for an hour. Sign-up: 5 an hour per IP. Verification
     resends: 1 a minute, 5 a day. Password reset requests: 3 an hour per
-    email. Over a limit: 429 with Retry-After.
+    email. Password changes: 5 attempts per 15 minutes. Over a limit: 429 with Retry-After.
     Request bodies are limited to 64 KiB (`413 body_too_large`).
 servers:
   - url: http://localhost:8090
@@ -563,6 +563,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "413":
           $ref: "#/components/responses/BodyTooLarge"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
 

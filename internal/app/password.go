@@ -95,9 +95,15 @@ type ChangePassword struct {
 	Clock    Clock
 	Cache    *Cache
 	Audit    *Audit
+	Throttle *Throttle
 }
 
+// Run allows 5 attempts per user per 15 minutes, so a stolen session
+// is no way to guess the account's password.
 func (c *ChangePassword) Run(ctx context.Context, p UserPrincipal, current, newPassword string) error {
+	if err := c.Throttle.Check(ctx, RuleChangePassword, string(p.User.ID)); err != nil {
+		return err
+	}
 	// The principal may come from the cache, which never holds the
 	// password hash: read it from the record.
 	user, err := c.Accounts.UserByID(ctx, p.User.ID)

@@ -38,6 +38,7 @@ var (
 	RuleResendPerMinute = Rule{"verify-resend-minute", 1, time.Minute}
 	RuleResendPerDay    = Rule{"verify-resend-day", 5, 24 * time.Hour}
 	RuleForgotPerEmail  = Rule{"forgot-email", 3, time.Hour}
+	RuleChangePassword  = Rule{"password-change", 5, 15 * time.Minute}
 )
 
 // Lockout: this many failed log-ins within LockoutWindow lock the

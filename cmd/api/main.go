@@ -131,7 +131,7 @@ func main() {
 		ResendVerify:   &app.ResendVerification{Emails: emails, Throttle: throttle},
 		ForgotPassword: &app.ForgotPassword{Accounts: accounts, Emails: emails, Throttle: throttle},
 		ResetPassword:  &app.ResetPassword{Tokens: tokens, Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock, Cache: cache, Throttle: throttle, Audit: audit},
-		ChangePassword: &app.ChangePassword{Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock, Cache: cache, Audit: audit},
+		ChangePassword: &app.ChangePassword{Users: accounts, Accounts: accounts, Sessions: sessions, Hasher: hasher, Emails: emails, Clock: sysClock, Cache: cache, Audit: audit, Throttle: throttle},
 
 		ListSessions:        &app.ListSessions{Sessions: sessions, Clock: sysClock},
 		RevokeSession:       &app.RevokeSession{Sessions: sessions, Clock: sysClock, Cache: cache},
