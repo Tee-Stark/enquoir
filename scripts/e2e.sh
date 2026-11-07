@@ -99,7 +99,9 @@ wait_for_state() {
 token_for() {
 	local t=""
 	for _ in $(seq 1 "$WAIT_SECONDS"); do
-		t=$(grep -F "\"to\":\"$1\"" "$MAIL_FILE" 2>/dev/null | tail -1 | jq -r .text | grep -o "$2?token=[^ ]*" | sed 's/.*token=//' || true)
+		# The latest email to $1 that carries a $2 link: emails are sent
+		# in parallel, so the last line for an address may be another one.
+		t=$(grep -F "\"to\":\"$1\"" "$MAIL_FILE" 2>/dev/null | jq -r .text | grep -o "$2?token=[^ ]*" | tail -1 | sed 's/.*token=//' || true)
 		[ -n "$t" ] && { echo "$t"; return; }
 		sleep 1
 	done
