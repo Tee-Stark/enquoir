@@ -917,3 +917,27 @@ Fixed before merging PR #9:
 Deferred to the deployment phase, as agreed: whether the reverse proxy
 overwrites or appends the header named by `CLIENT_IP_HEADER` (decides
 whether per-IP limits can be spoofed).
+
+## Deployment handoff (2026-11-08)
+
+`docs/deployment.md` is the handoff for deploying on any platform. Writing
+it, and running both images against the Compose services, surfaced four
+fixes, made first:
+
+- **Per-IP rate limits were never applied by the real API**: `cmd/api`
+  didn't set the handler's `Throttle` or `ClientIPHeader`. Handler tests
+  set them themselves, and `make e2e` cleared the counter it would have
+  hit, so nothing caught it. Verified live: the sixth sign-up from one IP
+  is now 429; without the fix, 201.
+- **Migrations raced** when the API and worker (or replicas) started
+  together: an 8-way concurrent test failed every run. `Migrate` now
+  holds a Postgres advisory lock.
+- `.dockerignore` keeps `.env` (with keys) and `mail.jsonl` out of image
+  builds.
+- Both images ran as root; they now run as uid 10001.
+
+Verified: both images build (24 MB and 20 MB), migrate, serve `/healthz`
+and a sign-up, start the worker, and exit 0 on `SIGTERM`.
+
+Still open, by agreement: which proxy header `CLIENT_IP_HEADER` names,
+decided per platform (section 9 of the handoff has the test to run).

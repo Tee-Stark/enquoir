@@ -128,7 +128,8 @@ curl -b cookies 'localhost:8090/v1/analytics/timeseries?metric=payments&interval
 ```
 
 A frontend on another origin must be listed in `CORS_ALLOWED_ORIGINS`;
-`docs/frontend.md` covers what a dashboard needs to know.
+`docs/frontend.md` covers what a dashboard needs to know, and
+`docs/deployment.md` how to deploy Enquoir on any cloud platform.
 
 ### Teams, email and limits
 
