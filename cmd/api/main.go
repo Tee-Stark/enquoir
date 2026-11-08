@@ -154,6 +154,8 @@ func main() {
 		MyOrgs:           &app.ListMyOrganisations{Accounts: accounts},
 		Cookies:          httpapi.CookieSettings{Secure: secureCookies},
 		Origins:          httpapi.ParseAllowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
+		Throttle:         throttle,
+		ClientIPHeader:   os.Getenv("CLIENT_IP_HEADER"),
 
 		CreateAgent:       &app.CreateAgent{Agents: agents, IDs: ids, Secrets: secrets, Clock: sysClock, Audit: audit},
 		ListAgents:        &app.ListAgents{Agents: agents},
