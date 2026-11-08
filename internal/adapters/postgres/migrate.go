@@ -12,10 +12,27 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// migrationLock is the advisory-lock key Migrate holds, so that
+// processes starting together (the API, the worker, their replicas)
+// apply migrations one at a time: the first applies them, the rest
+// find them applied.
+const migrationLock = 7_270_011_001
+
 // Migrate applies every embedded migration that hasn't already run,
-// tracked in a schema_migrations table, in filename order.
+// tracked in a schema_migrations table, in filename order, holding
+// migrationLock throughout.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	if _, err := pool.Exec(ctx, `
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquiring a connection to migrate: %w", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLock); err != nil {
+		return fmt.Errorf("taking the migration lock: %w", err)
+	}
+	defer conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationLock)
+
+	if _, err := conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			filename   TEXT PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -36,7 +53,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 
 	for _, name := range names {
 		var applied bool
-		if err := pool.QueryRow(ctx,
+		if err := conn.QueryRow(ctx,
 			`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE filename = $1)`, name,
 		).Scan(&applied); err != nil {
 			return fmt.Errorf("checking migration %s: %w", name, err)
@@ -50,7 +67,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 			return fmt.Errorf("reading migration %s: %w", name, err)
 		}
 
-		tx, err := pool.Begin(ctx)
+		tx, err := conn.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("beginning migration %s: %w", name, err)
 		}
