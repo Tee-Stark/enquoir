@@ -5,6 +5,8 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /out/worker ./cmd/worker
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates \
+ && adduser -D -H -u 10001 enquoir
 COPY --from=builder /out/worker /usr/local/bin/worker
+USER 10001
 ENTRYPOINT ["/usr/local/bin/worker"]
