@@ -69,9 +69,10 @@ The API enforces all of it either way (`403 forbidden`).
 
 | | owner | admin | operator | viewer |
 |---|---|---|---|---|
-| Payments, attempts, replay, analytics, payees, agents, members | ✓ | ✓ | ✓ | ✓ |
+| Payments, attempts, replay, analytics, payees, agents, members, merchant integrations | ✓ | ✓ | ✓ | ✓ |
 | Create, rotate, revoke agents; register payees | ✓ | ✓ | ✓ | |
 | Invite and remove members, change roles; audit log | ✓ | ✓ | | |
+| Create, disable, enable merchant integrations; issue and revoke their keys | ✓ | ✓ | | |
 | Make or change admins and owners | ✓ | | | |
 
 - In the role picker for invitations and role changes, offer only roles

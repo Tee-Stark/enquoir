@@ -2365,9 +2365,10 @@ components:
 
         | | owner | admin | operator | viewer |
         |---|---|---|---|---|
-        | View payments, attempts, replay, analytics, payees, agents, members | ✓ | ✓ | ✓ | ✓ |
+        | View payments, attempts, replay, analytics, payees, agents, members, merchant integrations | ✓ | ✓ | ✓ | ✓ |
         | Create, rotate, revoke agents; register payees | ✓ | ✓ | ✓ | |
         | Invite and remove members, change roles up to admin; audit log | ✓ | ✓ | | |
+        | Create, disable, enable merchant integrations; issue and revoke their keys | ✓ | ✓ | | |
         | Manage admins and owners | ✓ | | | |
 
         Nobody grants a role above their own; only an owner changes a member

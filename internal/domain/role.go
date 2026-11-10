@@ -11,7 +11,7 @@ type Role string
 
 const (
 	Owner    Role = "owner"    // everything, including admins and ownership
-	Admin    Role = "admin"    // members and settings, up to admin
+	Admin    Role = "admin"    // members, settings and merchant integrations, up to admin
 	Operator Role = "operator" // read and write: agents, keys, payees
 	Viewer   Role = "viewer"   // read only
 )
@@ -25,12 +25,16 @@ const (
 	PermManageMembers Permission = "manage_members"
 	PermViewAuditLog  Permission = "view_audit_log"
 	PermManageAdmins  Permission = "manage_admins"
+	// PermManageIntegrations is connecting merchants for commerce:
+	// creating, disabling and enabling merchant integrations and
+	// issuing or revoking their keys.
+	PermManageIntegrations Permission = "manage_integrations"
 )
 
 // permissions is the whole policy: adding a role is one line here.
 var permissions = map[Role][]Permission{
-	Owner:    {PermRead, PermWrite, PermManageMembers, PermViewAuditLog, PermManageAdmins},
-	Admin:    {PermRead, PermWrite, PermManageMembers, PermViewAuditLog},
+	Owner:    {PermRead, PermWrite, PermManageMembers, PermViewAuditLog, PermManageAdmins, PermManageIntegrations},
+	Admin:    {PermRead, PermWrite, PermManageMembers, PermViewAuditLog, PermManageIntegrations},
 	Operator: {PermRead, PermWrite},
 	Viewer:   {PermRead},
 }
