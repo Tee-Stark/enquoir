@@ -85,9 +85,27 @@ The API enforces all of it either way (`403 forbidden`).
 ## Unverified accounts
 
 Until `user.email_verified` is true, a person can look around but can't
-create or rotate agent keys, invite anyone, or register payees
-(`403 email_unverified`). Show a banner with "resend the link"
+create or rotate agent keys, invite anyone, register payees, or create,
+enable or re-key merchant integrations (`403 email_unverified`). Show a banner with "resend the link"
 (`POST /v1/auth/verify-email/resend`; limited to 1 a minute, 5 a day).
+
+## Merchant integrations (commerce)
+
+A settings page for connecting merchants (`/v1/merchant-integrations`):
+one integration per storefront, each with one key.
+
+- Creating one, or rotating its key, returns the secret (`key.secret`)
+  once. Show it with a copy button and a clear "you won't see this
+  again"; afterwards only `key.prefix` is available.
+- Statuses are `active` and `disabled`. Disabling stops the key at once;
+  enabling lets it work again. Revoking the key (`DELETE .../key`)
+  leaves an integration with `key: null` until a key is rotated in.
+- Owners and admins manage integrations; operators and viewers only see
+  them. Hide the buttons for them.
+- Customers and agents are registered by the merchant's backend with its
+  key, not from the dashboard; the dashboard has no view of them yet.
+  The audit log shows their registration with an actor of type
+  `merchant_integration`.
 
 ## Limits
 

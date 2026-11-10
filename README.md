@@ -167,6 +167,36 @@ minutes, rather than failing - it settles by itself once the rail is
 back. The one thing that stops a run is the rail holding two transfers
 for one request ID: a double payment, left for a person to investigate.
 
+### Merchant-delegated commerce (in progress)
+
+The second bounded context: a merchant's AI shopping agent proposes
+purchases funded by the merchant's customers, and Enquoir decides
+whether the customer's authority allows each one. The merchant charges
+through its own payment provider; Enquoir never holds customer funds,
+card data or PSP secrets. Phase 1 of 8 is built: merchant integration
+and identity.
+
+An owner or admin connects a merchant from the dashboard and gets its
+integration key (`enq_mk_...`, shown once). The merchant's backend uses
+it on `/v1/commerce` to register its customers (with the email consent
+links will later go to) and its agents, by its own external IDs:
+
+```sh
+curl -b cookies -X POST localhost:8090/v1/merchant-integrations -d '{"name":"Acme Electronics"}'
+# {"integration":{...},"key":{"secret":"enq_mk_...", ...}}   <- shown once; store it
+
+curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce/customers \
+  -d '{"external_id":"cust_42","email":"ada@example.com"}'     # 201, then 200 on a repeat
+curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce/agents \
+  -d '{"external_id":"shopping-assistant","name":"Acme Shopping Assistant"}'
+```
+
+The merchant always comes from the key, never from the request; another
+merchant's records (another storefront's too) are not found. An agent
+key and a merchant key are never accepted in each other's place.
+Disabling an integration, or rotating or revoking its key, ends access
+at once. `make e2e-commerce` runs the whole flow (no sandbox needed).
+
 ## The end-to-end test
 
 ```sh
@@ -230,6 +260,11 @@ internal/domain    Intent, Money, IntentKey, the state machine, hash-chained eve
                     imports nothing outside the standard library
 internal/app       use cases (SubmitIntent, GetIntent) and the ports they depend on
                     (IntentRepository, EventLog, Rail, Simulator, Clock, PaymentStarter)
+internal/commerce  the commerce domain (merchants, customers, agents; mandates
+                    to come) - standard library and internal/domain only
+internal/commerce/commerceapp  commerce use cases and ports, over the
+                    shared infrastructure in internal/app; treasury never
+                    imports commerce
 internal/workflow  the Temporal workflow and its activities - deterministic
                     orchestration only; every I/O call is an activity
 internal/chaos     the one deliberate exception to the architecture: a kill

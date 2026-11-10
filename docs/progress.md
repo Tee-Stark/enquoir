@@ -952,3 +952,130 @@ and a sign-up, start the worker, and exit 0 on `SIGTERM`.
 
 Still open, by agreement: which proxy header `CLIENT_IP_HEADER` names,
 decided per platform (section 9 of the handoff has the test to run).
+
+## Commerce Phase 1: merchant integration and identity - done (2026-11-11)
+
+Branch `feat/commerce-identity`, from `main` after PR #11 merged. The
+first of the eight phases in the "Merchant-Delegated Commerce"
+architecture document (v0.1). Tag `commerce-phase-1`.
+
+### Found first: PR #10 never reached `main`
+
+PR #10 (sender `no-reply@enquoir.etimi.me`, AGENTS.md's GitHub workflow
+and email facts, two corrected Airwallex facts) was merged into
+`feat/auth` *after* `feat/auth` itself had merged as PR #9, so `main`
+never got it: it still said "Local repository only. Do not add a remote
+or push" and sent from `onboarding@resend.dev`. Cherry-picked onto this
+branch first (`ec1dfa1`), its one conflict in this file resolved by
+keeping both sections. It reaches `main` with this branch.
+
+### What exists
+
+- **AGENTS.md** describes the two bounded contexts, commerce's safety
+  rules (no card data; three authorities kept apart; the merchant comes
+  from the credential; the merchant backend is the only machine caller;
+  treasury and commerce keys never interchangeable; outcomes are the
+  merchant's word), this phase's scope, and `commerce-phase-N` tags.
+- **`internal/commerce`**: the commerce domain - `MerchantID`,
+  `CustomerID`, `AgentID` (not treasury's `domain.AgentID`),
+  `ExternalID` (1-255 characters, trimmed, no spaces or control
+  characters, compared exactly), `Status` (active, disabled), and the
+  `Merchant`, `Customer` and `Agent` entities. The architecture guard
+  now also checks that it imports only the standard library and
+  `internal/domain`, that `commerceapp` imports no adapter, and that
+  treasury never imports commerce (each mutation-checked).
+- **`domain.PermManageIntegrations`**: owners and admins.
+- **`internal/commerce/commerceapp`**: create, list, get, disable and
+  enable integrations; rotate and revoke the one key each holds;
+  `AuthenticateMerchant`; register-or-resolve, list (filter by external
+  ID or status, cursor-paged, newest first), get, disable and enable for
+  customers and agents. `commercetest` holds the in-memory fakes.
+- **`internal/app`** exports what commerce shares rather than commerce
+  reaching into it: `Audit.Record`, `Cache.Lookup/Remember/Invalidate`,
+  a merchant actor on `Actor` and `AuditEvent`, and the commerce audit
+  action names (so the one audit log can filter by them).
+- **Postgres** (migration 0015): `merchant_integrations`,
+  `merchant_integration_keys`, `commerce_customers`, `commerce_agents`,
+  and the audit log's merchant actor columns.
+- **HTTP**: `/v1/merchant-integrations` (session) and `/v1/commerce`
+  (integration key only), in `api/openapi.yaml` (now 0.5.0) with a new
+  `merchantKey` security scheme; `409 registration_conflict`.
+- **`make e2e-commerce`** (`scripts/e2e-commerce.sh`): 10 steps, no
+  sandbox needed.
+
+### Design choices
+
+- **Integration keys** are `enq_mk_` + 256 random bits, stored as
+  SHA-256, shown once, like agent keys. `AuthenticateMerchant` refuses
+  any secret without the `enq_mk_` prefix before a lookup, so a treasury
+  key never even reaches the merchant store; treasury's `requireAgent`
+  refuses a merchant key because it is in no agent table.
+- **Disable vs revoke.** Disabling an integration stops its key but
+  keeps it, so enabling restores access; revoking the key leaves the
+  integration with no key until one is rotated in. Disabling and
+  revoking need no verified email (cutting access off is always
+  allowed); creating, enabling and rotating do (they grant access).
+- **Cache.** A merchant key is cached up to 60 s by hash, owned by
+  `merchant:<id>`; disable, rotate and revoke commit first, then bump
+  that owner. A race test (the store calls back mid-change) failed when
+  the order was swapped.
+- **Register-or-resolve.** A repeat with the same details returns the
+  same record (`200`; `201` the first time). A repeat with a different
+  email or name is `409 registration_conflict`: neither silently
+  ignored nor silently applied. Changing a customer's email (where
+  consent links will go) deserves its own, deliberate operation;
+  none exists yet.
+- **Scoping.** Every customer and agent read and write is scoped by
+  merchant and organisation. Two storefronts of one organisation are
+  separate namespaces. Every commerce row carries `(merchant_id,
+  org_id)` under a composite foreign key to the integration, so the two
+  can never disagree; external IDs are `UNIQUE (merchant_id,
+  external_id)`; one active key per integration.
+- **Concurrency.** Registering is one `INSERT ... ON CONFLICT DO
+  NOTHING RETURNING`, then a read on conflict: 12 concurrent
+  registrations of one external ID make one customer, and all 12 get it.
+  Key rotations lock the integration row: 8 concurrent rotations leave
+  exactly one working key.
+- **Personal data.** A customer's email is stored (consent links need
+  it) and returned to its merchant, but not written to the audit log;
+  the event carries the external ID.
+- **Not built from the design document's `MerchantIntegration`:**
+  `allowed_origins`. Commerce is server-to-server for now (the merchant
+  backend is the only caller), so there is no browser origin to allow.
+
+### Verified
+
+- `make test` offline and `make test-integration` at every commit.
+- Mutation checks, each caught: the cache cleared before the change;
+  the prefix refusal removed; disable without invalidating; the
+  registration conflict check removed; each architecture rule broken.
+  One was **not** caught at first: dropping the merchant condition from
+  the Postgres status update let a sibling storefront disable another's
+  customer while the use case still answered "not found" (it re-reads
+  through the caller's scope). The integration test now checks the
+  record itself is untouched, and catches it.
+- Live, against the Compose stack (Postgres, Temporal, Redis, Resend):
+  `make e2e-commerce`, all 10 steps, on this branch's API (on :8091;
+  the running `make api` and two `make worker`s, from older code, were
+  left alone - one of them sent the verification email). Redis held the
+  merchant keys by hash (`enq:pc:mik:*`) and the integration's owner
+  version was bumped by disable, rotate and revoke.
+
+### Not verified / open
+
+- **No dashboard view of a merchant's customers and agents**; only the
+  merchant's key can list them. Easy to add when the frontend needs it.
+- **No way to change a customer's email or an agent's name** (409 on a
+  differing repeat).
+- **No per-key rate limit** on merchant keys, as on agent keys.
+- Commerce requests are not recorded as attempts; the audit log covers
+  registrations and status changes only.
+- `make e2e` (treasury) and `make chaos` were not re-run: treasury code
+  is untouched apart from the audit actor columns, which
+  `make test-integration` covers.
+
+### Next: commerce phase 2
+
+Funding-method bindings: the merchant registers an opaque reference to a
+customer's saved PSP payment method; Enquoir stores its own binding ID
+and display details (brand, last four), never the PSP token.
