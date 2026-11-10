@@ -89,7 +89,7 @@ const auditTargetIntegration = "merchant_integration"
 // merchantOwner is the cache owner of everything cached for one
 // merchant integration: invalidating it ends every cached key at once.
 func merchantOwner(id commerce.MerchantID) string { return "merchant:" + string(id) }
-func merchantKeyKey(hash string) string          { return "mik:" + hash }
+func merchantKeyKey(hash string) string           { return "mik:" + hash }
 
 // CreateIntegration connects a new merchant and issues its key.
 type CreateIntegration struct {
