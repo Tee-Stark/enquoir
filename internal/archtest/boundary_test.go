@@ -74,10 +74,47 @@ func TestDomainImportsOnlyStandardLibrary(t *testing.T) {
 }
 
 func TestAppDoesNotImportAdapters(t *testing.T) {
-	for file, paths := range importsByFile(t, "../app") {
+	for _, dir := range []string{"../app", "../commerce/commerceapp"} {
+		for file, paths := range importsByFile(t, dir) {
+			for _, p := range paths {
+				if isAdapter(p) {
+					t.Errorf("%s imports %q: use cases must not depend on an adapter", file, p)
+				}
+			}
+		}
+	}
+}
+
+func isAdapter(p string) bool {
+	return strings.Contains(p, "/internal/adapters/") || strings.HasSuffix(p, "/internal/adapters")
+}
+
+// The commerce domain is a bounded context of its own: besides the
+// standard library it may use treasury's shared primitives
+// (internal/domain: organisations, email, names), and nothing else -
+// not its own use cases, not treasury's, not an adapter.
+func TestCommerceDomainImportsOnlyStandardLibraryAndDomain(t *testing.T) {
+	for file, paths := range importsByFile(t, "../commerce") {
+		if strings.Contains(filepath.ToSlash(file), "/commerceapp/") {
+			continue
+		}
 		for _, p := range paths {
-			if strings.Contains(p, "/internal/adapters/") || strings.HasSuffix(p, "/internal/adapters") {
-				t.Errorf("%s imports %q: internal/app must not depend on an adapter", file, p)
+			if !isStdlib(p) && p != "enquoir/internal/domain" {
+				t.Errorf("%s imports %q: internal/commerce may import only the standard library and internal/domain", file, p)
+			}
+		}
+	}
+}
+
+// Treasury does not know commerce exists: neither its domain nor its
+// use cases import the commerce context.
+func TestTreasuryDoesNotImportCommerce(t *testing.T) {
+	for _, dir := range []string{"../domain", "../app"} {
+		for file, paths := range importsByFile(t, dir) {
+			for _, p := range paths {
+				if strings.Contains(p, "/internal/commerce") {
+					t.Errorf("%s imports %q: treasury must not depend on commerce", file, p)
+				}
 			}
 		}
 	}
