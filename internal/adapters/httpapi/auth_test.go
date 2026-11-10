@@ -12,6 +12,8 @@ import (
 
 	"enquoir/internal/app"
 	"enquoir/internal/app/apptest"
+	"enquoir/internal/commerce/commerceapp"
+	"enquoir/internal/commerce/commerceapp/commercetest"
 	"enquoir/internal/domain"
 )
 
@@ -93,6 +95,24 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		Summary:           &app.GetSummary{Analytics: analytics, Clock: clock},
 		TimeSeries:        &app.GetTimeSeries{Analytics: analytics, Clock: clock},
 		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
+	}
+	integrations, customers, commerceAgents := commercetest.NewIntegrations(), commercetest.NewCustomers(), commercetest.NewAgents()
+	h.Commerce = CommerceUseCases{
+		CreateIntegration:    &commerceapp.CreateIntegration{Integrations: integrations, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
+		ListIntegrations:     &commerceapp.ListIntegrations{Integrations: integrations},
+		GetIntegration:       &commerceapp.GetIntegration{Integrations: integrations},
+		SetIntegrationStatus: &commerceapp.SetIntegrationStatus{Integrations: integrations, Clock: clock, Audit: audit},
+		RotateIntegrationKey: &commerceapp.RotateIntegrationKey{Integrations: integrations, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
+		RevokeIntegrationKey: &commerceapp.RevokeIntegrationKey{Integrations: integrations, Clock: clock, Audit: audit},
+		AuthenticateMerchant: &commerceapp.AuthenticateMerchant{Integrations: integrations, Clock: clock},
+		RegisterCustomer:     &commerceapp.RegisterCustomer{Customers: customers, IDs: ids, Clock: clock, Audit: audit},
+		ListCustomers:        &commerceapp.ListCustomers{Customers: customers},
+		GetCustomer:          &commerceapp.GetCustomer{Customers: customers},
+		SetCustomerStatus:    &commerceapp.SetCustomerStatus{Customers: customers, Clock: clock, Audit: audit},
+		RegisterAgent:        &commerceapp.RegisterAgent{Agents: commerceAgents, IDs: ids, Clock: clock, Audit: audit},
+		ListAgents:           &commerceapp.ListAgents{Agents: commerceAgents},
+		GetAgent:             &commerceapp.GetAgent{Agents: commerceAgents},
+		SetAgentStatus:       &commerceapp.SetAgentStatus{Agents: commerceAgents, Clock: clock, Audit: audit},
 	}
 	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments, accounts: accounts, mailer: mailer}
 }

@@ -9,33 +9,35 @@ import (
 	"time"
 
 	"enquoir/internal/app"
+	"enquoir/internal/commerce/commerceapp"
 	"enquoir/internal/domain"
 )
 
 // Problem codes: stable, machine-readable reasons a client can branch
 // on. The human-readable detail may change; these may not.
 const (
-	codeInvalidJSON      = "invalid_json"
-	codeValidationFailed = "validation_failed"
-	codeNotFound         = "not_found"
-	codeRailRejected     = "rail_rejected"
-	codeInternal         = "internal_error"
-	codeUnauthenticated  = "unauthenticated"
-	codeInvalidCreds     = "invalid_credentials"
-	codeEmailTaken       = "email_taken"
-	codePayeeUnknown     = "payee_unknown"
-	codeForbiddenOrigin  = "forbidden_origin"
-	codeNotImplemented   = "not_implemented"
-	codeBodyTooLarge     = "body_too_large"
-	codeForbidden        = "forbidden"
-	codeNoOrganisation   = "no_organisation"
-	codeEmailUnverified  = "email_unverified"
-	codeAlreadyVerified  = "already_verified"
-	codeTokenInvalid     = "token_invalid"
-	codeLastOwner        = "last_owner"
-	codeAlreadyMember    = "already_member"
-	codeRateLimited      = "rate_limited"
-	codeAccountLocked    = "account_locked"
+	codeInvalidJSON          = "invalid_json"
+	codeValidationFailed     = "validation_failed"
+	codeNotFound             = "not_found"
+	codeRailRejected         = "rail_rejected"
+	codeInternal             = "internal_error"
+	codeUnauthenticated      = "unauthenticated"
+	codeInvalidCreds         = "invalid_credentials"
+	codeEmailTaken           = "email_taken"
+	codePayeeUnknown         = "payee_unknown"
+	codeForbiddenOrigin      = "forbidden_origin"
+	codeNotImplemented       = "not_implemented"
+	codeBodyTooLarge         = "body_too_large"
+	codeForbidden            = "forbidden"
+	codeNoOrganisation       = "no_organisation"
+	codeEmailUnverified      = "email_unverified"
+	codeAlreadyVerified      = "already_verified"
+	codeTokenInvalid         = "token_invalid"
+	codeLastOwner            = "last_owner"
+	codeAlreadyMember        = "already_member"
+	codeRateLimited          = "rate_limited"
+	codeAccountLocked        = "account_locked"
+	codeRegistrationConflict = "registration_conflict"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.
@@ -101,6 +103,8 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 	case errors.Is(err, app.ErrPayeeUnknown):
 		writeProblem(w, http.StatusUnprocessableEntity, codePayeeUnknown,
 			"the payee is not a beneficiary this organisation registered; register it with POST /v1/beneficiaries first")
+	case errors.Is(err, commerceapp.ErrRegistrationConflict):
+		writeProblem(w, http.StatusConflict, codeRegistrationConflict, err.Error())
 	case errors.Is(err, app.ErrNotFound):
 		writeProblem(w, http.StatusNotFound, codeNotFound, "not found")
 	default:

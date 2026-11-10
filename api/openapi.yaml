@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Enquoir API
-  version: 0.4.0
+  version: 0.5.0
   summary: The safe control and observability layer for agentic finance.
   description: |
     Enquoir sits between an AI agent and a payment rail. The agent states an
@@ -13,7 +13,10 @@ info:
 
     **Authentication.** Agents send their API key as `Authorization: Bearer
     <key>` on the payment routes. The dashboard uses the `enquoir_session`
-    cookie set by sign-up and log-in. Dashboard frontends on another origin
+    cookie set by sign-up and log-in. A merchant's backend sends its
+    integration key (`enq_mk_...`) as `Authorization: Bearer <key>` on the
+    `/v1/commerce` routes. The two kinds of key are never interchangeable:
+    an agent key is refused on commerce routes, a merchant key everywhere else. Dashboard frontends on another origin
     must be listed in the server's `CORS_ALLOWED_ORIGINS`; a state-changing
     request a browser sends from any other origin is refused
     (`403 forbidden_origin`).
@@ -60,6 +63,31 @@ tags:
       (`tz`, default UTC). Calendar buckets follow the caller's zone: days
       start at local midnight, also across daylight-saving changes. Money is
       never added up across currencies. Dashboard-only.
+  - name: Merchant integrations
+    description: |
+      Merchant-delegated commerce, from the dashboard: connect a merchant
+      (one integration per storefront) and manage its key. The key is how
+      the merchant's backend authenticates on `/v1/commerce`. Owners and
+      admins manage integrations; issuing or re-enabling a key needs a
+      verified email. Any member may look.
+  - name: Commerce
+    description: |
+      Merchant-delegated commerce, from the merchant's backend, with its
+      integration key. A merchant registers the customers whose purchases
+      its AI shopping agents will propose, and the agents themselves.
+      Everything is scoped to the merchant the key belongs to - never to
+      one named in a request; another merchant's record is `404`, even
+      another storefront of the same organisation. External IDs are the
+      merchant's own references, unique per merchant. Agents have no
+      credentials of their own: the merchant names them.
+
+      Registering is register-or-resolve: repeating it returns the same
+      record (`200`); the first time, `201`. Repeating it with different
+      details is `409 registration_conflict`.
+
+      Enquoir never receives card data or PSP secrets. Customer spending
+      authority (mandates) is granted only by the customer, through
+      Enquoir's own consent flow - not yet built.
   - name: Meta
     description: Health and the API contract itself.
 
@@ -889,8 +917,13 @@ paths:
         auth.password_changed, auth.sessions_revoked, member.invited,
         invitation.revoked, invitation.accepted, member.role_changed,
         member.removed, member.left, agent.created, agent.key_rotated,
-        agent.revoked, payee.registered. Payments have their own history
-        (GET /v1/payments/{key}).
+        agent.revoked, payee.registered, merchant_integration.created,
+        merchant_integration.disabled, merchant_integration.enabled,
+        merchant_integration.key_rotated, merchant_integration.key_revoked,
+        commerce.customer.registered, commerce.customer.disabled,
+        commerce.customer.enabled, commerce.agent.registered,
+        commerce.agent.disabled, commerce.agent.enabled. Payments have
+        their own history (GET /v1/payments/{key}).
       security:
         - session: []
       parameters:
@@ -1067,6 +1100,506 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations:
+    post:
+      tags: [Merchant integrations]
+      operationId: createMerchantIntegration
+      summary: Connect a merchant and issue its key
+      description: The response is the only time the key's secret is shown. Store it then.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                  description: The merchant or storefront, as people will recognise it.
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedMerchantIntegration"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Merchant integrations]
+      operationId: listMerchantIntegrations
+      summary: List the organisation's merchant integrations
+      description: Oldest first, disabled ones included.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The integrations.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MerchantIntegration"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    get:
+      tags: [Merchant integrations]
+      operationId: getMerchantIntegration
+      summary: Get a merchant integration
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The integration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MerchantIntegration"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}/disable:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    post:
+      tags: [Merchant integrations]
+      operationId: disableMerchantIntegration
+      summary: Disable a merchant integration
+      description: |
+        Its key stops working at once. Its customers, agents and history
+        stay. Disabling a disabled integration succeeds and changes nothing.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: Disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MerchantIntegration"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}/enable:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    post:
+      tags: [Merchant integrations]
+      operationId: enableMerchantIntegration
+      summary: Enable a disabled merchant integration
+      description: Its active key, if it has one, works again. Needs a verified email.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: Enabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MerchantIntegration"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}/rotate-key:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    post:
+      tags: [Merchant integrations]
+      operationId: rotateMerchantIntegrationKey
+      summary: Issue a new integration key
+      description: |
+        Replaces the active key, which stops working at once, or issues one
+        to an integration whose key was revoked. The new secret is shown
+        only in this response. Needs a verified email.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: Issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedMerchantIntegration"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}/key:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    delete:
+      tags: [Merchant integrations]
+      operationId: revokeMerchantIntegrationKey
+      summary: Revoke the integration key
+      description: |
+        The key stops working at once and no new one is issued: the merchant
+        is cut off until a key is rotated in. Revoking when there is no key
+        succeeds.
+      security:
+        - session: []
+      responses:
+        "204":
+          description: Revoked.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/customers:
+    post:
+      tags: [Commerce]
+      operationId: registerCommerceCustomer
+      summary: Register a customer, or resolve one already registered
+      description: |
+        The email is where Enquoir will send the customer consent links, so
+        that spending authority never rests on the merchant's word. It is not
+        written to the audit log.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [external_id, email]
+              properties:
+                external_id:
+                  $ref: "#/components/schemas/ExternalID"
+                email:
+                  type: string
+                  format: email
+      responses:
+        "201":
+          description: Registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceCustomer"
+        "200":
+          description: "Already registered with these details: the same customer."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceCustomer"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/RegistrationConflict"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Commerce]
+      operationId: listCommerceCustomers
+      summary: List the merchant's customers
+      description: Newest first.
+      security:
+        - merchantKey: []
+      parameters:
+        - $ref: "#/components/parameters/ExternalIDFilter"
+        - $ref: "#/components/parameters/CommerceStatusFilter"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of customers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CommerceCustomer"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/customers/{id}:
+    parameters:
+      - $ref: "#/components/parameters/CommerceCustomerID"
+    get:
+      tags: [Commerce]
+      operationId: getCommerceCustomer
+      summary: Get a customer
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: The customer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceCustomer"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/customers/{id}/disable:
+    parameters:
+      - $ref: "#/components/parameters/CommerceCustomerID"
+    post:
+      tags: [Commerce]
+      operationId: disableCommerceCustomer
+      summary: Disable a customer
+      description: Disabling a disabled customer succeeds and changes nothing.
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: Disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceCustomer"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/customers/{id}/enable:
+    parameters:
+      - $ref: "#/components/parameters/CommerceCustomerID"
+    post:
+      tags: [Commerce]
+      operationId: enableCommerceCustomer
+      summary: Enable a customer
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: Enabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceCustomer"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/agents:
+    post:
+      tags: [Commerce]
+      operationId: registerCommerceAgent
+      summary: Register an AI agent, or resolve one already registered
+      description: |
+        An agent the merchant runs - a shopping assistant, say. It holds no
+        credential; the merchant names it in later requests.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [external_id, name]
+              properties:
+                external_id:
+                  $ref: "#/components/schemas/ExternalID"
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+      responses:
+        "201":
+          description: Registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceAgent"
+        "200":
+          description: "Already registered with these details: the same agent."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceAgent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/RegistrationConflict"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Commerce]
+      operationId: listCommerceAgents
+      summary: List the merchant's agents
+      description: Newest first.
+      security:
+        - merchantKey: []
+      parameters:
+        - $ref: "#/components/parameters/ExternalIDFilter"
+        - $ref: "#/components/parameters/CommerceStatusFilter"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of agents.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CommerceAgent"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/agents/{id}:
+    parameters:
+      - $ref: "#/components/parameters/CommerceAgentID"
+    get:
+      tags: [Commerce]
+      operationId: getCommerceAgent
+      summary: Get an agent
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: The agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceAgent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/agents/{id}/disable:
+    parameters:
+      - $ref: "#/components/parameters/CommerceAgentID"
+    post:
+      tags: [Commerce]
+      operationId: disableCommerceAgent
+      summary: Disable an agent
+      description: Disabling a disabled agent succeeds and changes nothing.
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: Disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceAgent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/agents/{id}/enable:
+    parameters:
+      - $ref: "#/components/parameters/CommerceAgentID"
+    post:
+      tags: [Commerce]
+      operationId: enableCommerceAgent
+      summary: Enable an agent
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: Enabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceAgent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1515,6 +2048,13 @@ components:
       type: http
       scheme: bearer
       description: An agent's API key, shown once at creation or rotation.
+    merchantKey:
+      type: http
+      scheme: bearer
+      description: |
+        A merchant integration key (`enq_mk_...`), shown once when the
+        integration is created or its key rotated. Only accepted on
+        `/v1/commerce`.
 
   headers:
     SetSessionCookie:
@@ -1558,6 +2098,35 @@ components:
       description: The `next_cursor` of the previous page.
       schema:
         type: string
+    IntegrationID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    CommerceCustomerID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    CommerceAgentID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    ExternalIDFilter:
+      name: external_id
+      in: query
+      description: Only the record with this external ID.
+      schema:
+        type: string
+    CommerceStatusFilter:
+      name: status
+      in: query
+      schema:
+        $ref: "#/components/schemas/CommerceStatus"
     AgentID:
       name: id
       in: path
@@ -1597,7 +2166,8 @@ components:
         it from an origin not in CORS_ALLOWED_ORIGINS (`forbidden_origin`),
         on log-in, the account belongs to no organisation (`no_organisation`),
         or the action needs a verified email address (`email_unverified`:
-        creating or rotating agent keys, inviting, registering payees).
+        creating or rotating agent keys, inviting, registering payees,
+        creating, enabling or re-keying merchant integrations).
       content:
         application/problem+json:
           schema:
@@ -1617,6 +2187,15 @@ components:
         Retry-After:
           schema:
             type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    RegistrationConflict:
+      description: |
+        The merchant already registered this external ID with different
+        details (`registration_conflict`). Repeating a registration is safe;
+        changing one is not done by repeating it.
       content:
         application/problem+json:
           schema:
@@ -1682,6 +2261,7 @@ components:
             - already_member
             - rate_limited
             - account_locked
+            - registration_conflict
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.
@@ -2261,6 +2841,114 @@ components:
               type: string
               format: date-time
 
+    CommerceStatus:
+      type: string
+      description: Whether a merchant integration, customer or agent may take part in commerce.
+      enum: [active, disabled]
+
+    ExternalID:
+      type: string
+      minLength: 1
+      maxLength: 255
+      description: |
+        The merchant's own reference, unique per merchant and compared
+        exactly. Trimmed; no spaces or control characters inside.
+
+    MerchantIntegration:
+      type: object
+      required: [id, name, status, created_at, disabled_at, key]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          $ref: "#/components/schemas/CommerceStatus"
+        created_at:
+          type: string
+          format: date-time
+        disabled_at:
+          type: [string, "null"]
+          format: date-time
+        key:
+          description: The active key, without its secret; null once revoked.
+          oneOf:
+            - type: object
+              required: [id, prefix, created_at, last_used_at]
+              properties:
+                id:
+                  type: string
+                prefix:
+                  type: string
+                  description: The first 12 characters of the key, to recognise it by.
+                created_at:
+                  type: string
+                  format: date-time
+                last_used_at:
+                  type: [string, "null"]
+                  format: date-time
+            - type: "null"
+
+    IssuedMerchantIntegration:
+      type: object
+      required: [integration, key]
+      properties:
+        integration:
+          $ref: "#/components/schemas/MerchantIntegration"
+        key:
+          type: object
+          required: [id, prefix, secret, created_at]
+          properties:
+            id:
+              type: string
+            prefix:
+              type: string
+            secret:
+              type: string
+              description: The integration key. Shown only in this response; Enquoir stores only its hash.
+            created_at:
+              type: string
+              format: date-time
+
+    CommerceCustomer:
+      type: object
+      required: [id, external_id, email, status, created_at, disabled_at]
+      properties:
+        id:
+          type: string
+        external_id:
+          $ref: "#/components/schemas/ExternalID"
+        email:
+          type: string
+          description: Lower-cased. Where consent links will go.
+        status:
+          $ref: "#/components/schemas/CommerceStatus"
+        created_at:
+          type: string
+          format: date-time
+        disabled_at:
+          type: [string, "null"]
+          format: date-time
+
+    CommerceAgent:
+      type: object
+      required: [id, external_id, name, status, created_at, disabled_at]
+      properties:
+        id:
+          type: string
+        external_id:
+          $ref: "#/components/schemas/ExternalID"
+        name:
+          type: string
+        status:
+          $ref: "#/components/schemas/CommerceStatus"
+        created_at:
+          type: string
+          format: date-time
+        disabled_at:
+          type: [string, "null"]
+          format: date-time
+
     AuditEvent:
       type: object
       required: [id, action, actor, target, details, ip, at]
@@ -2270,14 +2958,16 @@ components:
         action:
           type: string
         actor:
-          description: Who did it - a member, or an agent acting with its key.
+          description: |
+            Who did it - a member, an agent acting with its key, or a merchant
+            integration acting with its key.
           oneOf:
             - type: object
               required: [type, id, email, name]
               properties:
                 type:
                   type: string
-                  enum: [user, agent]
+                  enum: [user, agent, merchant_integration]
                 id:
                   type: string
                 email:
@@ -2285,7 +2975,7 @@ components:
                   description: For a user.
                 name:
                   type: [string, "null"]
-                  description: For an agent.
+                  description: For an agent or a merchant integration.
             - type: "null"
         target:
           description: What it was done to.
@@ -2295,7 +2985,7 @@ components:
               properties:
                 type:
                   type: string
-                  enum: [user, agent, invitation, payee]
+                  enum: [user, agent, invitation, payee, merchant_integration, commerce_customer, commerce_agent]
                 id:
                   type: string
             - type: "null"

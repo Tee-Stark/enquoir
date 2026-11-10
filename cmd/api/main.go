@@ -16,6 +16,7 @@ import (
 	// zone database of its own.
 	_ "time/tzdata"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 	"go.temporal.io/sdk/client"
@@ -26,6 +27,7 @@ import (
 	"enquoir/internal/adapters/postgres"
 	"enquoir/internal/adapters/redisstore"
 	"enquoir/internal/app"
+	"enquoir/internal/commerce/commerceapp"
 	enquoirworkflow "enquoir/internal/workflow"
 )
 
@@ -171,6 +173,8 @@ func main() {
 		Summary:           &app.GetSummary{Analytics: analytics, Clock: sysClock},
 		TimeSeries:        &app.GetTimeSeries{Analytics: analytics, Clock: sysClock},
 		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
+
+		Commerce: commerceUseCases(pool, ids, secrets, sysClock, cache, audit),
 	}
 
 	srv := httpapi.NewServer(httpAddr, httpapi.NewRouter(handler))
@@ -253,5 +257,32 @@ func everyMinute(report func(error)) func(error) {
 		if due {
 			report(err)
 		}
+	}
+}
+
+// commerceUseCases wires merchant-delegated commerce: the dashboard's
+// merchant integrations and the merchant's /v1/commerce routes.
+func commerceUseCases(pool *pgxpool.Pool, ids app.IDGenerator, secrets app.SecretGenerator, clock app.Clock, cache *app.Cache, audit *app.Audit) httpapi.CommerceUseCases {
+	integrations := postgres.NewMerchantIntegrationStore(pool)
+	customers := postgres.NewCommerceCustomerStore(pool)
+	agents := postgres.NewCommerceAgentStore(pool)
+	return httpapi.CommerceUseCases{
+		CreateIntegration:    &commerceapp.CreateIntegration{Integrations: integrations, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
+		ListIntegrations:     &commerceapp.ListIntegrations{Integrations: integrations},
+		GetIntegration:       &commerceapp.GetIntegration{Integrations: integrations},
+		SetIntegrationStatus: &commerceapp.SetIntegrationStatus{Integrations: integrations, Clock: clock, Cache: cache, Audit: audit},
+		RotateIntegrationKey: &commerceapp.RotateIntegrationKey{Integrations: integrations, IDs: ids, Secrets: secrets, Clock: clock, Cache: cache, Audit: audit},
+		RevokeIntegrationKey: &commerceapp.RevokeIntegrationKey{Integrations: integrations, Clock: clock, Cache: cache, Audit: audit},
+		AuthenticateMerchant: &commerceapp.AuthenticateMerchant{Integrations: integrations, Clock: clock, Cache: cache},
+
+		RegisterCustomer:  &commerceapp.RegisterCustomer{Customers: customers, IDs: ids, Clock: clock, Audit: audit},
+		ListCustomers:     &commerceapp.ListCustomers{Customers: customers},
+		GetCustomer:       &commerceapp.GetCustomer{Customers: customers},
+		SetCustomerStatus: &commerceapp.SetCustomerStatus{Customers: customers, Clock: clock, Audit: audit},
+
+		RegisterAgent:  &commerceapp.RegisterAgent{Agents: agents, IDs: ids, Clock: clock, Audit: audit},
+		ListAgents:     &commerceapp.ListAgents{Agents: agents},
+		GetAgent:       &commerceapp.GetAgent{Agents: agents},
+		SetAgentStatus: &commerceapp.SetAgentStatus{Agents: agents, Clock: clock, Audit: audit},
 	}
 }

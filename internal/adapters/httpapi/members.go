@@ -193,6 +193,8 @@ func (h *Handler) serveAudit(w http.ResponseWriter, r *http.Request, list func(a
 			d.Details = map[string]string{}
 		}
 		switch {
+		case e.ActorMerchant != "":
+			d.Actor = &refEmailDTO{Type: "merchant_integration", ID: e.ActorMerchant, Name: optional(e.MerchantName)}
 		case e.ActorAgent != "":
 			d.Actor = &refEmailDTO{Type: "agent", ID: string(e.ActorAgent), Name: optional(e.AgentName)}
 		case e.ActorUserID != "":

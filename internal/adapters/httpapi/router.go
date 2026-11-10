@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"enquoir/internal/app"
+	"enquoir/internal/commerce"
 	"enquoir/internal/domain"
 )
 
@@ -62,6 +63,8 @@ type Handler struct {
 	ReplayPayment     *app.ReplayPayment
 	Summary           *app.GetSummary
 	TimeSeries        *app.GetTimeSeries
+
+	Commerce CommerceUseCases
 }
 
 func NewRouter(h *Handler) chi.Router {
@@ -79,6 +82,22 @@ func NewRouter(h *Handler) chi.Router {
 	// Agents register payees with their key; members from the
 	// dashboard, as operator or above with a verified email.
 	r.With(h.agentOrMember(domain.PermWrite)).Post("/v1/beneficiaries", h.registerBeneficiary)
+
+	// Merchant-delegated commerce: the merchant's backend, with its
+	// integration key. The merchant is always the key's.
+	r.Route("/v1/commerce", func(r chi.Router) {
+		r.Use(h.requireMerchant)
+		r.Post("/customers", h.registerCustomer)
+		r.Get("/customers", h.listCustomers)
+		r.Get("/customers/{id}", h.getCustomer)
+		r.Post("/customers/{id}/disable", h.setCustomerStatus(commerce.Disabled))
+		r.Post("/customers/{id}/enable", h.setCustomerStatus(commerce.Active))
+		r.Post("/agents", h.registerCommerceAgent)
+		r.Get("/agents", h.listCommerceAgents)
+		r.Get("/agents/{id}", h.getCommerceAgent)
+		r.Post("/agents/{id}/disable", h.setCommerceAgentStatus(commerce.Disabled))
+		r.Post("/agents/{id}/enable", h.setCommerceAgentStatus(commerce.Active))
+	})
 
 	r.With(h.limitIP(app.RuleSignUpPerIP)).Post("/v1/auth/signup", h.signUp)
 	r.With(h.limitIP(app.RuleLoginPerIP)).Post("/v1/auth/login", h.logIn)
@@ -133,6 +152,18 @@ func NewRouter(h *Handler) chi.Router {
 		r.With(manage).Delete("/v1/invitations/{id}", h.revokeInvitation)
 
 		r.With(h.allow(domain.PermViewAuditLog)).Get("/v1/audit-log", h.listAuditLog)
+
+		// Connecting merchants issues credentials: owners and admins,
+		// verified. Disabling or revoking needs no verification - cutting
+		// access off is always allowed.
+		integrations := h.allow(domain.PermManageIntegrations)
+		r.With(integrations, verified).Post("/v1/merchant-integrations", h.createIntegration)
+		r.With(read).Get("/v1/merchant-integrations", h.listIntegrations)
+		r.With(read).Get("/v1/merchant-integrations/{id}", h.getIntegration)
+		r.With(integrations).Post("/v1/merchant-integrations/{id}/disable", h.setIntegrationStatus(commerce.Disabled))
+		r.With(integrations, verified).Post("/v1/merchant-integrations/{id}/enable", h.setIntegrationStatus(commerce.Active))
+		r.With(integrations, verified).Post("/v1/merchant-integrations/{id}/rotate-key", h.rotateIntegrationKey)
+		r.With(integrations).Delete("/v1/merchant-integrations/{id}/key", h.revokeIntegrationKey)
 	})
 	return r
 }
