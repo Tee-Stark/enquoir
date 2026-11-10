@@ -165,3 +165,26 @@ func TestMigration0009_BackfillsOwnersAndSessionIDs(t *testing.T) {
 		t.Errorf("existing session = %+v, %v; want it kept, with an ID", sess, err)
 	}
 }
+
+// The API and the worker - and every replica of each - run migrations
+// at start-up, and a platform may start them all at once.
+func TestMigrate_ConcurrentStartsAllSucceed(t *testing.T) {
+	ctx := context.Background()
+	pool := poolInFreshSchema(t)
+	const n = 8
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() { errs <- Migrate(ctx, pool) }()
+	}
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("a concurrent start failed: %v", err)
+		}
+	}
+	var applied int
+	pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied)
+	entries, _ := migrationsFS.ReadDir("migrations")
+	if applied != len(entries) {
+		t.Errorf("%d migrations recorded, want %d", applied, len(entries))
+	}
+}
