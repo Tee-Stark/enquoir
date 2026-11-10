@@ -1,0 +1,338 @@
+//go:build integration
+
+package postgres
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"testing"
+
+	"enquoir/internal/adapters/credentials"
+	"enquoir/internal/app"
+	"enquoir/internal/commerce"
+	"enquoir/internal/commerce/commerceapp"
+	"enquoir/internal/domain"
+)
+
+type commerceUseCases struct {
+	create *commerceapp.CreateIntegration
+	status *commerceapp.SetIntegrationStatus
+	rotate *commerceapp.RotateIntegrationKey
+	revoke *commerceapp.RevokeIntegrationKey
+	auth   *commerceapp.AuthenticateMerchant
+
+	registerCustomer *commerceapp.RegisterCustomer
+	customerStatus   *commerceapp.SetCustomerStatus
+	listCustomers    *commerceapp.ListCustomers
+	registerAgent    *commerceapp.RegisterAgent
+	agentStatus      *commerceapp.SetAgentStatus
+}
+
+func newCommerceUseCases(t *testing.T) (*commerceUseCases, *MerchantIntegrationStore, *AuditLog) {
+	pool := testPool(t)
+	store, customers, agents := NewMerchantIntegrationStore(pool), NewCommerceCustomerStore(pool), NewCommerceAgentStore(pool)
+	log := NewAuditLog(pool)
+	clock, ids, secrets := realClock{}, credentials.RandomIDs{}, credentials.RandomSecrets{}
+	audit := &app.Audit{Log: log, IDs: ids, Clock: clock}
+	return &commerceUseCases{
+		create: &commerceapp.CreateIntegration{Integrations: store, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
+		status: &commerceapp.SetIntegrationStatus{Integrations: store, Clock: clock, Audit: audit},
+		rotate: &commerceapp.RotateIntegrationKey{Integrations: store, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
+		revoke: &commerceapp.RevokeIntegrationKey{Integrations: store, Clock: clock, Audit: audit},
+		auth:   &commerceapp.AuthenticateMerchant{Integrations: store, Clock: clock},
+
+		registerCustomer: &commerceapp.RegisterCustomer{Customers: customers, IDs: ids, Clock: clock, Audit: audit},
+		customerStatus:   &commerceapp.SetCustomerStatus{Customers: customers, Clock: clock, Audit: audit},
+		listCustomers:    &commerceapp.ListCustomers{Customers: customers},
+		registerAgent:    &commerceapp.RegisterAgent{Agents: agents, IDs: ids, Clock: clock, Audit: audit},
+		agentStatus:      &commerceapp.SetAgentStatus{Agents: agents, Clock: clock, Audit: audit},
+	}, store, log
+}
+
+// newMerchant connects a merchant for a fresh organisation and returns
+// its principal and key.
+func (u *commerceUseCases) newMerchant(t *testing.T, accounts *AccountStore) (commerceapp.MerchantPrincipal, string) {
+	t.Helper()
+	org, _ := newTestOrg(t, accounts)
+	return u.newMerchantIn(t, org.ID)
+}
+
+func (u *commerceUseCases) newMerchantIn(t *testing.T, org domain.OrgID) (commerceapp.MerchantPrincipal, string) {
+	t.Helper()
+	issued, err := u.create.Run(context.Background(), org, "Shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := u.auth.Run(context.Background(), issued.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p, issued.Secret
+}
+
+func TestMerchantIntegrationStore_KeysStatusAndScoping(t *testing.T) {
+	ctx := context.Background()
+	u, store, _ := newCommerceUseCases(t)
+	accounts := NewAccountStore(testPool(t))
+	orgA, _ := newTestOrg(t, accounts)
+	orgB, _ := newTestOrg(t, accounts)
+
+	issued, err := u.create.Run(ctx, orgA.ID, "Acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := issued.Integration.ID
+	p, err := u.auth.Run(ctx, issued.Secret)
+	if err != nil || p.MerchantID != id || p.OrgID != orgA.ID || p.MerchantName != "Acme" {
+		t.Fatalf("auth = %+v, %v", p, err)
+	}
+	got, _ := store.GetIntegration(ctx, orgA.ID, id)
+	if got.Key == nil || got.Key.LastUsedAt == nil || got.Key.Prefix != issued.Secret[:12] || got.Status != commerce.Active {
+		t.Errorf("after auth = %+v key %+v", got.Merchant, got.Key)
+	}
+
+	// Another organisation can neither see nor change it.
+	if _, err := store.GetIntegration(ctx, orgB.ID, id); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("get across orgs: %v", err)
+	}
+	if list, _ := store.ListIntegrations(ctx, orgB.ID); len(list) != 0 {
+		t.Errorf("org B lists %d integrations", len(list))
+	}
+	if _, err := u.status.Run(ctx, orgB.ID, id, commerce.Disabled); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("disable across orgs: %v", err)
+	}
+	if _, err := u.rotate.Run(ctx, orgB.ID, id); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("rotate across orgs: %v", err)
+	}
+	if err := u.revoke.Run(ctx, orgB.ID, id); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("revoke across orgs: %v", err)
+	}
+
+	if _, err := u.auth.Run(ctx, issued.Secret); err != nil {
+		t.Errorf("the key after another organisation's attempts: %v; want it untouched", err)
+	}
+
+	// Disabled, the key is refused; enabled, it works again.
+	if got, err := u.status.Run(ctx, orgA.ID, id, commerce.Disabled); err != nil || got.DisabledAt == nil {
+		t.Fatalf("disable: %+v, %v", got, err)
+	}
+	if _, err := u.auth.Run(ctx, issued.Secret); !errors.Is(err, app.ErrUnauthenticated) {
+		t.Errorf("disabled integration's key: %v", err)
+	}
+	if got, err := u.status.Run(ctx, orgA.ID, id, commerce.Active); err != nil || got.DisabledAt != nil {
+		t.Fatalf("enable: %+v, %v", got, err)
+	}
+	if _, err := u.auth.Run(ctx, issued.Secret); err != nil {
+		t.Errorf("re-enabled integration's key: %v", err)
+	}
+
+	rotated, err := u.rotate.Run(ctx, orgA.ID, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.auth.Run(ctx, issued.Secret); !errors.Is(err, app.ErrUnauthenticated) {
+		t.Errorf("old key after rotation: %v", err)
+	}
+	if err := u.revoke.Run(ctx, orgA.ID, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.auth.Run(ctx, rotated.Secret); !errors.Is(err, app.ErrUnauthenticated) {
+		t.Errorf("revoked key: %v", err)
+	}
+	if got, _ := store.GetIntegration(ctx, orgA.ID, id); got.Key != nil {
+		t.Errorf("after revoking, key = %+v", got.Key)
+	}
+	if revoked, err := store.RevokeKey(ctx, orgA.ID, id, realClock{}.Now()); err != nil || revoked {
+		t.Errorf("revoking with no key: %v, %v; want nothing to revoke", revoked, err)
+	}
+}
+
+// Concurrent rotations of one integration leave exactly one active key.
+func TestMerchantIntegrationStore_ConcurrentRotationsLeaveOneKey(t *testing.T) {
+	ctx := context.Background()
+	u, store, _ := newCommerceUseCases(t)
+	org, _ := newTestOrg(t, NewAccountStore(testPool(t)))
+	issued, _ := u.create.Run(ctx, org.ID, "Acme")
+
+	var wg sync.WaitGroup
+	secrets := make([]string, 8)
+	for i := range secrets {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, err := u.rotate.Run(ctx, org.ID, issued.Integration.ID)
+			if err != nil {
+				t.Errorf("rotation %d: %v", i, err)
+				return
+			}
+			secrets[i] = r.Secret
+		}()
+	}
+	wg.Wait()
+	working := 0
+	for _, s := range append(secrets, issued.Secret) {
+		if _, err := u.auth.Run(ctx, s); err == nil {
+			working++
+		}
+	}
+	got, _ := store.GetIntegration(ctx, org.ID, issued.Integration.ID)
+	if working != 1 || got.Key == nil {
+		t.Errorf("%d keys work after concurrent rotations, want exactly 1", working)
+	}
+}
+
+func TestCommerceDirectory_RegisterOrResolveIsScopedToTheMerchant(t *testing.T) {
+	ctx := context.Background()
+	u, _, _ := newCommerceUseCases(t)
+	accounts := NewAccountStore(testPool(t))
+	orgA, _ := newTestOrg(t, accounts)
+	orgB, _ := newTestOrg(t, accounts)
+	a1, _ := u.newMerchantIn(t, orgA.ID)
+	a2, _ := u.newMerchantIn(t, orgA.ID)
+	b, _ := u.newMerchantIn(t, orgB.ID)
+
+	first, created, err := u.registerCustomer.Run(ctx, a1, "cust_42", "Ada@Example.com")
+	if err != nil || !created || first.Email != "ada@example.com" {
+		t.Fatalf("register: %+v %v %v", first, created, err)
+	}
+	again, created, err := u.registerCustomer.Run(ctx, a1, "cust_42", "ada@example.com")
+	if err != nil || created || again.ID != first.ID || !again.CreatedAt.Equal(first.CreatedAt) {
+		t.Errorf("repeat: %+v %v %v; want the same record", again, created, err)
+	}
+	if _, _, err := u.registerCustomer.Run(ctx, a1, "cust_42", "eve@example.com"); !errors.Is(err, commerceapp.ErrRegistrationConflict) {
+		t.Errorf("different email: %v", err)
+	}
+	for _, other := range []commerceapp.MerchantPrincipal{a2, b} {
+		c, created, err := u.registerCustomer.Run(ctx, other, "cust_42", "ada@example.com")
+		if err != nil || !created || c.ID == first.ID {
+			t.Errorf("same external ID under %s: %+v %v %v; want a separate record", other.MerchantID, c, created, err)
+		}
+		if _, err := u.customerStatus.Run(ctx, other, first.ID, commerce.Disabled); !errors.Is(err, app.ErrNotFound) {
+			t.Errorf("%s disabling A1's customer: %v", other.MerchantID, err)
+		}
+	}
+	// Not just reported as not found: actually untouched.
+	if got, err := NewCommerceCustomerStore(testPool(t)).GetCustomer(ctx, a1.Scope(), first.ID); err != nil || got.Status != commerce.Active {
+		t.Errorf("A1's customer after the others' attempts: %+v, %v; want it still active", got, err)
+	}
+
+	agent, created, err := u.registerAgent.Run(ctx, a1, "assistant", "Shopping assistant")
+	if err != nil || !created {
+		t.Fatal(err)
+	}
+	if got, err := u.agentStatus.Run(ctx, a1, agent.ID, commerce.Disabled); err != nil || got.Status != commerce.Disabled || got.DisabledAt == nil {
+		t.Errorf("disable agent: %+v, %v", got, err)
+	}
+	if got, err := u.agentStatus.Run(ctx, a1, agent.ID, commerce.Disabled); err != nil || got.Status != commerce.Disabled {
+		t.Errorf("disabling again: %+v, %v", got, err)
+	}
+	if _, err := u.agentStatus.Run(ctx, b, agent.ID, commerce.Active); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("another org's merchant enabling the agent: %v", err)
+	}
+	if _, err := u.agentStatus.Run(ctx, a2, agent.ID, commerce.Active); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("a sibling storefront enabling the agent: %v", err)
+	}
+	if got, _ := NewCommerceAgentStore(testPool(t)).GetAgent(ctx, a1.Scope(), agent.ID); got.Status != commerce.Disabled {
+		t.Errorf("A1's agent after the others' attempts: %+v; want it still disabled", got)
+	}
+}
+
+// Many concurrent registrations of one external ID make one record,
+// and every caller gets it back.
+func TestCommerceDirectory_ConcurrentRegistrationsMakeOneCustomer(t *testing.T) {
+	ctx := context.Background()
+	u, _, _ := newCommerceUseCases(t)
+	m, _ := u.newMerchant(t, NewAccountStore(testPool(t)))
+
+	var wg sync.WaitGroup
+	ids := make([]commerce.CustomerID, 12)
+	created := make([]bool, len(ids))
+	for i := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c, made, err := u.registerCustomer.Run(ctx, m, "cust_race", "race@example.com")
+			if err != nil {
+				t.Errorf("registration %d: %v", i, err)
+				return
+			}
+			ids[i], created[i] = c.ID, made
+		}()
+	}
+	wg.Wait()
+	made := 0
+	for i := range ids {
+		if ids[i] != ids[0] {
+			t.Errorf("registration %d got %s, want %s", i, ids[i], ids[0])
+		}
+		if created[i] {
+			made++
+		}
+	}
+	if made != 1 {
+		t.Errorf("%d registrations report creating the customer, want 1", made)
+	}
+}
+
+func TestCommerceDirectory_ListsPagesAndFilters(t *testing.T) {
+	ctx := context.Background()
+	u, _, _ := newCommerceUseCases(t)
+	m, _ := u.newMerchant(t, NewAccountStore(testPool(t)))
+	var made []commerce.Customer
+	for i := range 5 {
+		c, _, err := u.registerCustomer.Run(ctx, m, fmt.Sprintf("c%d", i), fmt.Sprintf("c%d@example.com", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		made = append(made, c)
+	}
+	u.customerStatus.Run(ctx, m, made[2].ID, commerce.Disabled)
+
+	var seen []commerce.CustomerID
+	cursor := ""
+	for range 5 {
+		page, err := u.listCustomers.Run(ctx, m, commerceapp.ListFilter{Limit: 2, Cursor: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range page.Customers {
+			seen = append(seen, c.ID)
+		}
+		if cursor = page.NextCursor; cursor == "" {
+			break
+		}
+	}
+	if len(seen) != 5 || seen[0] != made[4].ID || seen[4] != made[0].ID {
+		t.Errorf("paged = %v, want all five newest first", seen)
+	}
+	byExt, _ := u.listCustomers.Run(ctx, m, commerceapp.ListFilter{ExternalID: "c3"})
+	disabled, _ := u.listCustomers.Run(ctx, m, commerceapp.ListFilter{Status: commerce.Disabled})
+	if len(byExt.Customers) != 1 || byExt.Customers[0].ID != made[3].ID || len(disabled.Customers) != 1 || disabled.Customers[0].ID != made[2].ID {
+		t.Errorf("by external ID %+v; disabled %+v", byExt.Customers, disabled.Customers)
+	}
+	var verr *app.ValidationError
+	if _, err := u.listCustomers.Run(ctx, m, commerceapp.ListFilter{Cursor: "not-a-cursor"}); !errors.As(err, &verr) {
+		t.Errorf("bad cursor: %v, want a validation error", err)
+	}
+}
+
+// The audit log names the merchant that acted with its key.
+func TestAuditLog_NamesTheActingMerchant(t *testing.T) {
+	u, _, log := newCommerceUseCases(t)
+	m, _ := u.newMerchant(t, NewAccountStore(testPool(t)))
+	ctx := app.WithActor(context.Background(), app.Actor{MerchantID: string(m.MerchantID), MerchantName: m.MerchantName, IP: "203.0.113.9"})
+	c, _, err := u.registerCustomer.Run(ctx, m, "cust_audit", "audit@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := log.List(context.Background(), m.OrgID, app.AuditFilter{Action: app.AuditCommerceCustomerRegistered, Limit: 10})
+	if err != nil || len(page.Events) != 1 {
+		t.Fatalf("events = %+v, %v", page.Events, err)
+	}
+	e := page.Events[0]
+	if e.ActorMerchant != string(m.MerchantID) || e.MerchantName != "Shop" || e.TargetID != string(c.ID) || e.Details["external_id"] != "cust_audit" {
+		t.Errorf("event = %+v", e)
+	}
+}

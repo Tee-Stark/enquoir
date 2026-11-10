@@ -28,10 +28,11 @@ func (l *AuditLog) Record(ctx context.Context, e app.AuditEvent) error {
 		ua = ua[:300]
 	}
 	_, err = l.pool.Exec(ctx, `
-		INSERT INTO audit_events (id, org_id, actor_user_id, actor_email, actor_agent_id, actor_agent_name, action, target_type, target_id, details, ip, user_agent)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		INSERT INTO audit_events (id, org_id, actor_user_id, actor_email, actor_agent_id, actor_agent_name,
+			actor_merchant_id, actor_merchant_name, action, target_type, target_id, details, ip, user_agent)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 		e.ID, nullable(string(e.OrgID)), nullable(string(e.ActorUserID)), nullable(string(e.ActorEmail)),
-		nullable(string(e.ActorAgent)), nullable(e.AgentName), e.Action,
+		nullable(string(e.ActorAgent)), nullable(e.AgentName), nullable(e.ActorMerchant), nullable(e.MerchantName), e.Action,
 		nullable(e.TargetType), nullable(e.TargetID), details, nullable(e.IP), nullable(ua))
 	if err != nil {
 		return fmt.Errorf("recording audit event: %w", err)
@@ -74,7 +75,8 @@ func (l *AuditLog) list(ctx context.Context, w *where, f app.AuditFilter) (app.A
 	limit := w.next(f.Limit + 1)
 	rows, err := l.pool.Query(ctx, `
 		SELECT a.id, COALESCE(a.org_id, ''), COALESCE(a.actor_user_id, ''), COALESCE(a.actor_email, ''),
-		       COALESCE(a.actor_agent_id, ''), COALESCE(a.actor_agent_name, ''), a.action,
+		       COALESCE(a.actor_agent_id, ''), COALESCE(a.actor_agent_name, ''),
+		       COALESCE(a.actor_merchant_id, ''), COALESCE(a.actor_merchant_name, ''), a.action,
 		       COALESCE(a.target_type, ''), COALESCE(a.target_id, ''), a.details, COALESCE(a.ip, ''), COALESCE(a.user_agent, ''), a.at
 		FROM audit_events a WHERE `+w.sql()+` ORDER BY a.at DESC, a.id DESC LIMIT `+limit, w.args...)
 	if err != nil {
@@ -86,7 +88,7 @@ func (l *AuditLog) list(ctx context.Context, w *where, f app.AuditFilter) (app.A
 		var e app.AuditEvent
 		var orgID, actor, email, agent string
 		var details []byte
-		if err := rows.Scan(&e.ID, &orgID, &actor, &email, &agent, &e.AgentName, &e.Action, &e.TargetType, &e.TargetID, &details, &e.IP, &e.UserAgent, &e.At); err != nil {
+		if err := rows.Scan(&e.ID, &orgID, &actor, &email, &agent, &e.AgentName, &e.ActorMerchant, &e.MerchantName, &e.Action, &e.TargetType, &e.TargetID, &details, &e.IP, &e.UserAgent, &e.At); err != nil {
 			return app.AuditPage{}, err
 		}
 		e.OrgID, e.ActorUserID, e.ActorEmail, e.ActorAgent = domain.OrgID(orgID), domain.UserID(actor), domain.Email(email), domain.AgentID(agent)
