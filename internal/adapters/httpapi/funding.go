@@ -33,7 +33,8 @@ type fundingDisplayDTO struct {
 type fundingMethodDTO struct {
 	ID         string            `json:"id"`
 	CustomerID string            `json:"customer_id"`
-	Reference  string            `json:"merchant_funding_method_id"`
+	Reference  *string           `json:"merchant_funding_method_id"`
+	PSPRef     *string           `json:"provider_method_reference"`
 	Provider   string            `json:"provider"`
 	Display    fundingDisplayDTO `json:"display"`
 	Status     string            `json:"status"`
@@ -43,7 +44,8 @@ type fundingMethodDTO struct {
 
 func newFundingMethodDTO(f commerce.FundingMethod) fundingMethodDTO {
 	return fundingMethodDTO{
-		ID: string(f.ID), CustomerID: string(f.CustomerID), Reference: string(f.Reference), Provider: string(f.Provider),
+		ID: string(f.ID), CustomerID: string(f.CustomerID), Reference: optional(string(f.Reference)),
+		PSPRef: optional(string(f.ProviderReference)), Provider: string(f.Provider),
 		Display: fundingDisplayDTO{Brand: f.Display.Brand, LastFour: optional(f.Display.LastFour)},
 		Status:  string(f.Status), CreatedAt: f.CreatedAt.UTC(), DisabledAt: utcPtr(f.DisabledAt),
 	}
@@ -65,7 +67,7 @@ func decodeStrict(data []byte, v any, path string) error {
 	}
 	if name, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
 		field := path + strings.Trim(name, `"`)
-		return &app.ValidationError{Field: field, Message: fmt.Sprintf("unknown field %s: send only the documented fields - never card data, CVVs, bank credentials or PSP tokens", field)}
+		return &app.ValidationError{Field: field, Message: fmt.Sprintf("unknown field %s: send only the documented fields - never card data, CVVs, bank credentials or PSP secret keys", field)}
 	}
 	var typeErr *json.UnmarshalTypeError
 	if errors.As(err, &typeErr) {
@@ -88,6 +90,7 @@ func (h *Handler) registerFundingMethod(w http.ResponseWriter, r *http.Request) 
 		CustomerID string          `json:"customer_id"`
 		Provider   string          `json:"provider"`
 		Reference  string          `json:"merchant_funding_method_id"`
+		PSPRef     string          `json:"provider_method_reference"`
 		Display    json.RawMessage `json:"display"`
 	}
 	var display struct {
@@ -109,7 +112,7 @@ func (h *Handler) registerFundingMethod(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	fm, created, err := h.Funding.Register.Run(r.Context(), merchantFrom(r.Context()), commerceapp.FundingMethodCommand{
-		CustomerID: commerce.CustomerID(req.CustomerID), Reference: req.Reference, Provider: req.Provider,
+		CustomerID: commerce.CustomerID(req.CustomerID), Reference: req.Reference, ProviderReference: req.PSPRef, Provider: req.Provider,
 		Brand: display.Brand, LastFour: display.LastFour,
 	})
 	if err != nil {

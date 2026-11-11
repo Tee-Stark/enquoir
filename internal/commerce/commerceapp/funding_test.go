@@ -240,3 +240,70 @@ func TestSetFundingMethodStatus_DisablesAndEnables(t *testing.T) {
 		t.Errorf("audit = %v, want %v", actions, want)
 	}
 }
+
+// A merchant may identify a saved method by the PSP's own ID instead of
+// minting one of its own: either reference, or both, resolves it.
+func TestRegisterFundingMethod_ByThePSPsReference(t *testing.T) {
+	f := newFundingFixture()
+	ctx := context.Background()
+	c := f.customer(t, shopA1, "cust_42", "ada@example.com")
+	byPSP := commerceapp.FundingMethodCommand{CustomerID: c.ID, ProviderReference: "pm_123", Provider: "stripe", Brand: "visa", LastFour: "4242"}
+
+	first, created, err := f.register.Run(ctx, shopA1, byPSP)
+	if err != nil || !created || first.ProviderReference != "pm_123" || first.Reference != "" {
+		t.Fatalf("by the PSP's reference: %+v %v %v", first, created, err)
+	}
+	if again, created, err := f.register.Run(ctx, shopA1, byPSP); err != nil || created || again.ID != first.ID {
+		t.Errorf("repeat: %+v %v %v", again, created, err)
+	}
+	// Adding the merchant's own reference later is an update, not a repeat.
+	both := byPSP
+	both.Reference = "mfm_123"
+	if _, _, err := f.register.Run(ctx, shopA1, both); !errors.Is(err, commerceapp.ErrRegistrationConflict) {
+		t.Errorf("adding a reference: %v, want a conflict", err)
+	}
+
+	// Registered with both, it resolves by either.
+	full := commerceapp.FundingMethodCommand{CustomerID: c.ID, Reference: "mfm_9", ProviderReference: "pm_9", Provider: "stripe", Brand: "visa", LastFour: "4242"}
+	b, _, err := f.register.Run(ctx, shopA1, full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, cmd := range map[string]commerceapp.FundingMethodCommand{
+		"merchant reference only": {CustomerID: c.ID, Reference: "mfm_9", Provider: "stripe", Brand: "visa", LastFour: "4242"},
+		"PSP reference only":      {CustomerID: c.ID, ProviderReference: "pm_9", Provider: "stripe", Brand: "visa", LastFour: "4242"},
+	} {
+		if got, created, err := f.register.Run(ctx, shopA1, cmd); err != nil || created || got.ID != b.ID {
+			t.Errorf("%s: %+v %v %v", name, got, created, err)
+		}
+	}
+	// References naming two different bindings are a conflict.
+	mixed := commerceapp.FundingMethodCommand{CustomerID: c.ID, Reference: "mfm_9", ProviderReference: "pm_123", Provider: "stripe", Brand: "visa", LastFour: "4242"}
+	if _, _, err := f.register.Run(ctx, shopA1, mixed); !errors.Is(err, commerceapp.ErrRegistrationConflict) {
+		t.Errorf("references of two bindings: %v", err)
+	}
+	// The same PSP ID at another provider is another method.
+	adyen := byPSP
+	adyen.Provider = "adyen"
+	if got, created, err := f.register.Run(ctx, shopA1, adyen); err != nil || !created || got.ID == first.ID {
+		t.Errorf("same ID at another PSP: %+v %v %v", got, created, err)
+	}
+}
+
+func TestRegisterFundingMethod_NeedsAReferenceAndRefusesACardAsOne(t *testing.T) {
+	f := newFundingFixture()
+	c := f.customer(t, shopA1, "cust_42", "ada@example.com")
+	for name, tc := range map[string]struct {
+		cmd   commerceapp.FundingMethodCommand
+		field string
+	}{
+		"neither reference":           {commerceapp.FundingMethodCommand{CustomerID: c.ID, Provider: "stripe", Brand: "visa"}, "merchant_funding_method_id"},
+		"a card as the PSP reference": {commerceapp.FundingMethodCommand{CustomerID: c.ID, ProviderReference: "4242 4242 4242 4242", Provider: "stripe", Brand: "visa"}, "provider_method_reference"},
+	} {
+		_, _, err := f.register.Run(context.Background(), shopA1, tc.cmd)
+		var verr *app.ValidationError
+		if !errors.As(err, &verr) || verr.Field != tc.field || strings.Contains(err.Error(), "4242 4242") {
+			t.Errorf("%s: %v, want a validation error on %s", name, err, tc.field)
+		}
+	}
+}

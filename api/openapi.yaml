@@ -85,17 +85,18 @@ tags:
       record (`200`); the first time, `201`. Repeating it with different
       details is `409 registration_conflict`.
 
-      Funding methods are opaque bindings to a customer's payment methods
-      saved with the merchant's PSP: the merchant's own reference for the
-      method, the PSP's name, and what a consent screen shows (brand, last
-      four). Enquoir returns its own binding ID (`fmb_...`); the merchant
-      maps it to its PSP token. Registering a binding grants no spending
+      Funding methods are bindings to a customer's payment methods saved
+      with the merchant's PSP: the merchant's own reference for the method,
+      the PSP's own ID for it (`pm_...`), or both; the PSP's name; and what a
+      consent screen shows (brand, last four). Enquoir returns its own
+      binding ID (`fmb_...`). Registering a binding grants no spending
       authority.
 
       Enquoir never receives card data or PSP secrets. A funding-method
       request with any undocumented field is refused (`400
       validation_failed`, naming the field), as is any value holding 12 or
-      more digits in a row - a card number's shape.
+      more digits in a row - a card number's shape - in the merchant's
+      reference, or a Luhn-valid card number in the PSP's.
 
       **Mandates** are spending authority, and only the customer grants
       them. The merchant requests one (`POST /v1/commerce/mandate-requests`)
@@ -1645,10 +1646,13 @@ paths:
       summary: Register a funding-method binding, or resolve one already registered
       description: |
         Binds one of the merchant's active customers to a payment method the
-        merchant saved with its PSP. Send the merchant's own reference for it,
-        never the PSP token or card details: undocumented fields are refused.
-        Repeating it returns the same binding; repeating it with another
-        customer, provider or display details is `409 registration_conflict`.
+        merchant saved with its PSP, identified by the merchant's own
+        reference for it, the PSP's (`pm_...`), or both. Never card details
+        or PSP secret keys: undocumented fields are refused. Repeating it -
+        by either reference - returns the same binding; repeating it with
+        another customer, provider or display details, or adding or changing
+        a reference, is `409 registration_conflict`, as are references that
+        name two different bindings.
       security:
         - merchantKey: []
       requestBody:
@@ -1658,7 +1662,8 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [customer_id, provider, merchant_funding_method_id, display]
+              required: [customer_id, provider, display]
+              description: At least one of merchant_funding_method_id and provider_method_reference.
               properties:
                 customer_id:
                   type: string
@@ -1668,6 +1673,8 @@ paths:
                   description: The PSP, e.g. `stripe`. Lower-cased.
                 merchant_funding_method_id:
                   $ref: "#/components/schemas/FundingReference"
+                provider_method_reference:
+                  $ref: "#/components/schemas/ProviderReference"
                 display:
                   type: object
                   additionalProperties: false
@@ -3486,17 +3493,29 @@ components:
         unique per merchant. Not the PSP token, and never a card number: a
         value with 12 or more digits in a row is refused.
 
+    ProviderReference:
+      type: string
+      minLength: 1
+      maxLength: 255
+      description: |
+        The PSP's ID for the saved payment method: Stripe's `pm_...`, Adyen's
+        `storedPaymentMethodId`. Unique per merchant and provider. It charges
+        nothing without your PSP secret key, which Enquoir never takes. A
+        card number - 13 to 19 digits with a valid Luhn checksum - is refused.
+
     FundingMethod:
       type: object
-      required: [id, customer_id, merchant_funding_method_id, provider, display, status, created_at, disabled_at]
+      required: [id, customer_id, merchant_funding_method_id, provider_method_reference, provider, display, status, created_at, disabled_at]
       properties:
         id:
           type: string
-          description: Enquoir's binding ID (`fmb_...`). Mandates will name it.
+          description: Enquoir's binding ID (`fmb_...`). Mandates name it.
         customer_id:
           type: string
         merchant_funding_method_id:
-          $ref: "#/components/schemas/FundingReference"
+          type: [string, "null"]
+        provider_method_reference:
+          type: [string, "null"]
         provider:
           type: string
         display:

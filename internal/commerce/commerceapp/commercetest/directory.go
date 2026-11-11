@@ -193,8 +193,32 @@ type FundingMethods struct {
 func NewFundingMethods() *FundingMethods { return &FundingMethods{} }
 
 func (s *FundingMethods) RegisterFundingMethod(ctx context.Context, f commerce.FundingMethod) (commerce.FundingMethod, bool, error) {
+	s.d.mu.Lock()
+	var found *record[commerce.FundingMethod]
+	for _, r := range s.d.records {
+		v := r.value
+		if v.MerchantID != f.MerchantID {
+			continue
+		}
+		if (f.Reference != "" && v.Reference == f.Reference) ||
+			(f.ProviderReference != "" && v.Provider == f.Provider && v.ProviderReference == f.ProviderReference) {
+			if found != nil && found.id != r.id {
+				s.d.mu.Unlock()
+				return commerce.FundingMethod{}, false, commerceapp.ErrRegistrationConflict
+			}
+			found = r
+		}
+	}
+	s.d.mu.Unlock()
+	if found != nil {
+		return found.value, false, nil
+	}
+	external := commerce.ExternalID(f.Reference)
+	if external == "" {
+		external = commerce.ExternalID("psp:" + string(f.Provider) + ":" + string(f.ProviderReference))
+	}
 	got, created := s.d.register(&record[commerce.FundingMethod]{
-		id: string(f.ID), scope: scopeOf(string(f.OrgID), string(f.MerchantID)), external: commerce.ExternalID(f.Reference), created: f.CreatedAt, value: f,
+		id: string(f.ID), scope: scopeOf(string(f.OrgID), string(f.MerchantID)), external: external, created: f.CreatedAt, value: f,
 		status:   func(f *commerce.FundingMethod) *commerce.Status { return &f.Status },
 		disabled: func(f *commerce.FundingMethod) **time.Time { return &f.DisabledAt },
 	})

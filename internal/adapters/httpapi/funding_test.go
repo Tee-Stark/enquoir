@@ -74,12 +74,13 @@ func TestFundingMethods_RefuseCardData(t *testing.T) {
 	key, customer := f.merchantWithCustomer(t)
 	const pan = "4111111111111111"
 	cases := map[string]struct{ body, field string }{
-		"a card number field":            {fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","merchant_funding_method_id":"mfm_1","display":{"brand":"visa","last_four":"1111"},"card_number":%q}`, customer, pan), "card_number"},
-		"a CVV field":                    {fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","merchant_funding_method_id":"mfm_1","display":{"brand":"visa","last_four":"1111"},"cvv":"123"}`, customer), "cvv"},
-		"a PSP token field":              {fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","merchant_funding_method_id":"mfm_1","provider_method_reference":"pm_123","display":{"brand":"visa"}}`, customer), "provider_method_reference"},
-		"an unknown display field":       {fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","merchant_funding_method_id":"mfm_1","display":{"brand":"visa","number":%q}}`, customer, pan), "display.number"},
-		"a card number as the reference": {fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","merchant_funding_method_id":"4111 1111 1111 1111","display":{"brand":"visa"}}`, customer), "merchant_funding_method_id"},
-		"a card number as last four":     {fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","merchant_funding_method_id":"mfm_1","display":{"brand":"visa","last_four":%q}}`, customer, pan), "display.last_four"},
+		"a card number field":                  {fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","merchant_funding_method_id":"mfm_1","display":{"brand":"visa","last_four":"1111"},"card_number":%q}`, customer, pan), "card_number"},
+		"a CVV field":                          {fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","merchant_funding_method_id":"mfm_1","display":{"brand":"visa","last_four":"1111"},"cvv":"123"}`, customer), "cvv"},
+		"a PSP secret key field":               {fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","merchant_funding_method_id":"mfm_1","psp_secret_key":"sk_test_123","display":{"brand":"visa"}}`, customer), "psp_secret_key"},
+		"a card number as the PSP's reference": {fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","provider_method_reference":"4111-1111-1111-1111","display":{"brand":"visa"}}`, customer), "provider_method_reference"},
+		"an unknown display field":             {fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","merchant_funding_method_id":"mfm_1","display":{"brand":"visa","number":%q}}`, customer, pan), "display.number"},
+		"a card number as the reference":       {fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","merchant_funding_method_id":"4111 1111 1111 1111","display":{"brand":"visa"}}`, customer), "merchant_funding_method_id"},
+		"a card number as last four":           {fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","merchant_funding_method_id":"mfm_1","display":{"brand":"visa","last_four":%q}}`, customer, pan), "display.last_four"},
 	}
 	for name, tc := range cases {
 		rec := f.doBearer(t, http.MethodPost, "/v1/commerce/funding-methods", tc.body, key)
@@ -166,5 +167,28 @@ func TestFundingMethods_ListGetDisableEnableAndScope(t *testing.T) {
 	}
 	if rec := f.doBearer(t, http.MethodGet, "/v1/commerce/funding-methods/"+a.ID, "", ""); rec.Code != http.StatusUnauthorized {
 		t.Errorf("no key: %d, want 401", rec.Code)
+	}
+}
+
+func TestFundingMethods_ByThePSPsReference(t *testing.T) {
+	f := newAuthFixture(t, true)
+	key, customer := f.merchantWithCustomer(t)
+	body := fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","provider_method_reference":"pm_1Nq2fPLk","display":{"brand":"visa","last_four":"4242"}}`, customer)
+	rec := f.doBearer(t, http.MethodPost, "/v1/commerce/funding-methods", body, key)
+	var got struct {
+		ID        string  `json:"id"`
+		Reference *string `json:"merchant_funding_method_id"`
+		PSPRef    *string `json:"provider_method_reference"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if rec.Code != http.StatusCreated || got.Reference != nil || got.PSPRef == nil || *got.PSPRef != "pm_1Nq2fPLk" {
+		t.Fatalf("register by the PSP's reference: %d %s", rec.Code, rec.Body)
+	}
+	if rec := f.doBearer(t, http.MethodPost, "/v1/commerce/funding-methods", body, key); rec.Code != http.StatusOK {
+		t.Errorf("repeat: %d", rec.Code)
+	}
+	rec = f.doBearer(t, http.MethodPost, "/v1/commerce/funding-methods", fmt.Sprintf(`{"customer_id":%q,"provider":"stripe","display":{"brand":"visa"}}`, customer), key)
+	if p := decodeProblem(t, rec); rec.Code != http.StatusBadRequest || p.Field != "merchant_funding_method_id" {
+		t.Errorf("no reference at all: %d %+v", rec.Code, p)
 	}
 }

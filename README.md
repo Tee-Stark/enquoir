@@ -193,8 +193,9 @@ curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce
 ```
 
 The merchant then binds a customer's saved payment method by its own
-reference for it; Enquoir keeps only that, the PSP's name and display
-details, and returns its own binding ID. Card data is refused - an
+reference for it, the PSP's ID for it (`pm_...`), or both; Enquoir keeps
+those, the PSP's name and display details, and returns its own binding
+ID. Card data is refused - an
 undocumented field, or anything shaped like a card number, is a 400:
 
 ```sh

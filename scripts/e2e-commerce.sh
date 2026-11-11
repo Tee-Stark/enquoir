@@ -184,9 +184,10 @@ SHOPPER=$(addr shopper)
 with_key "$KEY_A" POST /v1/commerce/customers "{\"external_id\":\"cust_shopper\",\"email\":\"$SHOPPER\"}"
 expect_status 201
 SHOPPER_ID=$(json .id)
-with_key "$KEY_A" POST /v1/commerce/funding-methods "{\"customer_id\":\"$SHOPPER_ID\",\"provider\":\"stripe\",\"merchant_funding_method_id\":\"mfm_shopper\",\"display\":{\"brand\":\"visa\",\"last_four\":\"4242\"}}"
+with_key "$KEY_A" POST /v1/commerce/funding-methods "{\"customer_id\":\"$SHOPPER_ID\",\"provider\":\"stripe\",\"provider_method_reference\":\"pm_1ShopperCard\",\"display\":{\"brand\":\"visa\",\"last_four\":\"4242\"}}"
 expect_status 201
 SHOPPER_CARD=$(json .id)
+check '[ "$(json .provider_method_reference)" = pm_1ShopperCard ] && [ "$(json .merchant_funding_method_id)" = null ]' "bound by the PSP's own ID, with no reference of the merchant's"
 EXPIRES=$(jq -rn 'now + 30*86400 | strftime("%Y-%m-%dT%H:%M:%SZ")')
 mandate_request() {
 	echo "{\"external_id\":\"$1\",\"customer_id\":\"$SHOPPER_ID\",\"agent_id\":\"$AGENT\",\"funding_method_id\":\"$SHOPPER_CARD\",\"approval_mode\":\"autonomous\",\"scope\":{\"currency\":\"USD\",\"max_transaction_minor\":150000,\"max_cumulative_minor\":300000,\"max_transactions\":3,\"allowed_categories\":[\"electronics\"]},\"expires_at\":\"$EXPIRES\"}"

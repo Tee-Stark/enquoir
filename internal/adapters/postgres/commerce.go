@@ -390,13 +390,13 @@ func NewCommerceFundingMethodStore(pool *pgxpool.Pool) *CommerceFundingMethodSto
 	return &CommerceFundingMethodStore{pool: pool}
 }
 
-const fundingColumns = `id, merchant_id, org_id, customer_id, merchant_funding_method_id, provider,
-	display_brand, COALESCE(display_last_four, ''), status, created_at, disabled_at`
+const fundingColumns = `id, merchant_id, org_id, customer_id, COALESCE(merchant_funding_method_id, ''),
+	COALESCE(provider_method_reference, ''), provider, display_brand, COALESCE(display_last_four, ''), status, created_at, disabled_at`
 
 func scanFundingMethod(row pgx.Row) (commerce.FundingMethod, error) {
 	var f commerce.FundingMethod
-	var id, merchant, org, customer, ref, provider, status string
-	err := row.Scan(&id, &merchant, &org, &customer, &ref, &provider, &f.Display.Brand, &f.Display.LastFour, &status, &f.CreatedAt, &f.DisabledAt)
+	var id, merchant, org, customer, ref, pref, provider, status string
+	err := row.Scan(&id, &merchant, &org, &customer, &ref, &pref, &provider, &f.Display.Brand, &f.Display.LastFour, &status, &f.CreatedAt, &f.DisabledAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return commerce.FundingMethod{}, app.ErrNotFound
 	}
@@ -404,32 +404,53 @@ func scanFundingMethod(row pgx.Row) (commerce.FundingMethod, error) {
 		return commerce.FundingMethod{}, err
 	}
 	f.ID, f.MerchantID, f.OrgID, f.CustomerID = commerce.FundingMethodID(id), commerce.MerchantID(merchant), domain.OrgID(org), commerce.CustomerID(customer)
-	f.Reference, f.Provider, f.Status = commerce.FundingReference(ref), commerce.Provider(provider), commerce.Status(status)
+	f.Reference, f.ProviderReference = commerce.FundingReference(ref), commerce.ProviderReference(pref)
+	f.Provider, f.Status = commerce.Provider(provider), commerce.Status(status)
 	return f, nil
 }
 
-// RegisterFundingMethod inserts f unless its merchant already has its
-// reference, then returns the stored binding; concurrent registrations
-// of one reference make one binding.
+// RegisterFundingMethod inserts f unless its merchant already has a
+// binding with either of its references, then returns the stored
+// binding. Concurrent registrations make one binding: the insert skips
+// on any unique violation, and the read finds the winner.
 func (s *CommerceFundingMethodStore) RegisterFundingMethod(ctx context.Context, f commerce.FundingMethod) (commerce.FundingMethod, bool, error) {
-	stored, err := scanFundingMethod(s.pool.QueryRow(ctx, `
-		INSERT INTO commerce_funding_methods (id, merchant_id, org_id, customer_id, merchant_funding_method_id, provider,
-			display_brand, display_last_four, status, created_at, disabled_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		ON CONFLICT (merchant_id, merchant_funding_method_id) DO NOTHING
-		RETURNING `+fundingColumns,
-		string(f.ID), string(f.MerchantID), string(f.OrgID), string(f.CustomerID), string(f.Reference), string(f.Provider),
-		f.Display.Brand, nullable(f.Display.LastFour), string(f.Status), f.CreatedAt, f.DisabledAt))
-	if err == nil {
-		return stored, true, nil
+	tag, err := s.pool.Exec(ctx, `
+		INSERT INTO commerce_funding_methods (id, merchant_id, org_id, customer_id, merchant_funding_method_id, provider_method_reference,
+			provider, display_brand, display_last_four, status, created_at, disabled_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		ON CONFLICT DO NOTHING`,
+		string(f.ID), string(f.MerchantID), string(f.OrgID), string(f.CustomerID), nullable(string(f.Reference)),
+		nullable(string(f.ProviderReference)), string(f.Provider), f.Display.Brand, nullable(f.Display.LastFour),
+		string(f.Status), f.CreatedAt, f.DisabledAt)
+	if err != nil {
+		return commerce.FundingMethod{}, false, fmt.Errorf("storing funding method: %w", err)
 	}
-	if !errors.Is(err, app.ErrNotFound) {
+	rows, err := s.pool.Query(ctx, `SELECT `+fundingColumns+` FROM commerce_funding_methods
+		WHERE org_id = $1 AND merchant_id = $2
+		  AND (merchant_funding_method_id = $3 OR (provider = $4 AND provider_method_reference = $5))`,
+		string(f.OrgID), string(f.MerchantID), nullable(string(f.Reference)), string(f.Provider), nullable(string(f.ProviderReference)))
+	if err != nil {
 		return commerce.FundingMethod{}, false, err
 	}
-	stored, err = scanFundingMethod(s.pool.QueryRow(ctx, `SELECT `+fundingColumns+` FROM commerce_funding_methods
-		WHERE org_id = $1 AND merchant_id = $2 AND merchant_funding_method_id = $3`,
-		string(f.OrgID), string(f.MerchantID), string(f.Reference)))
-	return stored, false, err
+	defer rows.Close()
+	var found []commerce.FundingMethod
+	for rows.Next() {
+		m, err := scanFundingMethod(rows)
+		if err != nil {
+			return commerce.FundingMethod{}, false, err
+		}
+		found = append(found, m)
+	}
+	if err := rows.Err(); err != nil {
+		return commerce.FundingMethod{}, false, err
+	}
+	switch len(found) {
+	case 0:
+		return commerce.FundingMethod{}, false, fmt.Errorf("storing funding method: no row inserted or found")
+	case 1:
+		return found[0], tag.RowsAffected() == 1 && found[0].ID == f.ID, nil
+	}
+	return commerce.FundingMethod{}, false, commerceapp.ErrRegistrationConflict
 }
 
 func (s *CommerceFundingMethodStore) GetFundingMethod(ctx context.Context, sc commerceapp.Scope, id commerce.FundingMethodID) (commerce.FundingMethod, error) {

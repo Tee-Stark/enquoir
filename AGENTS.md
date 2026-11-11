@@ -118,8 +118,11 @@ outside the standard library.
 Commerce adds these:
 
 - **No card data, ever.** Enquoir stores its own opaque funding-method
-  binding IDs; the merchant keeps the mapping to PSP tokens. No PAN, CVV,
-  bank credentials or PSP secrets enter Enquoir, its logs or its events.
+  binding IDs. A merchant may also give the PSP's own ID for the saved
+  method (Stripe's `pm_...`, Adyen's `storedPaymentMethodId`): a
+  reference that cannot charge anything without the merchant's PSP secret
+  key. No PAN, CVV, bank credentials or PSP secret keys enter Enquoir,
+  its logs or its events.
 - **Three authorities stay separate.** A merchant integration key proves
   which merchant is calling; an agent is an identity the merchant names; only
   the customer grants spending authority, through Enquoir's own consent flow.
@@ -242,12 +245,13 @@ and revoke it.
 Done when a merchant can register opaque references to its customers'
 saved payment methods.
 
-- A binding is the merchant's own reference for one saved payment method
-  of one of its customers (by the merchant's ID for it, unique per
-  merchant), the PSP's name, and display details for consent screens: a
-  brand and, where applicable, the last four digits. Enquoir returns its
-  own binding ID. It never receives the PSP token, a card number, CVV or
-  bank credentials.
+- A binding identifies one saved payment method of one of its customers
+  by the merchant's own ID for it, or the PSP's ID for it (`pm_...`), or
+  both - each unique per merchant (the PSP's per provider) - with the
+  PSP's name, and display details for consent screens: a brand and, where
+  applicable, the last four digits. Enquoir returns its own binding ID.
+  It never receives a card number, CVV, bank credentials or PSP secret
+  keys.
 - Register or resolve (a differing repeat is a conflict), get, list a
   customer's bindings, disable and enable; merchant key only. Only an
   active customer of the same merchant can be bound.

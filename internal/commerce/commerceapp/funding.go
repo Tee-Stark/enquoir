@@ -32,7 +32,9 @@ type FundingMethodPage struct {
 // customers they belong to.
 type FundingMethodStore interface {
 	// RegisterFundingMethod stores f unless its merchant already has a
-	// binding with f's reference; either way it returns the stored one.
+	// binding with either of f's references (the PSP's, at f's
+	// provider); either way it returns the stored one. If the two
+	// references name two different bindings, ErrRegistrationConflict.
 	RegisterFundingMethod(ctx context.Context, f commerce.FundingMethod) (stored commerce.FundingMethod, created bool, err error)
 	GetFundingMethod(ctx context.Context, s Scope, id commerce.FundingMethodID) (commerce.FundingMethod, error)
 	// ListFundingMethods lists one customer's bindings, newest first.
@@ -41,14 +43,15 @@ type FundingMethodStore interface {
 }
 
 // FundingMethodCommand registers a binding: the merchant's own
-// reference for a customer's saved payment method, its PSP, and what to
-// show the customer. Never a PSP token or any card data.
+// reference for a customer's saved payment method, the PSP's, or both;
+// the PSP; and what to show the customer. Never any card data.
 type FundingMethodCommand struct {
-	CustomerID commerce.CustomerID
-	Reference  string
-	Provider   string
-	Brand      string
-	LastFour   string
+	CustomerID        commerce.CustomerID
+	Reference         string
+	ProviderReference string
+	Provider          string
+	Brand             string
+	LastFour          string
 }
 
 const auditTargetFundingMethod = "commerce_funding_method"
@@ -76,9 +79,22 @@ func (r *RegisterFundingMethod) Run(ctx context.Context, p MerchantPrincipal, cm
 	if customer == "" {
 		return commerce.FundingMethod{}, false, &app.ValidationError{Field: "customer_id", Message: "customer_id is required"}
 	}
-	ref, err := commerce.NewFundingReference(cmd.Reference)
-	if err != nil {
-		return commerce.FundingMethod{}, false, fundingInvalid("merchant_funding_method_id", err)
+	var err error
+	if strings.TrimSpace(cmd.Reference) == "" && strings.TrimSpace(cmd.ProviderReference) == "" {
+		return commerce.FundingMethod{}, false, &app.ValidationError{Field: "merchant_funding_method_id",
+			Message: "send merchant_funding_method_id (your reference for the payment method), provider_method_reference (your PSP's), or both"}
+	}
+	var ref commerce.FundingReference
+	if strings.TrimSpace(cmd.Reference) != "" {
+		if ref, err = commerce.NewFundingReference(cmd.Reference); err != nil {
+			return commerce.FundingMethod{}, false, fundingInvalid("merchant_funding_method_id", err)
+		}
+	}
+	var pref commerce.ProviderReference
+	if strings.TrimSpace(cmd.ProviderReference) != "" {
+		if pref, err = commerce.NewProviderReference(cmd.ProviderReference); err != nil {
+			return commerce.FundingMethod{}, false, fundingInvalid("provider_method_reference", err)
+		}
 	}
 	provider, err := commerce.NewProvider(cmd.Provider)
 	if err != nil {
@@ -106,21 +122,21 @@ func (r *RegisterFundingMethod) Run(ctx context.Context, p MerchantPrincipal, cm
 
 	f := commerce.FundingMethod{
 		ID: commerce.FundingMethodID(r.IDs.NewID("fmb")), MerchantID: p.MerchantID, OrgID: p.OrgID, CustomerID: c.ID,
-		Reference: ref, Provider: provider, Display: display, Status: commerce.Active, CreatedAt: r.Clock.Now(),
+		Reference: ref, ProviderReference: pref, Provider: provider, Display: display, Status: commerce.Active, CreatedAt: r.Clock.Now(),
 	}
 	stored, created, err := r.Methods.RegisterFundingMethod(ctx, f)
 	if err != nil {
 		return commerce.FundingMethod{}, false, fmt.Errorf("registering funding method: %w", err)
 	}
 	if !created {
-		if !stored.SameBinding(f) {
+		if !stored.Compatible(f) {
 			return commerce.FundingMethod{}, false, ErrRegistrationConflict
 		}
 		return stored, false, nil
 	}
 	r.Audit.Record(ctx, p.OrgID, app.AuditFundingMethodRegistered, auditTargetFundingMethod, string(stored.ID), map[string]string{
 		"merchant_id": string(p.MerchantID), "customer_id": string(c.ID),
-		"merchant_funding_method_id": string(ref), "provider": string(provider),
+		"merchant_funding_method_id": string(ref), "provider_method_reference": string(pref), "provider": string(provider),
 	})
 	return stored, true, nil
 }

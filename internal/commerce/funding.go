@@ -11,8 +11,7 @@ import (
 )
 
 // FundingMethodID identifies a funding-method binding: Enquoir's own,
-// opaque reference to one saved payment method of one customer. The
-// merchant maps it to its PSP token; Enquoir never sees that token.
+// opaque reference to one saved payment method of one customer.
 type FundingMethodID string
 
 // FundingReference is the merchant's own ID for a saved payment method
@@ -47,7 +46,8 @@ func holdsCardNumber(s string) bool {
 	return false
 }
 
-// NewFundingReference checks a merchant's payment-method reference.
+// NewFundingReference checks a merchant's payment-method reference: no
+// run of 12 or more digits, which may be a card number.
 func NewFundingReference(s string) (FundingReference, error) {
 	if holdsCardNumber(s) {
 		return "", fmt.Errorf("reference %w", ErrLooksLikeCardNumber)
@@ -57,6 +57,65 @@ func NewFundingReference(s string) (FundingReference, error) {
 		return "", err
 	}
 	return FundingReference(ext), nil
+}
+
+// ProviderReference is the PSP's own ID for a saved payment method:
+// Stripe's "pm_...", Adyen's storedPaymentMethodId. It identifies the
+// method at the PSP, and charges nothing without the merchant's PSP
+// secret key, which Enquoir never holds. Unique per merchant and PSP.
+type ProviderReference string
+
+// NewProviderReference checks a PSP's reference. Adyen's are 16-digit
+// numbers, so digits alone are allowed; a card number - 13 to 19 digits
+// (spaces and dashes ignored) with a valid Luhn checksum - is refused.
+func NewProviderReference(s string) (ProviderReference, error) {
+	if holdsLuhnCardNumber(s) {
+		return "", fmt.Errorf("provider reference %w", ErrLooksLikeCardNumber)
+	}
+	ext, err := NewExternalID(s)
+	if err != nil {
+		return "", err
+	}
+	return ProviderReference(ext), nil
+}
+
+// holdsLuhnCardNumber reports whether a whole run of 13 to 19 digits in
+// s (spaces and dashes inside it ignored) passes the Luhn check, as every
+// card number does. About one random 16-digit token in ten passes too;
+// see docs/progress.md.
+func holdsLuhnCardNumber(s string) bool {
+	var runs [][]byte
+	var cur []byte
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c >= '0' && c <= '9':
+			cur = append(cur, c)
+		case c == ' ' || c == '-':
+		default:
+			runs, cur = append(runs, cur), nil
+		}
+	}
+	runs = append(runs, cur)
+	for _, r := range runs {
+		if len(r) >= 13 && len(r) <= 19 && luhn(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func luhn(digits []byte) bool {
+	sum, double := 0, false
+	for i := len(digits) - 1; i >= 0; i-- {
+		d := int(digits[i] - '0')
+		if double {
+			if d *= 2; d > 9 {
+				d -= 9
+			}
+		}
+		sum, double = sum+d, !double
+	}
+	return sum%10 == 0
 }
 
 // Provider names the merchant's payment service provider: "stripe",
@@ -127,16 +186,24 @@ type FundingMethod struct {
 	MerchantID MerchantID
 	OrgID      domain.OrgID
 	CustomerID CustomerID
-	Reference  FundingReference
-	Provider   Provider
-	Display    FundingDisplay
-	Status     Status
-	CreatedAt  time.Time
-	DisabledAt *time.Time
+	// Reference is the merchant's own ID for the method, ProviderReference
+	// the PSP's; a binding has at least one.
+	Reference         FundingReference
+	ProviderReference ProviderReference
+	Provider          Provider
+	Display           FundingDisplay
+	Status            Status
+	CreatedAt         time.Time
+	DisabledAt        *time.Time
 }
 
-// SameBinding reports whether two bindings of one reference describe the
-// same payment method: same customer, provider and display details.
-func (f FundingMethod) SameBinding(o FundingMethod) bool {
-	return f.CustomerID == o.CustomerID && f.Provider == o.Provider && f.Display == o.Display
+// Compatible reports whether o, a repeated registration that resolved to
+// the stored binding f, describes the same payment method: same customer,
+// provider and display details, and each reference o names is f's. o may
+// leave out a reference f has (resolving by the other); it may not add or
+// change one - that would be an update, not a repeat.
+func (f FundingMethod) Compatible(o FundingMethod) bool {
+	return f.CustomerID == o.CustomerID && f.Provider == o.Provider && f.Display == o.Display &&
+		(o.Reference == "" || o.Reference == f.Reference) &&
+		(o.ProviderReference == "" || o.ProviderReference == f.ProviderReference)
 }

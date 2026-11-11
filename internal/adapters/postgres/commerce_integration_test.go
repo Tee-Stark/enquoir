@@ -487,3 +487,61 @@ func TestCommerceFundingMethods_ConcurrentRegistrationsMakeOneBinding(t *testing
 		t.Errorf("%d registrations report creating the binding, want 1", n)
 	}
 }
+
+func TestCommerceFundingMethods_ByThePSPsReference(t *testing.T) {
+	ctx := context.Background()
+	u, _, _ := newCommerceUseCases(t)
+	fu := newFundingUseCases(t)
+	m, _ := u.newMerchant(t, NewAccountStore(testPool(t)))
+	c, _, _ := u.registerCustomer.Run(ctx, m, "cust", "c@example.com")
+	byPSP := commerceapp.FundingMethodCommand{CustomerID: c.ID, ProviderReference: "pm_1", Provider: "stripe", Brand: "visa", LastFour: "4242"}
+
+	first, created, err := fu.register.Run(ctx, m, byPSP)
+	if err != nil || !created || first.Reference != "" || first.ProviderReference != "pm_1" {
+		t.Fatalf("register: %+v %v %v", first, created, err)
+	}
+	if again, created, err := fu.register.Run(ctx, m, byPSP); err != nil || created || again.ID != first.ID {
+		t.Errorf("repeat: %+v %v %v", again, created, err)
+	}
+	both := commerceapp.FundingMethodCommand{CustomerID: c.ID, Reference: "mfm_2", ProviderReference: "pm_2", Provider: "stripe", Brand: "visa", LastFour: "4242"}
+	b, _, err := fu.register.Run(ctx, m, both)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, created, err := fu.register.Run(ctx, m, commerceapp.FundingMethodCommand{CustomerID: c.ID, ProviderReference: "pm_2", Provider: "stripe", Brand: "visa", LastFour: "4242"}); err != nil || created || got.ID != b.ID || got.Reference != "mfm_2" {
+		t.Errorf("by the PSP's reference alone: %+v %v %v", got, created, err)
+	}
+	mixed := commerceapp.FundingMethodCommand{CustomerID: c.ID, Reference: "mfm_2", ProviderReference: "pm_1", Provider: "stripe", Brand: "visa", LastFour: "4242"}
+	if _, _, err := fu.register.Run(ctx, m, mixed); !errors.Is(err, commerceapp.ErrRegistrationConflict) {
+		t.Errorf("references of two bindings: %v", err)
+	}
+	adyen := byPSP
+	adyen.Provider = "adyen"
+	if got, created, err := fu.register.Run(ctx, m, adyen); err != nil || !created || got.ID == first.ID {
+		t.Errorf("same ID at another PSP: %+v %v %v", got, created, err)
+	}
+	if _, err := testPool(t).Exec(ctx, `UPDATE commerce_funding_methods SET merchant_funding_method_id = NULL, provider_method_reference = NULL WHERE id = $1`, string(b.ID)); err == nil {
+		t.Error("the schema allowed a binding with no reference")
+	}
+
+	// Concurrent registrations by the PSP's reference make one binding.
+	var wg sync.WaitGroup
+	ids := make([]commerce.FundingMethodID, 8)
+	for i := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f, _, err := fu.register.Run(ctx, m, commerceapp.FundingMethodCommand{CustomerID: c.ID, ProviderReference: "pm_race", Provider: "stripe", Brand: "visa"})
+			if err != nil {
+				t.Errorf("registration %d: %v", i, err)
+			}
+			ids[i] = f.ID
+		}()
+	}
+	wg.Wait()
+	for i := range ids {
+		if ids[i] != ids[0] {
+			t.Errorf("registration %d got %s, want %s", i, ids[i], ids[0])
+		}
+	}
+}
