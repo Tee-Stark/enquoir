@@ -14,7 +14,8 @@
 #
 # The flow: an owner signs up, verifies, and connects a merchant; the
 # merchant's backend, with its integration key, registers customers and
-# agents (repeats resolve, changes conflict); the key is shown to be
+# agents (repeats resolve, changes conflict) and binds a saved card by
+# its own reference (card data refused); the key is shown to be
 # the only credential commerce accepts, and accepted nowhere else; a
 # second storefront and a second organisation can't see the first's
 # records; disabling, rotating and revoking end the key's access at
@@ -153,6 +154,29 @@ with_key "$KEY_A" GET "/v1/commerce/customers?external_id=cust_42" ""
 got
 check '[ "$(json ".data | length")" = 1 ] && [ "$(json ".data[0].id")" = "$CUSTOMER" ]' "found by its external ID"
 
+step "5b. The merchant binds the customer's saved card - by its own reference, never the card"
+show "curl -s -H 'Authorization: Bearer $(redact "$KEY_A")' -X POST $API/v1/commerce/funding-methods -d '{\"customer_id\":\"$CUSTOMER\",\"provider\":\"stripe\",\"merchant_funding_method_id\":\"mfm_123\",\"display\":{\"brand\":\"visa\",\"last_four\":\"4242\"}}'"
+FM_BODY="{\"customer_id\":\"$CUSTOMER\",\"provider\":\"stripe\",\"merchant_funding_method_id\":\"mfm_123\",\"display\":{\"brand\":\"visa\",\"last_four\":\"4242\"}}"
+with_key "$KEY_A" POST /v1/commerce/funding-methods "$FM_BODY"
+got
+expect_status 201
+BINDING=$(json .id)
+check '[[ "$BINDING" == fmb_* ]]' "Enquoir returns its own binding ID"
+with_key "$KEY_A" POST /v1/commerce/funding-methods "$FM_BODY"
+expect_status 200
+check '[ "$(json .id)" = "$BINDING" ]' "the same binding on a repeat"
+with_key "$KEY_A" POST /v1/commerce/funding-methods "{\"customer_id\":\"$CUSTOMER\",\"provider\":\"stripe\",\"merchant_funding_method_id\":\"mfm_124\",\"display\":{\"brand\":\"visa\",\"last_four\":\"4242\"},\"card_number\":\"4111111111111111\"}"
+got
+expect_status 400
+check '[ "$(json .field)" = card_number ] && ! grep -q 4111 <<<"$BODY"' "a card_number field is refused, by name, and not repeated"
+with_key "$KEY_A" POST /v1/commerce/funding-methods "{\"customer_id\":\"$CUSTOMER\",\"provider\":\"stripe\",\"merchant_funding_method_id\":\"4111-1111-1111-1111\",\"display\":{\"brand\":\"visa\"}}"
+expect_status 400
+check '[ "$(json .field)" = merchant_funding_method_id ]' "a card number as the reference is refused"
+with_key "$KEY_A" GET "/v1/commerce/customers/$CUSTOMER/funding-methods" ""
+got
+expect_status 200
+check '[ "$(json ".data | length")" = 1 ] && [ "$(json ".data[0].id")" = "$BINDING" ]' "the customer has exactly the one binding"
+
 step "6. Only a merchant key opens commerce, and it opens nothing else"
 req POST /v1/agents '{"name":"treasury bot"}' -b "$JAR_A"
 expect_status 201
@@ -184,6 +208,13 @@ with_key "$KEY_B" GET "/v1/commerce/customers/$CUSTOMER" ""
 expect_status 404
 with_key "$KEY_B" POST "/v1/commerce/agents/$AGENT/disable" ""
 expect_status 404
+with_key "$KEY_B" GET "/v1/commerce/funding-methods/$BINDING" ""
+expect_status 404
+with_key "$KEY_B" GET "/v1/commerce/customers/$CUSTOMER/funding-methods" ""
+expect_status 404
+with_key "$KEY_B" POST /v1/commerce/funding-methods "{\"customer_id\":\"$CUSTOMER\",\"provider\":\"stripe\",\"merchant_funding_method_id\":\"mfm_steal\",\"display\":{\"brand\":\"visa\"}}"
+expect_status 422
+check '[ "$(json .code)" = customer_unknown ]' "another organisation's merchant cannot bind this customer"
 req GET "/v1/merchant-integrations/$INTEGRATION_A" "" -b "$JAR_B"
 expect_status 404
 pass "another merchant's and another organisation's records are not found"
@@ -222,7 +253,8 @@ check '[ "$(json "[.data[] | select(.target.id == \"$CUSTOMER\")][0].actor.type"
 check '! grep -qi "ada@example.com" <<<"$BODY"' "no customer email in the audit log"
 req GET "/v1/audit-log" "" -b "$JAR_A"
 for action in merchant_integration.created merchant_integration.disabled merchant_integration.enabled \
-	merchant_integration.key_rotated merchant_integration.key_revoked commerce.agent.registered; do
+	merchant_integration.key_rotated merchant_integration.key_revoked commerce.agent.registered \
+	commerce.funding_method.registered; do
 	check "grep -qF '\"$action\"' <<<\"\$BODY\"" "recorded: $action"
 done
 
