@@ -38,6 +38,8 @@ const (
 	codeRateLimited          = "rate_limited"
 	codeAccountLocked        = "account_locked"
 	codeRegistrationConflict = "registration_conflict"
+	codeCustomerUnknown      = "customer_unknown"
+	codeCustomerDisabled     = "customer_disabled"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.
@@ -103,6 +105,11 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 	case errors.Is(err, app.ErrPayeeUnknown):
 		writeProblem(w, http.StatusUnprocessableEntity, codePayeeUnknown,
 			"the payee is not a beneficiary this organisation registered; register it with POST /v1/beneficiaries first")
+	case errors.Is(err, commerceapp.ErrCustomerUnknown):
+		writeProblem(w, http.StatusUnprocessableEntity, codeCustomerUnknown,
+			"the customer is not one this merchant registered; register it with POST /v1/commerce/customers first")
+	case errors.Is(err, commerceapp.ErrCustomerDisabled):
+		writeProblem(w, http.StatusUnprocessableEntity, codeCustomerDisabled, "the customer is disabled; enable it first")
 	case errors.Is(err, commerceapp.ErrRegistrationConflict):
 		writeProblem(w, http.StatusConflict, codeRegistrationConflict, err.Error())
 	case errors.Is(err, app.ErrNotFound):

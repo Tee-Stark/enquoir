@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Enquoir API
-  version: 0.5.0
+  version: 0.6.0
   summary: The safe control and observability layer for agentic finance.
   description: |
     Enquoir sits between an AI agent and a payment rail. The agent states an
@@ -85,7 +85,17 @@ tags:
       record (`200`); the first time, `201`. Repeating it with different
       details is `409 registration_conflict`.
 
-      Enquoir never receives card data or PSP secrets. Customer spending
+      Funding methods are opaque bindings to a customer's payment methods
+      saved with the merchant's PSP: the merchant's own reference for the
+      method, the PSP's name, and what a consent screen shows (brand, last
+      four). Enquoir returns its own binding ID (`fmb_...`); the merchant
+      maps it to its PSP token. Registering a binding grants no spending
+      authority.
+
+      Enquoir never receives card data or PSP secrets. A funding-method
+      request with any undocumented field is refused (`400
+      validation_failed`, naming the field), as is any value holding 12 or
+      more digits in a row - a card number's shape. Customer spending
       authority (mandates) is granted only by the customer, through
       Enquoir's own consent flow - not yet built.
   - name: Meta
@@ -922,7 +932,9 @@ paths:
         merchant_integration.key_rotated, merchant_integration.key_revoked,
         commerce.customer.registered, commerce.customer.disabled,
         commerce.customer.enabled, commerce.agent.registered,
-        commerce.agent.disabled, commerce.agent.enabled. Payments have
+        commerce.agent.disabled, commerce.agent.enabled,
+        commerce.funding_method.registered, commerce.funding_method.disabled,
+        commerce.funding_method.enabled. Payments have
         their own history (GET /v1/payments/{key}).
       security:
         - session: []
@@ -1603,6 +1615,182 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/commerce/funding-methods:
+    post:
+      tags: [Commerce]
+      operationId: registerFundingMethod
+      summary: Register a funding-method binding, or resolve one already registered
+      description: |
+        Binds one of the merchant's active customers to a payment method the
+        merchant saved with its PSP. Send the merchant's own reference for it,
+        never the PSP token or card details: undocumented fields are refused.
+        Repeating it returns the same binding; repeating it with another
+        customer, provider or display details is `409 registration_conflict`.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [customer_id, provider, merchant_funding_method_id, display]
+              properties:
+                customer_id:
+                  type: string
+                  description: Enquoir's customer ID (`cus_...`), from POST /v1/commerce/customers.
+                provider:
+                  type: string
+                  description: The PSP, e.g. `stripe`. Lower-cased.
+                merchant_funding_method_id:
+                  $ref: "#/components/schemas/FundingReference"
+                display:
+                  type: object
+                  additionalProperties: false
+                  required: [brand]
+                  properties:
+                    brand:
+                      type: string
+                      description: e.g. `visa`, `paypal`. Letters, `_` and `-` only.
+                    last_four:
+                      type: string
+                      pattern: "^[0-9]{4}$"
+                      description: For cards and accounts; omit for wallets.
+      responses:
+        "201":
+          description: "Registered."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FundingMethod"
+        "200":
+          description: "Already registered with these details: the same binding."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FundingMethod"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/RegistrationConflict"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "422":
+          $ref: "#/components/responses/CustomerNotBindable"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/funding-methods/{id}:
+    parameters:
+      - $ref: "#/components/parameters/FundingMethodID"
+    get:
+      tags: [Commerce]
+      operationId: getFundingMethod
+      summary: Get a funding-method binding
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "The binding."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FundingMethod"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/funding-methods/{id}/disable:
+    parameters:
+      - $ref: "#/components/parameters/FundingMethodID"
+    post:
+      tags: [Commerce]
+      operationId: disableFundingMethod
+      summary: Disable a funding-method binding
+      description: When the customer removes the payment method, say. Disabling a disabled binding succeeds and changes nothing.
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "Disabled."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FundingMethod"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/funding-methods/{id}/enable:
+    parameters:
+      - $ref: "#/components/parameters/FundingMethodID"
+    post:
+      tags: [Commerce]
+      operationId: enableFundingMethod
+      summary: Enable a funding-method binding
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "Enabled."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FundingMethod"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/customers/{id}/funding-methods:
+    parameters:
+      - $ref: "#/components/parameters/CommerceCustomerID"
+    get:
+      tags: [Commerce]
+      operationId: listCustomerFundingMethods
+      summary: List a customer's funding-method bindings
+      description: Newest first. Another merchant's customer is `404`.
+      security:
+        - merchantKey: []
+      parameters:
+        - $ref: "#/components/parameters/CommerceStatusFilter"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of bindings.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/FundingMethod"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/payments:
     get:
       tags: [History]
@@ -2116,6 +2304,12 @@ components:
       required: true
       schema:
         type: string
+    FundingMethodID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
     ExternalIDFilter:
       name: external_id
       in: query
@@ -2191,6 +2385,14 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
+    CustomerNotBindable:
+      description: |
+        The customer is not one this merchant registered
+        (`customer_unknown`), or is disabled (`customer_disabled`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     RegistrationConflict:
       description: |
         The merchant already registered this external ID with different
@@ -2262,6 +2464,8 @@ components:
             - rate_limited
             - account_locked
             - registration_conflict
+            - customer_unknown
+            - customer_disabled
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.
@@ -2910,6 +3114,46 @@ components:
               type: string
               format: date-time
 
+    FundingReference:
+      type: string
+      minLength: 1
+      maxLength: 255
+      description: |
+        The merchant's own ID for the saved payment method (its `mfm_...`),
+        unique per merchant. Not the PSP token, and never a card number: a
+        value with 12 or more digits in a row is refused.
+
+    FundingMethod:
+      type: object
+      required: [id, customer_id, merchant_funding_method_id, provider, display, status, created_at, disabled_at]
+      properties:
+        id:
+          type: string
+          description: Enquoir's binding ID (`fmb_...`). Mandates will name it.
+        customer_id:
+          type: string
+        merchant_funding_method_id:
+          $ref: "#/components/schemas/FundingReference"
+        provider:
+          type: string
+        display:
+          type: object
+          required: [brand, last_four]
+          properties:
+            brand:
+              type: string
+            last_four:
+              type: [string, "null"]
+              pattern: "^[0-9]{4}$"
+        status:
+          $ref: "#/components/schemas/CommerceStatus"
+        created_at:
+          type: string
+          format: date-time
+        disabled_at:
+          type: [string, "null"]
+          format: date-time
+
     CommerceCustomer:
       type: object
       required: [id, external_id, email, status, created_at, disabled_at]
@@ -2985,7 +3229,7 @@ components:
               properties:
                 type:
                   type: string
-                  enum: [user, agent, invitation, payee, merchant_integration, commerce_customer, commerce_agent]
+                  enum: [user, agent, invitation, payee, merchant_integration, commerce_customer, commerce_agent, commerce_funding_method]
                 id:
                   type: string
             - type: "null"

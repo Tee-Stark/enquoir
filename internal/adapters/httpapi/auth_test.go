@@ -114,6 +114,13 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		GetAgent:             &commerceapp.GetAgent{Agents: commerceAgents},
 		SetAgentStatus:       &commerceapp.SetAgentStatus{Agents: commerceAgents, Clock: clock, Audit: audit},
 	}
+	methods := commercetest.NewFundingMethods()
+	h.Funding = FundingUseCases{
+		Register: &commerceapp.RegisterFundingMethod{Methods: methods, Customers: customers, IDs: ids, Clock: clock, Audit: audit},
+		Get:      &commerceapp.GetFundingMethod{Methods: methods},
+		List:     &commerceapp.ListFundingMethods{Methods: methods, Customers: customers},
+		Status:   &commerceapp.SetFundingMethodStatus{Methods: methods, Clock: clock, Audit: audit},
+	}
 	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments, accounts: accounts, mailer: mailer}
 }
 

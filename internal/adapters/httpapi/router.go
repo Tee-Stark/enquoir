@@ -65,6 +65,7 @@ type Handler struct {
 	TimeSeries        *app.GetTimeSeries
 
 	Commerce CommerceUseCases
+	Funding  FundingUseCases
 }
 
 func NewRouter(h *Handler) chi.Router {
@@ -97,6 +98,11 @@ func NewRouter(h *Handler) chi.Router {
 		r.Get("/agents/{id}", h.getCommerceAgent)
 		r.Post("/agents/{id}/disable", h.setCommerceAgentStatus(commerce.Disabled))
 		r.Post("/agents/{id}/enable", h.setCommerceAgentStatus(commerce.Active))
+		r.Post("/funding-methods", h.registerFundingMethod)
+		r.Get("/funding-methods/{id}", h.getFundingMethod)
+		r.Post("/funding-methods/{id}/disable", h.setFundingMethodStatus(commerce.Disabled))
+		r.Post("/funding-methods/{id}/enable", h.setFundingMethodStatus(commerce.Active))
+		r.Get("/customers/{id}/funding-methods", h.listCustomerFundingMethods)
 	})
 
 	r.With(h.limitIP(app.RuleSignUpPerIP)).Post("/v1/auth/signup", h.signUp)

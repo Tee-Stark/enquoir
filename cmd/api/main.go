@@ -175,6 +175,7 @@ func main() {
 		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
 
 		Commerce: commerceUseCases(pool, ids, secrets, sysClock, cache, audit),
+		Funding:  fundingUseCases(pool, ids, sysClock, audit),
 	}
 
 	srv := httpapi.NewServer(httpAddr, httpapi.NewRouter(handler))
@@ -284,5 +285,16 @@ func commerceUseCases(pool *pgxpool.Pool, ids app.IDGenerator, secrets app.Secre
 		ListAgents:     &commerceapp.ListAgents{Agents: agents},
 		GetAgent:       &commerceapp.GetAgent{Agents: agents},
 		SetAgentStatus: &commerceapp.SetAgentStatus{Agents: agents, Clock: clock, Audit: audit},
+	}
+}
+
+// fundingUseCases wires funding-method bindings on /v1/commerce.
+func fundingUseCases(pool *pgxpool.Pool, ids app.IDGenerator, clock app.Clock, audit *app.Audit) httpapi.FundingUseCases {
+	methods, customers := postgres.NewCommerceFundingMethodStore(pool), postgres.NewCommerceCustomerStore(pool)
+	return httpapi.FundingUseCases{
+		Register: &commerceapp.RegisterFundingMethod{Methods: methods, Customers: customers, IDs: ids, Clock: clock, Audit: audit},
+		Get:      &commerceapp.GetFundingMethod{Methods: methods},
+		List:     &commerceapp.ListFundingMethods{Methods: methods, Customers: customers},
+		Status:   &commerceapp.SetFundingMethodStatus{Methods: methods, Clock: clock, Audit: audit},
 	}
 }
