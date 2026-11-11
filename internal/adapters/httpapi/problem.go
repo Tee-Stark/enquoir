@@ -40,6 +40,11 @@ const (
 	codeRegistrationConflict = "registration_conflict"
 	codeCustomerUnknown      = "customer_unknown"
 	codeCustomerDisabled     = "customer_disabled"
+	codeAgentUnknown         = "agent_unknown"
+	codeAgentDisabled        = "agent_disabled"
+	codeFundingUnknown       = "funding_method_unknown"
+	codeFundingDisabled      = "funding_method_disabled"
+	codeTermsMismatch        = "terms_mismatch"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.
@@ -110,6 +115,16 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 			"the customer is not one this merchant registered; register it with POST /v1/commerce/customers first")
 	case errors.Is(err, commerceapp.ErrCustomerDisabled):
 		writeProblem(w, http.StatusUnprocessableEntity, codeCustomerDisabled, "the customer is disabled; enable it first")
+	case errors.Is(err, commerceapp.ErrAgentUnknown):
+		writeProblem(w, http.StatusUnprocessableEntity, codeAgentUnknown, "the agent is not one this merchant registered; register it with POST /v1/commerce/agents first")
+	case errors.Is(err, commerceapp.ErrAgentDisabled):
+		writeProblem(w, http.StatusUnprocessableEntity, codeAgentDisabled, "the agent is disabled; enable it first")
+	case errors.Is(err, commerceapp.ErrFundingMethodUnknown):
+		writeProblem(w, http.StatusUnprocessableEntity, codeFundingUnknown, err.Error())
+	case errors.Is(err, commerceapp.ErrFundingMethodDisabled):
+		writeProblem(w, http.StatusUnprocessableEntity, codeFundingDisabled, "the funding method is disabled; enable it first")
+	case errors.Is(err, commerceapp.ErrTermsMismatch):
+		writeProblem(w, http.StatusConflict, codeTermsMismatch, err.Error())
 	case errors.Is(err, commerceapp.ErrRegistrationConflict):
 		writeProblem(w, http.StatusConflict, codeRegistrationConflict, err.Error())
 	case errors.Is(err, app.ErrNotFound):

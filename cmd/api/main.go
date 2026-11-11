@@ -176,6 +176,7 @@ func main() {
 
 		Commerce: commerceUseCases(pool, ids, secrets, sysClock, cache, audit),
 		Funding:  fundingUseCases(pool, ids, sysClock, audit),
+		Mandates: mandateUseCases(pool, tokens, emails, ids, sysClock, audit),
 	}
 
 	srv := httpapi.NewServer(httpAddr, httpapi.NewRouter(handler))
@@ -296,5 +297,21 @@ func fundingUseCases(pool *pgxpool.Pool, ids app.IDGenerator, clock app.Clock, a
 		Get:      &commerceapp.GetFundingMethod{Methods: methods},
 		List:     &commerceapp.ListFundingMethods{Methods: methods, Customers: customers},
 		Status:   &commerceapp.SetFundingMethodStatus{Methods: methods, Clock: clock, Audit: audit},
+	}
+}
+
+// mandateUseCases wires mandate requests and mandates on /v1/commerce,
+// and the customer's consent page routes.
+func mandateUseCases(pool *pgxpool.Pool, tokens app.TokenStore, emails *app.Emails, ids app.IDGenerator, clock app.Clock, audit *app.Audit) httpapi.MandateUseCases {
+	store := postgres.NewCommerceMandateStore(pool)
+	customers, agents, methods := postgres.NewCommerceCustomerStore(pool), postgres.NewCommerceAgentStore(pool), postgres.NewCommerceFundingMethodStore(pool)
+	return httpapi.MandateUseCases{
+		Request:    &commerceapp.RequestMandate{Mandates: store, Customers: customers, Agents: agents, Methods: methods, Emails: emails, IDs: ids, Clock: clock, Audit: audit},
+		GetRequest: &commerceapp.GetMandateRequest{Mandates: store, Clock: clock},
+		View:       &commerceapp.ViewConsent{Tokens: tokens, Mandates: store, Clock: clock},
+		Decide:     &commerceapp.DecideConsent{Tokens: tokens, Mandates: store, IDs: ids, Clock: clock, Audit: audit},
+		List:       &commerceapp.ListMandates{Mandates: store, Clock: clock},
+		Get:        &commerceapp.GetMandate{Mandates: store, Clock: clock},
+		Revoke:     &commerceapp.RevokeMandate{Mandates: store, Customers: customers, Emails: emails, Clock: clock, Audit: audit},
 	}
 }

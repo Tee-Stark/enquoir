@@ -66,6 +66,7 @@ type Handler struct {
 
 	Commerce CommerceUseCases
 	Funding  FundingUseCases
+	Mandates MandateUseCases
 }
 
 func NewRouter(h *Handler) chi.Router {
@@ -103,7 +104,17 @@ func NewRouter(h *Handler) chi.Router {
 		r.Post("/funding-methods/{id}/disable", h.setFundingMethodStatus(commerce.Disabled))
 		r.Post("/funding-methods/{id}/enable", h.setFundingMethodStatus(commerce.Active))
 		r.Get("/customers/{id}/funding-methods", h.listCustomerFundingMethods)
+		r.Post("/mandate-requests", h.requestMandate)
+		r.Get("/mandate-requests/{id}", h.getMandateRequest)
+		r.Get("/mandates", h.listMandates)
+		r.Get("/mandates/{id}", h.getMandate)
+		r.Post("/mandates/{id}/revoke", h.revokeMandate)
 	})
+	// The customer's consent page, with the link Enquoir emailed them:
+	// the token is the only credential, and no merchant ever holds it.
+	r.Post("/v1/consent/view", h.viewConsent)
+	r.Post("/v1/consent/approve", h.decideConsent(commerce.ConsentApproved))
+	r.Post("/v1/consent/reject", h.decideConsent(commerce.ConsentRejected))
 
 	r.With(h.limitIP(app.RuleSignUpPerIP)).Post("/v1/auth/signup", h.signUp)
 	r.With(h.limitIP(app.RuleLoginPerIP)).Post("/v1/auth/login", h.logIn)

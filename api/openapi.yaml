@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Enquoir API
-  version: 0.6.0
+  version: 0.7.0
   summary: The safe control and observability layer for agentic finance.
   description: |
     Enquoir sits between an AI agent and a payment rail. The agent states an
@@ -95,9 +95,30 @@ tags:
       Enquoir never receives card data or PSP secrets. A funding-method
       request with any undocumented field is refused (`400
       validation_failed`, naming the field), as is any value holding 12 or
-      more digits in a row - a card number's shape. Customer spending
-      authority (mandates) is granted only by the customer, through
-      Enquoir's own consent flow - not yet built.
+      more digits in a row - a card number's shape.
+
+      **Mandates** are spending authority, and only the customer grants
+      them. The merchant requests one (`POST /v1/commerce/mandate-requests`)
+      for one customer, one agent and one of that customer's funding
+      methods, with a scope and an expiry (at most 90 days). Enquoir freezes
+      the terms (hashed in `terms_hash`) and emails the customer a one-time
+      link to its consent page, valid 1 hour. The merchant never receives
+      the link and has no way to approve: poll the request, or list
+      mandates, to see the customer's decision. Merchants then manage
+      mandates for their customers: list, get, revoke. Revoking takes effect
+      at once and Enquoir emails the customer. A mandate reads `suspended`
+      while its customer, agent, funding method or integration is disabled,
+      and `expired` after its expiry. No purchase is evaluated against a
+      mandate yet.
+  - name: Consent
+    description: |
+      The customer's consent page, at `APP_BASE_URL/consent?token=...`, the
+      link Enquoir emails the customer. These routes take no credential but
+      that token, sent in the body. The page shows the terms
+      (`POST /v1/consent/view`, which doesn't spend the link), then approves
+      - sending the `terms_hash` it showed, so consent binds to exactly those
+      terms - or rejects. Either decision spends the link and is recorded,
+      with the time, IP and user agent, as immutable evidence.
   - name: Meta
     description: Health and the API contract itself.
 
@@ -934,7 +955,9 @@ paths:
         commerce.customer.enabled, commerce.agent.registered,
         commerce.agent.disabled, commerce.agent.enabled,
         commerce.funding_method.registered, commerce.funding_method.disabled,
-        commerce.funding_method.enabled. Payments have
+        commerce.funding_method.enabled, commerce.mandate.requested,
+        commerce.mandate.approved, commerce.mandate.rejected,
+        commerce.mandate.revoked. Payments have
         their own history (GET /v1/payments/{key}).
       security:
         - session: []
@@ -1791,6 +1814,319 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/commerce/mandate-requests:
+    post:
+      tags: [Commerce]
+      operationId: requestMandate
+      summary: Ask a customer for a mandate, or resolve a request already made
+      description: |
+        Freezes the terms and emails the customer a one-time consent link
+        (1 hour). The response never contains the link. Repeating the request
+        (same `external_id`, same terms) returns it without another email;
+        different terms are `409 registration_conflict`.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [external_id, customer_id, agent_id, funding_method_id, approval_mode, scope, expires_at]
+              properties:
+                external_id:
+                  $ref: "#/components/schemas/ExternalID"
+                customer_id:
+                  type: string
+                agent_id:
+                  type: string
+                funding_method_id:
+                  type: string
+                  description: One of this customer's funding methods.
+                approval_mode:
+                  $ref: "#/components/schemas/ApprovalMode"
+                scope:
+                  type: object
+                  required: [currency, max_transaction_minor, max_cumulative_minor]
+                  properties:
+                    currency:
+                      type: string
+                      enum: [USD, EUR, GBP]
+                    max_transaction_minor:
+                      type: integer
+                      minimum: 1
+                      description: The most one purchase may cost, in minor units (cents).
+                    max_cumulative_minor:
+                      type: integer
+                      minimum: 1
+                      description: The most all purchases together may cost; at least max_transaction_minor.
+                    max_transactions:
+                      type: integer
+                      minimum: 0
+                      maximum: 100000
+                      description: The most purchases; 0 or omitted for no limit.
+                    allowed_categories:
+                      type: array
+                      maxItems: 50
+                      items:
+                        type: string
+                      description: Product categories allowed; empty or omitted for any.
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: In the future, at most 90 days ahead. Kept to the second.
+      responses:
+        "201":
+          description: "Requested; the consent email is on its way."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MandateRequest"
+        "200":
+          description: "Already requested with these terms: the same request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MandateRequest"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/RegistrationConflict"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "422":
+          $ref: "#/components/responses/MandatePartyUnusable"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/mandate-requests/{id}:
+    parameters:
+      - $ref: "#/components/parameters/MandateRequestID"
+    get:
+      tags: [Commerce]
+      operationId: getMandateRequest
+      summary: Get a mandate request and the customer's decision
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "The request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MandateRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/mandates:
+    get:
+      tags: [Commerce]
+      operationId: listMandates
+      summary: List the merchant's mandates
+      description: Newest first. What to show a customer who asks what they have allowed.
+      security:
+        - merchantKey: []
+      parameters:
+        - name: customer_id
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/MandateStatus"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of mandates.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Mandate"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/mandates/{id}:
+    parameters:
+      - $ref: "#/components/parameters/MandateID"
+    get:
+      tags: [Commerce]
+      operationId: getMandate
+      summary: Get a mandate
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "The mandate."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mandate"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/mandates/{id}/revoke:
+    parameters:
+      - $ref: "#/components/parameters/MandateID"
+    post:
+      tags: [Commerce]
+      operationId: revokeMandate
+      summary: Revoke a mandate for the customer
+      description: |
+        At once: revoking only removes authority. Enquoir emails the customer
+        that it happened. Revoking a revoked mandate succeeds and changes
+        nothing.
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "Revoked."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mandate"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/view:
+    post:
+      tags: [Consent]
+      operationId: viewConsent
+      summary: Read the terms a consent link is for
+      description: Does not spend the link.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: The `token` from the consent link.
+      responses:
+        "200":
+          description: "The terms to show the customer."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentView"
+        "400":
+          description: "The link is unknown, spent or expired, or its request was decided or has expired (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/approve:
+    post:
+      tags: [Consent]
+      operationId: approveConsent
+      summary: Approve the terms, as the customer
+      description: |
+        Creates the mandate and the consent record, and spends the link.
+        `terms_hash` must be the hash of the terms the page showed.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, terms_hash]
+              properties:
+                token:
+                  type: string
+                terms_hash:
+                  type: string
+                  description: The `terms.terms_hash` from POST /v1/consent/view.
+      responses:
+        "200":
+          description: "Approved: the mandate."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentOutcome"
+        "409":
+          description: "terms_hash is not this request's (`terms_mismatch`). The link is not spent."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "400":
+          description: "The link is unknown, spent or expired, or its request was decided or has expired (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/reject:
+    post:
+      tags: [Consent]
+      operationId: rejectConsent
+      summary: Reject the terms, as the customer
+      description: Records the rejection and spends the link. No mandate is created.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: The `token` from the consent link.
+      responses:
+        "200":
+          description: "Rejected."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentOutcome"
+        "400":
+          description: "The link is unknown, spent or expired, or its request was decided or has expired (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/payments:
     get:
       tags: [History]
@@ -2310,6 +2646,18 @@ components:
       required: true
       schema:
         type: string
+    MandateRequestID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    MandateID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
     ExternalIDFilter:
       name: external_id
       in: query
@@ -2393,6 +2741,16 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
+    MandatePartyUnusable:
+      description: |
+        Something the request names is not this merchant's, or is disabled:
+        `customer_unknown`, `customer_disabled`, `agent_unknown`,
+        `agent_disabled`, `funding_method_unknown` (also: not this
+        customer's), `funding_method_disabled`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     RegistrationConflict:
       description: |
         The merchant already registered this external ID with different
@@ -2466,6 +2824,11 @@ components:
             - registration_conflict
             - customer_unknown
             - customer_disabled
+            - agent_unknown
+            - agent_disabled
+            - funding_method_unknown
+            - funding_method_disabled
+            - terms_mismatch
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.
@@ -3154,6 +3517,148 @@ components:
           type: [string, "null"]
           format: date-time
 
+    ApprovalMode:
+      type: string
+      enum: [autonomous, per_transaction]
+      description: Purchases within the scope go ahead on their own, or each needs the customer's approval.
+
+    MandateStatus:
+      type: string
+      enum: [active, suspended, expired, revoked]
+      description: |
+        `suspended` while the customer, agent, funding method or integration
+        is disabled; `expired` after `expires_at`; `revoked` once revoked.
+
+    MandateTerms:
+      type: object
+      description: Exactly what the customer is asked to approve, frozen with the request.
+      required: [merchant, customer_id, agent, funding_method, approval_mode, scope, expires_at, terms_hash]
+      properties:
+        merchant:
+          $ref: "#/components/schemas/NamedRef"
+        customer_id:
+          type: string
+        agent:
+          $ref: "#/components/schemas/NamedRef"
+        funding_method:
+          type: object
+          required: [id, brand, last_four]
+          properties:
+            id:
+              type: string
+            brand:
+              type: string
+            last_four:
+              type: [string, "null"]
+        approval_mode:
+          $ref: "#/components/schemas/ApprovalMode"
+        scope:
+          type: object
+          required: [currency, max_transaction_minor, max_cumulative_minor, max_transactions, allowed_categories]
+          properties:
+            currency:
+              type: string
+            max_transaction_minor:
+              type: integer
+            max_cumulative_minor:
+              type: integer
+            max_transactions:
+              type: [integer, "null"]
+              description: null for no limit.
+            allowed_categories:
+              type: array
+              items:
+                type: string
+              description: Empty for any.
+        expires_at:
+          type: string
+          format: date-time
+        terms_hash:
+          type: string
+          description: "`sha256:` and the SHA-256 of the canonical snapshot of these terms."
+
+    NamedRef:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+
+    MandateRequest:
+      type: object
+      required: [id, external_id, status, terms, created_at, expires_at, decided_at, mandate_id]
+      properties:
+        id:
+          type: string
+        external_id:
+          $ref: "#/components/schemas/ExternalID"
+        status:
+          type: string
+          enum: [pending, approved, rejected, expired]
+        terms:
+          $ref: "#/components/schemas/MandateTerms"
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: When the request, and its consent link, stop working (1 hour).
+        decided_at:
+          type: [string, "null"]
+          format: date-time
+        mandate_id:
+          type: [string, "null"]
+          description: Once approved.
+
+    Mandate:
+      type: object
+      required: [id, request_id, consent_record_id, status, terms, approved_at, revoked_at]
+      properties:
+        id:
+          type: string
+        request_id:
+          type: string
+        consent_record_id:
+          type: string
+          description: The customer's recorded consent.
+        status:
+          $ref: "#/components/schemas/MandateStatus"
+        terms:
+          $ref: "#/components/schemas/MandateTerms"
+        approved_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: [string, "null"]
+          format: date-time
+
+    ConsentView:
+      type: object
+      required: [request_id, expires_at, terms]
+      properties:
+        request_id:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        terms:
+          $ref: "#/components/schemas/MandateTerms"
+
+    ConsentOutcome:
+      type: object
+      required: [request, mandate]
+      properties:
+        request:
+          $ref: "#/components/schemas/MandateRequest"
+        mandate:
+          description: The mandate created, on approval; null on rejection.
+          oneOf:
+            - $ref: "#/components/schemas/Mandate"
+            - type: "null"
+
     CommerceCustomer:
       type: object
       required: [id, external_id, email, status, created_at, disabled_at]
@@ -3229,7 +3734,7 @@ components:
               properties:
                 type:
                   type: string
-                  enum: [user, agent, invitation, payee, merchant_integration, commerce_customer, commerce_agent, commerce_funding_method]
+                  enum: [user, agent, invitation, payee, merchant_integration, commerce_customer, commerce_agent, commerce_funding_method, commerce_mandate_request, commerce_mandate]
                 id:
                   type: string
             - type: "null"
