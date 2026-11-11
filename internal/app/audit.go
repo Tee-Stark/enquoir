@@ -88,6 +88,9 @@ const (
 	AuditCommerceAgentRegistered    = "commerce.agent.registered"
 	AuditCommerceAgentDisabled      = "commerce.agent.disabled"
 	AuditCommerceAgentEnabled       = "commerce.agent.enabled"
+	AuditFundingMethodRegistered    = "commerce.funding_method.registered"
+	AuditFundingMethodDisabled      = "commerce.funding_method.disabled"
+	AuditFundingMethodEnabled       = "commerce.funding_method.enabled"
 )
 
 // AuditFilter narrows the audit log. Zero fields don't filter.
@@ -160,6 +163,7 @@ var knownAuditActions = map[string]bool{
 	AuditIntegrationKeyRotated: true, AuditIntegrationKeyRevoked: true,
 	AuditCommerceCustomerRegistered: true, AuditCommerceCustomerDisabled: true, AuditCommerceCustomerEnabled: true,
 	AuditCommerceAgentRegistered: true, AuditCommerceAgentDisabled: true, AuditCommerceAgentEnabled: true,
+	AuditFundingMethodRegistered: true, AuditFundingMethodDisabled: true, AuditFundingMethodEnabled: true,
 }
 
 // ListMyActivity lists the events about the signed-in user's account:

@@ -81,11 +81,15 @@ func (d *directory[T]) setStatus(s commerceapp.Scope, id string, status commerce
 	return true, nil
 }
 
-func (d *directory[T]) list(s commerceapp.Scope, f commerceapp.ListFilter) ([]T, string) {
+// list lists s's records that pass f and, if given, keep.
+func (d *directory[T]) list(s commerceapp.Scope, f commerceapp.ListFilter, keep ...func(T) bool) ([]T, string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var match []*record[T]
 	for _, r := range d.records {
+		if len(keep) > 0 && !keep[0](r.value) {
+			continue
+		}
 		if r.scope == s && (f.ExternalID == "" || r.external == f.ExternalID) &&
 			(f.Status == "" || *r.status(&r.value) == f.Status) {
 			match = append(match, r)
@@ -118,8 +122,9 @@ func (d *directory[T]) list(s commerceapp.Scope, f commerceapp.ListFilter) ([]T,
 }
 
 var (
-	_ commerceapp.CustomerStore = (*Customers)(nil)
-	_ commerceapp.AgentStore    = (*Agents)(nil)
+	_ commerceapp.CustomerStore      = (*Customers)(nil)
+	_ commerceapp.AgentStore         = (*Agents)(nil)
+	_ commerceapp.FundingMethodStore = (*FundingMethods)(nil)
 )
 
 // Customers is an in-memory commerceapp.CustomerStore.
@@ -178,4 +183,33 @@ func (s *Agents) SetAgentStatus(ctx context.Context, sc commerceapp.Scope, id co
 func (s *Agents) ListAgents(ctx context.Context, sc commerceapp.Scope, f commerceapp.ListFilter) (commerceapp.AgentPage, error) {
 	out, next := s.d.list(sc, f)
 	return commerceapp.AgentPage{Agents: out, NextCursor: next}, nil
+}
+
+// FundingMethods is an in-memory commerceapp.FundingMethodStore.
+type FundingMethods struct {
+	d directory[commerce.FundingMethod]
+}
+
+func NewFundingMethods() *FundingMethods { return &FundingMethods{} }
+
+func (s *FundingMethods) RegisterFundingMethod(ctx context.Context, f commerce.FundingMethod) (commerce.FundingMethod, bool, error) {
+	got, created := s.d.register(&record[commerce.FundingMethod]{
+		id: string(f.ID), scope: scopeOf(string(f.OrgID), string(f.MerchantID)), external: commerce.ExternalID(f.Reference), created: f.CreatedAt, value: f,
+		status:   func(f *commerce.FundingMethod) *commerce.Status { return &f.Status },
+		disabled: func(f *commerce.FundingMethod) **time.Time { return &f.DisabledAt },
+	})
+	return got, created, nil
+}
+
+func (s *FundingMethods) GetFundingMethod(ctx context.Context, sc commerceapp.Scope, id commerce.FundingMethodID) (commerce.FundingMethod, error) {
+	return s.d.get(sc, string(id))
+}
+
+func (s *FundingMethods) SetFundingMethodStatus(ctx context.Context, sc commerceapp.Scope, id commerce.FundingMethodID, status commerce.Status, at time.Time) (bool, error) {
+	return s.d.setStatus(sc, string(id), status, at)
+}
+
+func (s *FundingMethods) ListFundingMethods(ctx context.Context, sc commerceapp.Scope, customer commerce.CustomerID, f commerceapp.ListFilter) (commerceapp.FundingMethodPage, error) {
+	out, next := s.d.list(sc, f, func(m commerce.FundingMethod) bool { return m.CustomerID == customer })
+	return commerceapp.FundingMethodPage{Methods: out, NextCursor: next}, nil
 }
