@@ -15,7 +15,9 @@
 # The flow: an owner signs up, verifies, and connects a merchant; the
 # merchant's backend, with its integration key, registers customers and
 # agents (repeats resolve, changes conflict) and binds a saved card by
-# its own reference (card data refused); the key is shown to be
+# its own reference (card data refused); a customer approves a mandate
+# from the link Enquoir emailed them, rejects another, and the merchant
+# revokes the first; the key is shown to be
 # the only credential commerce accepts, and accepted nowhere else; a
 # second storefront and a second organisation can't see the first's
 # records; disabling, rotating and revoking end the key's access at
@@ -177,6 +179,76 @@ got
 expect_status 200
 check '[ "$(json ".data | length")" = 1 ] && [ "$(json ".data[0].id")" = "$BINDING" ]' "the customer has exactly the one binding"
 
+step "5c. A mandate: the merchant asks, the customer decides from the emailed link"
+SHOPPER=$(addr shopper)
+with_key "$KEY_A" POST /v1/commerce/customers "{\"external_id\":\"cust_shopper\",\"email\":\"$SHOPPER\"}"
+expect_status 201
+SHOPPER_ID=$(json .id)
+with_key "$KEY_A" POST /v1/commerce/funding-methods "{\"customer_id\":\"$SHOPPER_ID\",\"provider\":\"stripe\",\"merchant_funding_method_id\":\"mfm_shopper\",\"display\":{\"brand\":\"visa\",\"last_four\":\"4242\"}}"
+expect_status 201
+SHOPPER_CARD=$(json .id)
+EXPIRES=$(jq -rn 'now + 30*86400 | strftime("%Y-%m-%dT%H:%M:%SZ")')
+mandate_request() {
+	echo "{\"external_id\":\"$1\",\"customer_id\":\"$SHOPPER_ID\",\"agent_id\":\"$AGENT\",\"funding_method_id\":\"$SHOPPER_CARD\",\"approval_mode\":\"autonomous\",\"scope\":{\"currency\":\"USD\",\"max_transaction_minor\":150000,\"max_cumulative_minor\":300000,\"max_transactions\":3,\"allowed_categories\":[\"electronics\"]},\"expires_at\":\"$EXPIRES\"}"
+}
+show "curl -s -H 'Authorization: Bearer $(redact "$KEY_A")' -X POST $API/v1/commerce/mandate-requests -d '$(mandate_request mreq_1)'"
+with_key "$KEY_A" POST /v1/commerce/mandate-requests "$(mandate_request mreq_1)"
+got
+expect_status 201
+REQUEST=$(json .id)
+HASH=$(json .terms.terms_hash)
+check '[ "$(json .status)" = pending ] && ! grep -q "token" <<<"$BODY"' "pending, and the merchant gets no link"
+with_key "$KEY_A" POST /v1/commerce/mandate-requests "$(mandate_request mreq_1)"
+expect_status 200
+TOKEN=$(token_for "$SHOPPER" /consent) || fail "no consent email reached the customer within ${WAIT_SECONDS}s (is a current worker the only one running?)"
+pass "the consent link reached the customer's inbox (through Resend)"
+req POST /v1/consent/view "{\"token\":\"$TOKEN\"}"
+got
+expect_status 200
+check '[ "$(json .terms.terms_hash)" = "$HASH" ] && [ "$(json .terms.merchant.name)" = "Acme Electronics" ]' "the page shows the frozen terms"
+req POST /v1/consent/approve "{\"token\":\"$TOKEN\",\"terms_hash\":\"sha256:not-these\"}"
+expect_status 409
+req POST /v1/consent/approve "{\"token\":\"$TOKEN\",\"terms_hash\":\"$HASH\"}" -H "User-Agent: e2e-consent-page"
+got
+expect_status 200
+MANDATE=$(json .mandate.id)
+check '[ "$(json .mandate.status)" = active ]' "approved: the mandate is active"
+req POST /v1/consent/approve "{\"token\":\"$TOKEN\",\"terms_hash\":\"$HASH\"}"
+expect_status 400
+with_key "$KEY_A" GET "/v1/commerce/mandate-requests/$REQUEST" ""
+check '[ "$(json .status)" = approved ] && [ "$(json .mandate_id)" = "$MANDATE" ]' "the merchant sees the customer's approval"
+with_key "$KEY_A" POST /v1/commerce/funding-methods/$SHOPPER_CARD/disable ""
+with_key "$KEY_A" GET "/v1/commerce/mandates/$MANDATE" ""
+check '[ "$(json .status)" = suspended ]' "suspended while the card is disabled"
+with_key "$KEY_A" POST /v1/commerce/funding-methods/$SHOPPER_CARD/enable ""
+with_key "$KEY_A" GET "/v1/commerce/mandates?customer_id=$SHOPPER_ID&status=active" ""
+check '[ "$(json ".data | length")" = 1 ]' "listed as active again"
+
+with_key "$KEY_A" POST /v1/commerce/mandate-requests "$(mandate_request mreq_2)"
+expect_status 201
+REQUEST_2=$(json .id)
+# The newest consent email to the shopper is mreq_2's.
+sleep 1
+for _ in $(seq 1 "$WAIT_SECONDS"); do
+	TOKEN_2=$(token_for "$SHOPPER" /consent) || fail "no second consent email reached the customer"
+	[ "$TOKEN_2" != "$TOKEN" ] && break
+	sleep 1
+done
+req POST /v1/consent/reject "{\"token\":\"$TOKEN_2\"}"
+got
+expect_status 200
+check '[ "$(json .request.id)" = "$REQUEST_2" ] && [ "$(json .request.status)" = rejected ] && [ "$(json .mandate)" = null ]' "rejected: no mandate"
+
+with_key "$KEY_A" POST "/v1/commerce/mandates/$MANDATE/revoke" ""
+got
+expect_status 200
+check '[ "$(json .status)" = revoked ]' "revoked at once"
+for _ in $(seq 1 "$WAIT_SECONDS"); do
+	grep -F "\"to\":\"$SHOPPER\"" "$MAIL_FILE" 2>/dev/null | grep -q "has been revoked" && break
+	sleep 1
+done
+check 'grep -F "\"to\":\"$SHOPPER\"" "$MAIL_FILE" | grep -q "has been revoked"' "the customer was told by email"
+
 step "6. Only a merchant key opens commerce, and it opens nothing else"
 req POST /v1/agents '{"name":"treasury bot"}' -b "$JAR_A"
 expect_status 201
@@ -209,6 +281,10 @@ expect_status 404
 with_key "$KEY_B" POST "/v1/commerce/agents/$AGENT/disable" ""
 expect_status 404
 with_key "$KEY_B" GET "/v1/commerce/funding-methods/$BINDING" ""
+expect_status 404
+with_key "$KEY_B" GET "/v1/commerce/mandates/$MANDATE" ""
+expect_status 404
+with_key "$KEY_B" GET "/v1/commerce/mandate-requests/$REQUEST" ""
 expect_status 404
 with_key "$KEY_B" GET "/v1/commerce/customers/$CUSTOMER/funding-methods" ""
 expect_status 404
@@ -254,7 +330,8 @@ check '! grep -qi "ada@example.com" <<<"$BODY"' "no customer email in the audit 
 req GET "/v1/audit-log" "" -b "$JAR_A"
 for action in merchant_integration.created merchant_integration.disabled merchant_integration.enabled \
 	merchant_integration.key_rotated merchant_integration.key_revoked commerce.agent.registered \
-	commerce.funding_method.registered; do
+	commerce.funding_method.registered commerce.mandate.requested commerce.mandate.approved \
+	commerce.mandate.rejected commerce.mandate.revoked; do
 	check "grep -qF '\"$action\"' <<<\"\$BODY\"" "recorded: $action"
 done
 
