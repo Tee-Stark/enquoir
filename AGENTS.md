@@ -208,7 +208,36 @@ each one you depend on, and record differences in docs/rail-notes.md.
   FAILED. Read failure_type and failure_reason.
 - Limits: 20 requests per second overall, 10 per endpoint, 10 concurrent.
 
-## Commerce Phase 2: funding-method bindings (current)
+## Commerce Phase 3: consent and mandates (current)
+
+Done when a customer can approve a mandate, and the merchant can inspect
+and revoke it.
+
+- A mandate request (merchant key, register-or-resolve by the merchant's
+  external ID) names one active customer, one active agent and one active
+  funding-method binding of that customer, an approval mode (autonomous
+  or per transaction), a scope (one currency of USD, EUR or GBP; a
+  maximum per transaction and in total; optionally a maximum count and
+  allowed categories) and an expiry at most 90 days ahead. Its terms are
+  frozen as a canonical snapshot with a hash.
+- Consent by email only: Enquoir emails the customer's registered address
+  a one-time link, valid 1 hour, to its consent page (at `APP_BASE_URL`).
+  The page reads the terms by token, then approves or rejects; that
+  spends the link. The merchant never sees the token, and nothing a
+  merchant sends can approve. A merchant consent URL with an emailed code
+  is a later UX improvement.
+- Approval creates the mandate and an immutable consent record (the exact
+  terms and their hash, method, time, IP and user agent) in one
+  transaction. A request is not a mandate; they are separate resources.
+- Mandates are managed by the merchant on the customer's behalf: list,
+  get, revoke. Revoking takes effect at once (it only removes authority)
+  and Enquoir emails the customer that it happened. A mandate reads as
+  suspended while its integration, customer, agent or binding is
+  disabled, and expired after its expiry.
+- No checkouts, reservations or grants yet (phases 4 and 5). Audit events
+  for every request, decision and revocation.
+
+## Commerce Phase 2: funding-method bindings (done)
 
 Done when a merchant can register opaque references to its customers'
 saved payment methods.
