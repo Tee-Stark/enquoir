@@ -223,8 +223,9 @@ saved payment methods.
   customer's bindings, disable and enable; merchant key only. Only an
   active customer of the same merchant can be bound.
 - Card data is refused, not ignored: a funding-method request with any
-  field Enquoir does not know is rejected, and a reference that looks
-  like a card number (12 to 19 digits) is invalid.
+  field Enquoir does not know is rejected, and a value holding 12 or more
+  digits in a row (spaces and dashes ignored: a card number's shape) is
+  invalid.
 - Registering a binding grants no spending authority: that is the
   customer's mandate (phase 3).
 - Audit events for binding registration and status changes.
