@@ -1079,3 +1079,76 @@ keeping both sections. It reaches `main` with this branch.
 Funding-method bindings: the merchant registers an opaque reference to a
 customer's saved PSP payment method; Enquoir stores its own binding ID
 and display details (brand, last four), never the PSP token.
+
+## Commerce Phase 2: funding-method bindings - done (2026-11-11)
+
+Branch `feat/commerce-funding-methods`, stacked on
+`feat/commerce-identity` (PR #12, still open). Tag `commerce-phase-2`.
+
+### What exists
+
+- **`commerce.FundingMethod`**: the merchant's reference for a saved
+  payment method (`merchant_funding_method_id`, unique per merchant),
+  its PSP's name (`provider`), display details (`brand`, optional
+  `last_four`), status. Enquoir's ID is `fmb_...`.
+- **Use cases**: register-or-resolve, get, list one customer's bindings
+  (status filter, paged, newest first), disable, enable.
+- **Postgres** (migration 0016): `commerce_funding_methods`.
+- **HTTP**: `POST /v1/commerce/funding-methods`, `GET`/`disable`/`enable`
+  on `/v1/commerce/funding-methods/{id}`, and
+  `GET /v1/commerce/customers/{id}/funding-methods`; OpenAPI 0.6.0.
+- **Audit**: `commerce.funding_method.registered|disabled|enabled`.
+- `make e2e-commerce` grows a binding step and isolation checks.
+
+### Design choices
+
+- **Card data is refused, three ways.** (1) The request body is decoded
+  strictly, `display` included: any undocumented field (`card_number`,
+  `cvv`, `provider_method_reference`) is `400 validation_failed` naming
+  the field. Silently dropping it would hide a merchant sending card
+  data. (2) Any value with 12 or more digits in a row, spaces and dashes
+  ignored, is refused (references and provider names); brands may hold
+  no digits; `last_four` is exactly four digits. (3) Postgres enforces
+  `last_four ~ '^[0-9]{4}$'` too. No error message repeats a value.
+- **The design document's optional `provider_method_reference`** (the
+  PSP's own ID) is not accepted. The document prefers that Enquoir not
+  need it, and a `pm_...` is a chargeable token at the PSP; adding it
+  later is a deliberate decision, not a default.
+- **Only an active customer of the calling merchant can be bound.**
+  Another merchant's customer (sibling storefront included) is `422
+  customer_unknown`, the same as a made-up ID; a disabled one is `422
+  customer_disabled`. Postgres backs this with a composite foreign key
+  `(customer_id, merchant_id, org_id)`, so no code path can bind across
+  merchants.
+- **One reference, one payment method.** A repeat with another customer,
+  provider or display details is `409 registration_conflict`.
+- **Disabling a customer leaves their bindings as they are.** Nothing
+  spends against a binding yet; phase 3's mandates will check customer,
+  binding and integration status together when authority is used.
+
+### Verified
+
+- `make test` and `make test-integration` at every commit.
+- Mutation checks, each caught: no customer-ownership check; no
+  disabled-customer check; no conflict check; listing without the
+  ownership check; the Postgres status update without the merchant
+  condition; dropping `DisallowUnknownFields` (a `card_number` field was
+  then silently dropped and the binding stored); the digit run not
+  ignoring dashes; the PAN length check disabled. The schema test proves
+  Postgres alone refuses a cross-merchant binding and a 16-digit last
+  four.
+- Live: `make e2e-commerce` twice in a row on this branch's API (:8091),
+  all steps. Afterwards no stored binding, audit event or API log line
+  held the test card number `4111...`.
+
+### Not verified / open
+
+- A binding's provider is free text; nothing checks it is a PSP the
+  merchant really uses.
+- No dashboard view of bindings.
+
+### Next: commerce phase 3
+
+Consent and mandates: the merchant or agent requests a mandate; the
+customer approves, inspects and revokes it through Enquoir's own consent
+flow (an emailed one-time link), never on the merchant's word.

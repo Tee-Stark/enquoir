@@ -173,8 +173,8 @@ The second bounded context: a merchant's AI shopping agent proposes
 purchases funded by the merchant's customers, and Enquoir decides
 whether the customer's authority allows each one. The merchant charges
 through its own payment provider; Enquoir never holds customer funds,
-card data or PSP secrets. Phase 1 of 8 is built: merchant integration
-and identity.
+card data or PSP secrets. Phases 1 and 2 of 8 are built: merchant
+integration and identity, and funding-method bindings.
 
 An owner or admin connects a merchant from the dashboard and gets its
 integration key (`enq_mk_...`, shown once). The merchant's backend uses
@@ -189,6 +189,17 @@ curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce
   -d '{"external_id":"cust_42","email":"ada@example.com"}'     # 201, then 200 on a repeat
 curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce/agents \
   -d '{"external_id":"shopping-assistant","name":"Acme Shopping Assistant"}'
+```
+
+The merchant then binds a customer's saved payment method by its own
+reference for it; Enquoir keeps only that, the PSP's name and display
+details, and returns its own binding ID. Card data is refused - an
+undocumented field, or anything shaped like a card number, is a 400:
+
+```sh
+curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce/funding-methods \
+  -d '{"customer_id":"cus_...","provider":"stripe","merchant_funding_method_id":"mfm_123",
+       "display":{"brand":"visa","last_four":"4242"}}'      # {"id":"fmb_...", ...}
 ```
 
 The merchant always comes from the key, never from the request; another
