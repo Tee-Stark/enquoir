@@ -336,3 +336,154 @@ func TestAuditLog_NamesTheActingMerchant(t *testing.T) {
 		t.Errorf("event = %+v", e)
 	}
 }
+
+type fundingUseCases struct {
+	register *commerceapp.RegisterFundingMethod
+	list     *commerceapp.ListFundingMethods
+	status   *commerceapp.SetFundingMethodStatus
+	store    *CommerceFundingMethodStore
+}
+
+func newFundingUseCases(t *testing.T) fundingUseCases {
+	pool := testPool(t)
+	store, customers := NewCommerceFundingMethodStore(pool), NewCommerceCustomerStore(pool)
+	clock, ids := realClock{}, credentials.RandomIDs{}
+	audit := &app.Audit{Log: NewAuditLog(pool), IDs: ids, Clock: clock}
+	return fundingUseCases{
+		register: &commerceapp.RegisterFundingMethod{Methods: store, Customers: customers, IDs: ids, Clock: clock, Audit: audit},
+		list:     &commerceapp.ListFundingMethods{Methods: store, Customers: customers},
+		status:   &commerceapp.SetFundingMethodStatus{Methods: store, Clock: clock, Audit: audit},
+		store:    store,
+	}
+}
+
+func cardOf(customer commerce.CustomerID, ref string) commerceapp.FundingMethodCommand {
+	return commerceapp.FundingMethodCommand{CustomerID: customer, Reference: ref, Provider: "stripe", Brand: "visa", LastFour: "4242"}
+}
+
+func TestCommerceFundingMethods_RegisterOrResolveListAndScope(t *testing.T) {
+	ctx := context.Background()
+	u, _, _ := newCommerceUseCases(t)
+	fu := newFundingUseCases(t)
+	accounts := NewAccountStore(testPool(t))
+	orgA, _ := newTestOrg(t, accounts)
+	orgB, _ := newTestOrg(t, accounts)
+	a1, _ := u.newMerchantIn(t, orgA.ID)
+	a2, _ := u.newMerchantIn(t, orgA.ID)
+	b, _ := u.newMerchantIn(t, orgB.ID)
+	ada, _, _ := u.registerCustomer.Run(ctx, a1, "ada", "ada@example.com")
+
+	first, created, err := fu.register.Run(ctx, a1, cardOf(ada.ID, "mfm_1"))
+	if err != nil || !created || first.Display.LastFour != "4242" || first.Provider != "stripe" {
+		t.Fatalf("register: %+v %v %v", first, created, err)
+	}
+	again, created, err := fu.register.Run(ctx, a1, cardOf(ada.ID, "mfm_1"))
+	if err != nil || created || again.ID != first.ID || !again.CreatedAt.Equal(first.CreatedAt) {
+		t.Errorf("repeat: %+v %v %v", again, created, err)
+	}
+	wallet, _, err := fu.register.Run(ctx, a1, commerceapp.FundingMethodCommand{CustomerID: ada.ID, Reference: "mfm_2", Provider: "stripe", Brand: "paypal"})
+	if err != nil || wallet.Display.LastFour != "" {
+		t.Fatalf("a wallet without last four: %+v, %v", wallet, err)
+	}
+	if _, _, err := fu.register.Run(ctx, a1, commerceapp.FundingMethodCommand{CustomerID: ada.ID, Reference: "mfm_1", Provider: "adyen", Brand: "visa", LastFour: "4242"}); !errors.Is(err, commerceapp.ErrRegistrationConflict) {
+		t.Errorf("another provider: %v", err)
+	}
+
+	// Another merchant can't bind, see, list or change ada's.
+	for _, other := range []commerceapp.MerchantPrincipal{a2, b} {
+		if _, _, err := fu.register.Run(ctx, other, cardOf(ada.ID, "mfm_9")); !errors.Is(err, commerceapp.ErrCustomerUnknown) {
+			t.Errorf("%s binding A1's customer: %v", other.MerchantID, err)
+		}
+		if _, err := fu.list.Run(ctx, other, ada.ID, commerceapp.ListFilter{}); !errors.Is(err, app.ErrNotFound) {
+			t.Errorf("%s listing A1's customer's bindings: %v", other.MerchantID, err)
+		}
+		if _, err := fu.status.Run(ctx, other, first.ID, commerce.Disabled); !errors.Is(err, app.ErrNotFound) {
+			t.Errorf("%s disabling A1's binding: %v", other.MerchantID, err)
+		}
+	}
+	if got, err := fu.store.GetFundingMethod(ctx, a1.Scope(), first.ID); err != nil || got.Status != commerce.Active {
+		t.Errorf("A1's binding after the others' attempts: %+v, %v", got, err)
+	}
+
+	page, err := fu.list.Run(ctx, a1, ada.ID, commerceapp.ListFilter{Limit: 1})
+	if err != nil || len(page.Methods) != 1 || page.Methods[0].ID != wallet.ID || page.NextCursor == "" {
+		t.Fatalf("first page: %+v, %v", page, err)
+	}
+	page, _ = fu.list.Run(ctx, a1, ada.ID, commerceapp.ListFilter{Limit: 1, Cursor: page.NextCursor})
+	if len(page.Methods) != 1 || page.Methods[0].ID != first.ID || page.NextCursor != "" {
+		t.Errorf("second page: %+v", page)
+	}
+
+	if got, err := fu.status.Run(ctx, a1, first.ID, commerce.Disabled); err != nil || got.DisabledAt == nil {
+		t.Fatalf("disable: %+v, %v", got, err)
+	}
+	disabled, _ := fu.list.Run(ctx, a1, ada.ID, commerceapp.ListFilter{Status: commerce.Disabled})
+	if len(disabled.Methods) != 1 || disabled.Methods[0].ID != first.ID {
+		t.Errorf("disabled: %+v", disabled.Methods)
+	}
+}
+
+// The database itself refuses a binding to another merchant's customer,
+// and more of a card than its last four - whatever the code above it does.
+func TestCommerceFundingMethods_TheSchemaRefusesWhatTheRulesForbid(t *testing.T) {
+	ctx := context.Background()
+	u, _, _ := newCommerceUseCases(t)
+	fu := newFundingUseCases(t)
+	accounts := NewAccountStore(testPool(t))
+	org, _ := newTestOrg(t, accounts)
+	mine, _ := u.newMerchantIn(t, org.ID)
+	sibling, _ := u.newMerchantIn(t, org.ID)
+	theirs, _, _ := u.registerCustomer.Run(ctx, sibling, "cust", "c@example.com")
+	ours, _, _ := u.registerCustomer.Run(ctx, mine, "cust", "c@example.com")
+
+	base := commerce.FundingMethod{
+		ID: commerce.FundingMethodID(credentials.RandomIDs{}.NewID("fmb")), MerchantID: mine.MerchantID, OrgID: org.ID,
+		CustomerID: theirs.ID, Reference: "mfm_schema", Provider: "stripe",
+		Display: commerce.FundingDisplay{Brand: "visa", LastFour: "4242"}, Status: commerce.Active, CreatedAt: realClock{}.Now(),
+	}
+	if _, _, err := fu.store.RegisterFundingMethod(ctx, base); err == nil {
+		t.Error("stored a binding of this merchant to a sibling storefront's customer")
+	}
+	base.CustomerID = ours.ID
+	base.Display.LastFour = "4242424242424242"
+	if _, _, err := fu.store.RegisterFundingMethod(ctx, base); err == nil {
+		t.Error("stored a whole card number as last four")
+	}
+}
+
+func TestCommerceFundingMethods_ConcurrentRegistrationsMakeOneBinding(t *testing.T) {
+	ctx := context.Background()
+	u, _, _ := newCommerceUseCases(t)
+	fu := newFundingUseCases(t)
+	m, _ := u.newMerchant(t, NewAccountStore(testPool(t)))
+	c, _, _ := u.registerCustomer.Run(ctx, m, "cust", "c@example.com")
+
+	var wg sync.WaitGroup
+	ids := make([]commerce.FundingMethodID, 10)
+	made := make([]bool, len(ids))
+	for i := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f, created, err := fu.register.Run(ctx, m, cardOf(c.ID, "mfm_race"))
+			if err != nil {
+				t.Errorf("registration %d: %v", i, err)
+				return
+			}
+			ids[i], made[i] = f.ID, created
+		}()
+	}
+	wg.Wait()
+	n := 0
+	for i := range ids {
+		if ids[i] != ids[0] {
+			t.Errorf("registration %d got %s, want %s", i, ids[i], ids[0])
+		}
+		if made[i] {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d registrations report creating the binding, want 1", n)
+	}
+}

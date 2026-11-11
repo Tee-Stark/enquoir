@@ -380,3 +380,114 @@ func (s *CommerceAgentStore) ListAgents(ctx context.Context, sc commerceapp.Scop
 	}
 	return page, nil
 }
+
+var _ commerceapp.FundingMethodStore = (*CommerceFundingMethodStore)(nil)
+
+// CommerceFundingMethodStore persists funding-method bindings.
+type CommerceFundingMethodStore struct{ pool *pgxpool.Pool }
+
+func NewCommerceFundingMethodStore(pool *pgxpool.Pool) *CommerceFundingMethodStore {
+	return &CommerceFundingMethodStore{pool: pool}
+}
+
+const fundingColumns = `id, merchant_id, org_id, customer_id, merchant_funding_method_id, provider,
+	display_brand, COALESCE(display_last_four, ''), status, created_at, disabled_at`
+
+func scanFundingMethod(row pgx.Row) (commerce.FundingMethod, error) {
+	var f commerce.FundingMethod
+	var id, merchant, org, customer, ref, provider, status string
+	err := row.Scan(&id, &merchant, &org, &customer, &ref, &provider, &f.Display.Brand, &f.Display.LastFour, &status, &f.CreatedAt, &f.DisabledAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return commerce.FundingMethod{}, app.ErrNotFound
+	}
+	if err != nil {
+		return commerce.FundingMethod{}, err
+	}
+	f.ID, f.MerchantID, f.OrgID, f.CustomerID = commerce.FundingMethodID(id), commerce.MerchantID(merchant), domain.OrgID(org), commerce.CustomerID(customer)
+	f.Reference, f.Provider, f.Status = commerce.FundingReference(ref), commerce.Provider(provider), commerce.Status(status)
+	return f, nil
+}
+
+// RegisterFundingMethod inserts f unless its merchant already has its
+// reference, then returns the stored binding; concurrent registrations
+// of one reference make one binding.
+func (s *CommerceFundingMethodStore) RegisterFundingMethod(ctx context.Context, f commerce.FundingMethod) (commerce.FundingMethod, bool, error) {
+	stored, err := scanFundingMethod(s.pool.QueryRow(ctx, `
+		INSERT INTO commerce_funding_methods (id, merchant_id, org_id, customer_id, merchant_funding_method_id, provider,
+			display_brand, display_last_four, status, created_at, disabled_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (merchant_id, merchant_funding_method_id) DO NOTHING
+		RETURNING `+fundingColumns,
+		string(f.ID), string(f.MerchantID), string(f.OrgID), string(f.CustomerID), string(f.Reference), string(f.Provider),
+		f.Display.Brand, nullable(f.Display.LastFour), string(f.Status), f.CreatedAt, f.DisabledAt))
+	if err == nil {
+		return stored, true, nil
+	}
+	if !errors.Is(err, app.ErrNotFound) {
+		return commerce.FundingMethod{}, false, err
+	}
+	stored, err = scanFundingMethod(s.pool.QueryRow(ctx, `SELECT `+fundingColumns+` FROM commerce_funding_methods
+		WHERE org_id = $1 AND merchant_id = $2 AND merchant_funding_method_id = $3`,
+		string(f.OrgID), string(f.MerchantID), string(f.Reference)))
+	return stored, false, err
+}
+
+func (s *CommerceFundingMethodStore) GetFundingMethod(ctx context.Context, sc commerceapp.Scope, id commerce.FundingMethodID) (commerce.FundingMethod, error) {
+	return scanFundingMethod(s.pool.QueryRow(ctx, `SELECT `+fundingColumns+` FROM commerce_funding_methods
+		WHERE org_id = $1 AND merchant_id = $2 AND id = $3`, string(sc.OrgID), string(sc.MerchantID), string(id)))
+}
+
+func (s *CommerceFundingMethodStore) SetFundingMethodStatus(ctx context.Context, sc commerceapp.Scope, id commerce.FundingMethodID, status commerce.Status, at time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE commerce_funding_methods SET status = $4, disabled_at = $5
+		WHERE org_id = $1 AND merchant_id = $2 AND id = $3 AND status <> $4`,
+		string(sc.OrgID), string(sc.MerchantID), string(id), string(status), disabledAt(status, at))
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() > 0 {
+		return true, nil
+	}
+	_, err = s.GetFundingMethod(ctx, sc, id)
+	return false, err
+}
+
+func (s *CommerceFundingMethodStore) ListFundingMethods(ctx context.Context, sc commerceapp.Scope, customer commerce.CustomerID, f commerceapp.ListFilter) (commerceapp.FundingMethodPage, error) {
+	w := &where{}
+	w.add("org_id = ?", string(sc.OrgID))
+	w.add("merchant_id = ?", string(sc.MerchantID))
+	w.add("customer_id = ?", string(customer))
+	if f.Status != "" {
+		w.add("status = ?", string(f.Status))
+	}
+	if f.Cursor != "" {
+		t, id, err := decodeCursor(f.Cursor)
+		if err != nil {
+			return commerceapp.FundingMethodPage{}, &app.ValidationError{Field: "cursor", Message: err.Error()}
+		}
+		w.add("(created_at, id) < (?, ?)", t, id)
+	}
+	limit := w.next(f.Limit + 1)
+	rows, err := s.pool.Query(ctx, `SELECT `+fundingColumns+` FROM commerce_funding_methods WHERE `+w.sql()+
+		` ORDER BY created_at DESC, id DESC LIMIT `+limit, w.args...)
+	if err != nil {
+		return commerceapp.FundingMethodPage{}, fmt.Errorf("listing funding methods: %w", err)
+	}
+	defer rows.Close()
+	var page commerceapp.FundingMethodPage
+	for rows.Next() {
+		m, err := scanFundingMethod(rows)
+		if err != nil {
+			return commerceapp.FundingMethodPage{}, err
+		}
+		page.Methods = append(page.Methods, m)
+	}
+	if err := rows.Err(); err != nil {
+		return commerceapp.FundingMethodPage{}, err
+	}
+	if len(page.Methods) > f.Limit {
+		page.Methods = page.Methods[:f.Limit]
+		last := page.Methods[f.Limit-1]
+		page.NextCursor = encodeCursor(last.CreatedAt, string(last.ID))
+	}
+	return page, nil
+}
