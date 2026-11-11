@@ -12,6 +12,31 @@ var sample = map[app.TemplateID]map[string]string{
 	app.TemplateInvitation:      {"link": "https://enquoir.etimi.me/invitations/accept?token=t2", "organisation": "Acme Treasury", "inviter": "ada@example.com", "role": "operator"},
 	app.TemplatePasswordReset:   {"link": "https://enquoir.etimi.me/reset-password?token=t3"},
 	app.TemplatePasswordChanged: {},
+	app.TemplateMandateConsent: {"link": "https://enquoir.etimi.me/consent?token=t4", "merchant": "Acme Electronics", "agent": "Acme Shopping Assistant",
+		"payment_method": "visa ending 4242", "approval": "without asking you each time", "max_per_transaction": "USD 1500.00",
+		"max_total": "USD 3000.00", "max_transactions": "3", "categories": "electronics", "expires": "11 Dec 2026 09:00 UTC"},
+	app.TemplateMandateRevoked: {"merchant": "Acme Electronics", "agent": "Acme Shopping Assistant", "payment_method": "visa ending 4242"},
+}
+
+// A consent email shows the customer every term they are asked to
+// approve, before they click.
+func TestMandateConsentShowsEveryTerm(t *testing.T) {
+	params := sample[app.TemplateMandateConsent]
+	e, err := New().Render(app.TemplateMandateConsent, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range params {
+		if k == "link" {
+			continue
+		}
+		if !strings.Contains(e.HTML, want) || !strings.Contains(e.Text, want) {
+			t.Errorf("consent email does not show %s (%q)", k, want)
+		}
+	}
+	if !strings.Contains(e.Subject, "Acme Electronics") {
+		t.Errorf("subject = %q", e.Subject)
+	}
 }
 
 func TestEveryTemplateRendersSubjectHTMLAndText(t *testing.T) {

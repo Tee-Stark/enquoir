@@ -28,7 +28,8 @@ type Renderer struct {
 }
 
 // Templates is every template ID, for previews and checks.
-var Templates = []app.TemplateID{app.TemplateVerifyEmail, app.TemplateInvitation, app.TemplatePasswordReset, app.TemplatePasswordChanged}
+var Templates = []app.TemplateID{app.TemplateVerifyEmail, app.TemplateInvitation, app.TemplatePasswordReset, app.TemplatePasswordChanged,
+	app.TemplateMandateConsent, app.TemplateMandateRevoked}
 
 // New parses every embedded template with DefaultBrand. A broken
 // template panics here, at start-up, never mid-send.

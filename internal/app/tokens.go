@@ -13,6 +13,9 @@ const (
 	PurposeVerifyEmail   TokenPurpose = "verify_email"
 	PurposeResetPassword TokenPurpose = "reset_password"
 	PurposeInvitation    TokenPurpose = "invitation"
+	// PurposeMandateConsent is a commerce customer's consent link; its
+	// subject is the mandate request.
+	PurposeMandateConsent TokenPurpose = "mandate_consent"
 )
 
 // OneTimeToken is a link token as stored: only its hash. Subject is

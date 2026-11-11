@@ -1,0 +1,15 @@
+{{define "subject"}}{{.P.merchant}} asks to let {{.P.agent}} buy for you{{end}}
+{{define "action"}}Review and decide{{end}}
+{{define "content"}}{{.P.merchant}} asks for your permission
+
+{{.P.merchant}} would like its AI agent, {{.P.agent}}, to make purchases for you, {{.P.approval}}, on these terms:
+
+  Payment method:       {{.P.payment_method}}
+  Up to, per purchase:  {{.P.max_per_transaction}}
+  Up to, in total:      {{.P.max_total}}
+  Number of purchases:  {{.P.max_transactions}}
+  Categories:           {{.P.categories}}
+  Until:                {{.P.expires}}
+
+Nothing is allowed until you approve. The link works once and expires in 1 hour. {{.P.merchant}} can't approve for you.{{end}}
+{{define "why"}}You received this because {{.P.merchant}} asked {{.Brand.Name}} to get your consent at this address. If you didn't expect it, ignore this email: nothing happens unless you approve.{{end}}
