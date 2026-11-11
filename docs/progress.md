@@ -1152,3 +1152,107 @@ Branch `feat/commerce-funding-methods`, stacked on
 Consent and mandates: the merchant or agent requests a mandate; the
 customer approves, inspects and revokes it through Enquoir's own consent
 flow (an emailed one-time link), never on the merchant's word.
+
+## Commerce Phase 3: consent and mandates - done (2026-11-11)
+
+Branch `feat/commerce-mandates`, stacked on `feat/commerce-funding-methods`
+(PR #13, itself on #12). Tag `commerce-phase-3`.
+
+### Decisions taken with the user
+
+- **Consent by email only.** Enquoir emails the customer's registered
+  address a one-time link (1 hour) to its consent page; the merchant
+  never receives it. *Later UX improvement, as agreed:* a consent URL the
+  merchant redirects to, completed with a code Enquoir emails the
+  customer, to keep the customer in the checkout.
+- **Mandates are managed by the merchant**, for the customer: the
+  customer does not come back to Enquoir to inspect or revoke.
+- **1-hour link; mandates at most 90 days; one named agent per mandate.**
+- **Deviation, for the user to confirm:** the user suggested a
+  revocation be finalised by the customer through an emailed
+  confirmation link. Built instead: revocation takes effect at once and
+  the customer is emailed that it happened. A revocation pending
+  confirmation would leave the agent's authority live meanwhile, and
+  revoking only ever removes authority, so nothing is gained by waiting.
+
+### What exists
+
+- **Domain** (`internal/commerce/mandate.go`): `MandateTerms` (parties
+  with the names and card display the customer sees, approval mode,
+  `MandateScope`, expiry), frozen as a canonical JSON snapshot
+  (`mandate-terms/v1`) with `Hash()` = `sha256:<hex>` binding every term;
+  `MandateRequest` (pending, approved, rejected; expired after an hour),
+  `Mandate` (effective status: revoked, else expired, else suspended
+  while integration, customer, agent or card is disabled, else active),
+  `ConsentRecord`.
+- **Use cases**: `RequestMandate`, `GetMandateRequest`, `ViewConsent`,
+  `DecideConsent`, `ListMandates`, `GetMandate`, `RevokeMandate`.
+- **Email**: `mandate_consent` (every term, before the click, and "the
+  merchant can't approve for you") and `mandate_revoked` templates; token
+  purpose `mandate_consent`, page `APP_BASE_URL/consent`.
+- **Postgres** (migration 0017): requests, consent records, mandates.
+- **HTTP**: merchant key - `POST /v1/commerce/mandate-requests`,
+  `GET .../{id}`, `GET /v1/commerce/mandates`, `GET .../{id}`,
+  `POST .../{id}/revoke`; public - `POST /v1/consent/view|approve|reject`.
+  OpenAPI 0.7.0. `docs/frontend.md` describes the consent page.
+
+### Design choices
+
+- **Consent binds to what was shown.** Approval must send the
+  `terms_hash` the page displayed; anything else is `409
+  terms_mismatch` and the link stays unspent.
+- **One transaction per decision**: the link (and any other for that
+  request) is spent, the request decided, the consent record written and,
+  on approval, the mandate created. Eight concurrent approvals with one
+  link make one mandate and one record (unit and Postgres).
+- **The database guards the evidence.** Snapshots are stored as exact
+  text (JSONB would reorder keys); a `CHECK` makes each stored hash the
+  snapshot's SHA-256, so altered terms can't be saved under the old hash;
+  consent records are one per request and a trigger refuses any update
+  or delete; composite foreign keys make a request's card its own
+  customer's, and everything its merchant's.
+- **Terms that expire before the link can't be approved** (a mandate
+  born expired); the page can't show them either.
+- **Approval does not re-check the parties' status.** If the card is
+  disabled between request and approval, the mandate is created and reads
+  `suspended` until it is enabled.
+- **A request that fails to queue its email returns 500**; repeating it
+  returns the stored request without an email. There is no resend: a
+  merchant whose customer missed the link makes a new request (new
+  `external_id`).
+- The consent routes take the token in the body, never the URL.
+
+### Verified
+
+- `make test` and `make test-integration` at every commit.
+- Mutation checks caught: no terms-hash check; a card of another
+  customer accepted; no request-conflict check; revoke notifying on every
+  call; terms expiring inside the link's hour accepted (a test added for
+  it after the first mutation run missed it); the Postgres store deciding
+  without spending the link and revoking without the merchant scope (two
+  tests added after both slipped through: through the use case the token
+  always matched, and the "other merchant" was in another organisation).
+  A first mutation that did not compile was discarded, not counted.
+- Live, `make e2e-commerce`, all steps, on this branch's API and worker:
+  the consent email went through Resend to a test inbox, the link from it
+  approved a mandate (with the page's user agent recorded), a second
+  request was rejected, the mandate read `suspended` while its card was
+  disabled, and revoking emailed the customer. No link or token in the
+  email outbox.
+- **Found while verifying:** five stale workers (from 7 November) were
+  still polling the task queue, two of them compiled `go run` children
+  left behind when their parents were killed. One took the first run's
+  consent email and failed it ("unknown template"). With the user's
+  agreement all were stopped; one worker built from this branch is left
+  running (`/tmp/enquoir-worker-commerce`, log alongside). Deployments
+  must replace every worker on release, or old ones will fail new
+  emails.
+
+### Not verified / open
+
+- No resend of a consent link; no mandate view on the dashboard.
+- No rate limit on the public consent routes (tokens are 256-bit, so
+  guessing is not the risk; volume is).
+- Mandates are not yet used: no checkout is evaluated against one
+  (phase 4), and no budget is reserved (phase 5).
+- The merchant URL plus emailed code consent flow (later UX improvement).

@@ -107,6 +107,35 @@ one integration per storefront, each with one key.
   The audit log shows their registration with an actor of type
   `merchant_integration`.
 
+## The consent page (commerce)
+
+Merchants' customers reach Enquoir only through this page, at
+`APP_BASE_URL/consent?token=...`: the link Enquoir emails a customer when
+a merchant asks for a mandate (permission for the merchant's AI agent to
+buy for them). The customer has no Enquoir account; the token is the only
+credential. Never put it anywhere but the request body.
+
+1. On load, `POST /v1/consent/view` with `{"token": ...}`. Show every
+   term in `terms`: the merchant and agent names, the payment method
+   (`brand`, `last_four`), approval mode (`autonomous`: buys without
+   asking; `per_transaction`: asks each time), the scope (amounts are
+   minor units of `currency`; `max_transactions` null means no limit;
+   empty `allowed_categories` means any) and `expires_at`. Viewing does
+   not spend the link.
+2. Approve: `POST /v1/consent/approve` with `{"token", "terms_hash"}`,
+   where `terms_hash` is the one from step 1 - consent binds to exactly
+   what was shown. Reject: `POST /v1/consent/reject` with `{"token"}`.
+   Either spends the link; show a plain "done" page.
+3. Errors: `400 token_invalid` - the link is spent, expired (1 hour), or
+   the request was decided or expired: say so, and that the merchant can
+   send a new request. `409 terms_mismatch` - reload and show the terms
+   again.
+
+The page's origin must be in the API's `CORS_ALLOWED_ORIGINS` (the
+approve and reject calls are state-changing). After deciding, there is
+nothing more for the customer to do at Enquoir: the merchant shows and
+revokes their mandates.
+
 ## Limits
 
 When a limit is hit, the answer is `429`, with `Retry-After` in seconds:

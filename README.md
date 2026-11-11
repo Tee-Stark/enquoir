@@ -173,8 +173,9 @@ The second bounded context: a merchant's AI shopping agent proposes
 purchases funded by the merchant's customers, and Enquoir decides
 whether the customer's authority allows each one. The merchant charges
 through its own payment provider; Enquoir never holds customer funds,
-card data or PSP secrets. Phases 1 and 2 of 8 are built: merchant
-integration and identity, and funding-method bindings.
+card data or PSP secrets. Phases 1 to 3 of 8 are built: merchant
+integration and identity, funding-method bindings, and consent and
+mandates.
 
 An owner or admin connects a merchant from the dashboard and gets its
 integration key (`enq_mk_...`, shown once). The merchant's backend uses
@@ -200,6 +201,20 @@ undocumented field, or anything shaped like a card number, is a 400:
 curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce/funding-methods \
   -d '{"customer_id":"cus_...","provider":"stripe","merchant_funding_method_id":"mfm_123",
        "display":{"brand":"visa","last_four":"4242"}}'      # {"id":"fmb_...", ...}
+```
+
+Spending authority comes only from the customer. The merchant requests a
+mandate - one agent, one card, a scope and an expiry of at most 90 days
+- and Enquoir emails the customer a one-time link (1 hour) to its consent
+page; the merchant never sees the link and cannot approve. Once approved,
+the merchant lists, shows and revokes the customer's mandates; revoking
+is immediate and Enquoir emails the customer.
+
+```sh
+curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce/mandate-requests \
+  -d '{"external_id":"mreq_1","customer_id":"cus_...","agent_id":"cagt_...","funding_method_id":"fmb_...",
+       "approval_mode":"autonomous","scope":{"currency":"USD","max_transaction_minor":150000,
+       "max_cumulative_minor":300000},"expires_at":"2026-12-11T09:00:00Z"}'
 ```
 
 The merchant always comes from the key, never from the request; another
