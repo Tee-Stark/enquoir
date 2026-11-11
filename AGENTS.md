@@ -208,7 +208,28 @@ each one you depend on, and record differences in docs/rail-notes.md.
   FAILED. Read failure_type and failure_reason.
 - Limits: 20 requests per second overall, 10 per endpoint, 10 concurrent.
 
-## Commerce Phase 1: merchant integration and identity (current)
+## Commerce Phase 2: funding-method bindings (current)
+
+Done when a merchant can register opaque references to its customers'
+saved payment methods.
+
+- A binding is the merchant's own reference for one saved payment method
+  of one of its customers (by the merchant's ID for it, unique per
+  merchant), the PSP's name, and display details for consent screens: a
+  brand and, where applicable, the last four digits. Enquoir returns its
+  own binding ID. It never receives the PSP token, a card number, CVV or
+  bank credentials.
+- Register or resolve (a differing repeat is a conflict), get, list a
+  customer's bindings, disable and enable; merchant key only. Only an
+  active customer of the same merchant can be bound.
+- Card data is refused, not ignored: a funding-method request with any
+  field Enquoir does not know is rejected, and a reference that looks
+  like a card number (12 to 19 digits) is invalid.
+- Registering a binding grants no spending authority: that is the
+  customer's mandate (phase 3).
+- Audit events for binding registration and status changes.
+
+## Commerce Phase 1: merchant integration and identity (done)
 
 Done when a merchant can securely connect, and register its agents and
 customers.
