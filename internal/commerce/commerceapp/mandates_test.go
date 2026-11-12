@@ -22,6 +22,7 @@ type mandatesFixture struct {
 	emails  *app.Emails
 	auditor *app.Audit
 	ids     *apptest.IDs
+	secrets *apptest.Secrets
 	store   *commercetest.Mandates
 	request *commerceapp.RequestMandate
 	getReq  *commerceapp.GetMandateRequest
@@ -49,7 +50,7 @@ func newMandatesFixture(t *testing.T) *mandatesFixture {
 	customers, agents, methods := f.getCustomer.Customers, f.getAgent.Agents, f.get.Methods
 	store := commercetest.NewMandates(tokens, customers.(*commercetest.Customers), agents.(*commercetest.Agents), methods.(*commercetest.FundingMethods))
 	m := &mandatesFixture{
-		fundingFixture: f, mailer: mailer, store: store, tokens: tokens, emails: emails, auditor: audit, ids: ids,
+		fundingFixture: f, mailer: mailer, store: store, tokens: tokens, emails: emails, auditor: audit, ids: ids, secrets: secrets,
 		request: &commerceapp.RequestMandate{Mandates: store, Customers: customers, Agents: agents, Methods: methods, Emails: emails, IDs: ids, Clock: f.clock, Audit: audit},
 		getReq:  &commerceapp.GetMandateRequest{Mandates: store, Clock: f.clock},
 		view:    &commerceapp.ViewConsent{Tokens: tokens, Mandates: store, Clock: f.clock},

@@ -31,11 +31,11 @@ func newCheckoutsFixture(t *testing.T) *checkoutsFixture {
 	customers := m.getCustomer.Customers
 	return &checkoutsFixture{
 		mandatesFixture: m,
-		submit:          &commerceapp.SubmitCheckout{Checkouts: store, Customers: customers, Emails: m.emails, IDs: m.ids, Clock: m.clock, Audit: m.auditor},
+		submit:          &commerceapp.SubmitCheckout{Checkouts: store, Customers: customers, Emails: m.emails, IDs: m.ids, Secrets: m.secrets, Clock: m.clock, Audit: m.auditor},
 		getCk:           &commerceapp.GetCheckout{Checkouts: store, Clock: m.clock},
 		cancel:          &commerceapp.CancelCheckout{Checkouts: store, Clock: m.clock, Audit: m.auditor},
 		viewCk:          &commerceapp.ViewCheckoutApproval{Tokens: m.tokens, Checkouts: store, Clock: m.clock},
-		decideCk:        &commerceapp.DecideCheckoutApproval{Tokens: m.tokens, Checkouts: store, Clock: m.clock, Audit: m.auditor},
+		decideCk:        &commerceapp.DecideCheckoutApproval{Tokens: m.tokens, Checkouts: store, IDs: m.ids, Clock: m.clock, Audit: m.auditor},
 	}
 }
 

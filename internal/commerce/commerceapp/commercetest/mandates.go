@@ -26,6 +26,11 @@ type Mandates struct {
 	customers *Customers
 	agents    *Agents
 	methods   *FundingMethods
+
+	// OnRevoked, if set, is told when a mandate's revocation is
+	// confirmed (outside the lock), as the Postgres store revokes the
+	// mandate's unredeemed grants in the same transaction.
+	OnRevoked func(id commerce.MandateID, at time.Time)
 }
 
 func NewMandates(tokens app.TokenStore, customers *Customers, agents *Agents, methods *FundingMethods) *Mandates {
@@ -177,6 +182,16 @@ func (s *Mandates) MandateForRevocation(ctx context.Context, id commerce.Mandate
 }
 
 func (s *Mandates) ConfirmRevocation(ctx context.Context, tokenHash string, id commerce.MandateID, at time.Time) error {
+	if err := s.confirmRevocation(ctx, tokenHash, id, at); err != nil {
+		return err
+	}
+	if s.OnRevoked != nil {
+		s.OnRevoked(id, at)
+	}
+	return nil
+}
+
+func (s *Mandates) confirmRevocation(ctx context.Context, tokenHash string, id commerce.MandateID, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m, ok := s.mandates[id]

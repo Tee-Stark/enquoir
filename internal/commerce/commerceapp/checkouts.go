@@ -26,6 +26,9 @@ type CheckoutOutcome struct {
 	Status            commerce.CheckoutStatus
 	Denials           []commerce.Denial
 	ApprovalExpiresAt *time.Time
+	// Authorization is set when the checkout is authorized; the store
+	// saves it with the decision.
+	Authorization *commerce.Authorization
 }
 
 // CheckoutDecider decides a checkout given its mandate - with the
@@ -51,11 +54,30 @@ type CheckoutStore interface {
 	// app.ErrTokenInvalid unless the token is an unspent approval link
 	// for it and it is awaiting approval at at.
 	DecideCheckout(ctx context.Context, tokenHash string, id commerce.CheckoutID, at time.Time, decide CheckoutDecider) (commerce.Checkout, error)
-	// CancelCheckout cancels an authorized or awaiting checkout; changed
+	// CancelCheckout cancels an authorized checkout whose grant is
+	// unredeemed and unexpired, revoking it, or an awaiting one; changed
 	// is false if it was already cancelled; commerce.ErrCheckoutNotCancelable
 	// otherwise.
 	CancelCheckout(ctx context.Context, s Scope, id commerce.CheckoutID, at time.Time) (commerce.Checkout, bool, error)
+
+	// IssueGrant sets the checkout's grant to grantHash, replacing any
+	// earlier one, under the mandate's lock. app.ErrNotFound for another
+	// merchant's checkout; commerce.ErrGrantRedeemed once redeemed;
+	// ErrGrantNotIssuable unless its authorization is active at at.
+	IssueGrant(ctx context.Context, s Scope, id commerce.CheckoutID, grantHash string, at time.Time) (commerce.Checkout, error)
+	// RedeemGrant finds s's authorization whose current grant hashes to
+	// grantHash (ErrGrantInvalid if none) and, under the mandate's lock,
+	// returns its execution if it was redeemed (created false); otherwise
+	// calls redeem and, unless it fails, stores the execution, marks the
+	// authorization and checkout redeemed - atomically, so a grant makes
+	// at most one execution.
+	RedeemGrant(ctx context.Context, s Scope, grantHash string, at time.Time, redeem GrantRedeemer) (commerce.Execution, bool, error)
+	GetExecution(ctx context.Context, s Scope, id commerce.ExecutionID) (commerce.Execution, error)
 }
+
+// GrantRedeemer decides a redemption, given the authorization, its
+// mandate and the funding method, all read under the mandate's lock.
+type GrantRedeemer func(a commerce.Authorization, m MandateRow, f commerce.FundingMethod) (commerce.Execution, error)
 
 // CheckoutCommand is a checkout the merchant's backend submits.
 type CheckoutCommand struct {
@@ -72,12 +94,25 @@ type CheckoutCommand struct {
 	TotalMinor      int64
 }
 
-// CheckoutView is a checkout with its status now.
-type CheckoutView struct{ commerce.Checkout }
+// CheckoutView is a checkout with its status now and, only in the
+// response that issued it, its grant's secret.
+type CheckoutView struct {
+	commerce.Checkout
+	Grant string
+}
 
 func checkoutView(c commerce.Checkout, now time.Time) CheckoutView {
 	c.Status = c.StatusAt(now)
-	return CheckoutView{c}
+	return CheckoutView{Checkout: c}
+}
+
+const grantPrefix = "enq_gr"
+
+// mintGrant mints a grant secret for a; only its hash is kept.
+func mintGrant(secrets app.SecretGenerator, a *commerce.Authorization, now time.Time) string {
+	secret := secrets.NewSecret(grantPrefix)
+	a.GrantHash, a.GrantIssuedAt = app.HashSecret(secret), &now
+	return secret
 }
 
 const auditTargetCheckout = "commerce_checkout"
@@ -100,17 +135,18 @@ func checkoutDetails(c commerce.Checkout) map[string]string {
 
 // evaluate is the one decision rule, for a submission and a customer's
 // approval alike: any reason denies; otherwise awaitApproval, or
-// authorized.
-func evaluate(snap commerce.CheckoutSnapshot, now time.Time, awaitApproval bool) CheckoutDecider {
+// authorized - with its authorization, made by authorize.
+func evaluate(c commerce.Checkout, now time.Time, awaitApproval bool, authorize func(commerce.Checkout) commerce.Authorization) CheckoutDecider {
 	return func(m MandateRow, u commerce.MandateUsage) CheckoutOutcome {
-		if d := commerce.EvaluateCheckout(m.Mandate, m.StatusAt(now, m.Deps), snap, u); len(d) > 0 {
+		if d := commerce.EvaluateCheckout(m.Mandate, m.StatusAt(now, m.Deps), c.Snapshot, u); len(d) > 0 {
 			return CheckoutOutcome{Status: commerce.CheckoutDenied, Denials: d}
 		}
 		if awaitApproval && m.Terms.ApprovalMode == commerce.PerTransaction {
 			exp := now.Add(commerce.CheckoutApprovalTTL)
 			return CheckoutOutcome{Status: commerce.CheckoutAwaitingApproval, ApprovalExpiresAt: &exp}
 		}
-		return CheckoutOutcome{Status: commerce.CheckoutAuthorized}
+		a := authorize(c)
+		return CheckoutOutcome{Status: commerce.CheckoutAuthorized, Authorization: &a}
 	}
 }
 
@@ -124,6 +160,7 @@ type SubmitCheckout struct {
 	Customers CustomerStore
 	Emails    *app.Emails
 	IDs       app.IDGenerator
+	Secrets   app.SecretGenerator
 	Clock     app.Clock
 	Audit     *app.Audit
 }
@@ -149,7 +186,12 @@ func (s *SubmitCheckout) Run(ctx context.Context, p MerchantPrincipal, cmd Check
 	}
 	c := commerce.Checkout{ID: commerce.CheckoutID(s.IDs.NewID("chk")), Snapshot: snap, CreatedAt: now}
 	var terms commerce.MandateTerms
-	rule := evaluate(snap, now, true)
+	grant := ""
+	rule := evaluate(c, now, true, func(c commerce.Checkout) commerce.Authorization {
+		a := commerce.NewAuthorization(commerce.AuthorizationID(s.IDs.NewID("auth")), c, now)
+		grant = mintGrant(s.Secrets, &a, now)
+		return a
+	})
 	stored, created, err := s.Checkouts.SubmitCheckout(ctx, p.Scope(), c, func(m MandateRow, u commerce.MandateUsage) CheckoutOutcome {
 		terms = m.Terms
 		return rule(m, u)
@@ -184,7 +226,11 @@ func (s *SubmitCheckout) Run(ctx context.Context, p MerchantPrincipal, cmd Check
 		}
 	}
 	s.Audit.Record(ctx, p.OrgID, action, auditTargetCheckout, string(stored.ID), checkoutDetails(stored))
-	return checkoutView(stored, now), true, nil
+	v := checkoutView(stored, now)
+	if stored.Status == commerce.CheckoutAuthorized {
+		v.Grant = grant
+	}
+	return v, true, nil
 }
 
 // describeCheckout is a checkout as the customer reads it in an email.
@@ -284,6 +330,7 @@ func (v *ViewCheckoutApproval) Run(ctx context.Context, token string) (CheckoutV
 type DecideCheckoutApproval struct {
 	Tokens    app.TokenStore
 	Checkouts CheckoutStore
+	IDs       app.IDGenerator
 	Clock     app.Clock
 	Audit     *app.Audit
 }
@@ -297,7 +344,11 @@ func (d *DecideCheckoutApproval) Run(ctx context.Context, token, checkoutHash st
 	if approve && checkoutHash != c.Snapshot.Hash() {
 		return CheckoutView{}, ErrCheckoutMismatch
 	}
-	rule := evaluate(c.Snapshot, now, false)
+	// The authorization has no grant yet: the customer never sees one;
+	// the merchant has one issued (IssueGrant).
+	rule := evaluate(c, now, false, func(c commerce.Checkout) commerce.Authorization {
+		return commerce.NewAuthorization(commerce.AuthorizationID(d.IDs.NewID("auth")), c, now)
+	})
 	decided, err := d.Checkouts.DecideCheckout(ctx, hash, c.ID, now, func(m MandateRow, u commerce.MandateUsage) CheckoutOutcome {
 		if !approve {
 			return CheckoutOutcome{Status: commerce.CheckoutRejected}
