@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Enquoir API
-  version: 0.7.0
+  version: 0.8.0
   summary: The safe control and observability layer for agentic finance.
   description: |
     Enquoir sits between an AI agent and a payment rail. The agent states an
@@ -110,8 +110,19 @@ tags:
       the customer: the mandate pauses at once (`revocation_pending`) and
       Enquoir emails them a link to confirm. A mandate reads `suspended`
       while its customer, agent, funding method or integration is disabled,
-      and `expired` after its expiry. No purchase is evaluated against a
-      mandate yet.
+      and `expired` after its expiry.
+
+      **Checkouts** are evaluated against a mandate. The merchant's server -
+      never the agent - submits the priced checkout (`POST
+      /v1/commerce/checkouts`): items, shipping, tax, fees and a total that
+      must add up, in minor units. Enquoir freezes it (`checkout_hash`) and
+      decides, under a lock on the mandate so concurrent checkouts can't
+      overspend it: `denied` with every reason, `authorized` at once under an
+      autonomous mandate, or `awaiting_customer_approval` under a
+      per-transaction one, when the customer is emailed a link (1 hour) to
+      approve that exact checkout; limits are checked again then. Authorized
+      checkouts count against the mandate's budget and purchase count at
+      once; cancelling one releases it. Grants to charge against come next.
   - name: Consent
     description: |
       The customer's consent page, at `APP_BASE_URL/consent?token=...`, the
@@ -126,6 +137,11 @@ tags:
       link to `APP_BASE_URL/consent/revoke?token=...`: the page shows the
       mandate (`POST /v1/consent/revocation/view`) and confirms
       (`POST /v1/consent/revocation/confirm`), which revokes it for good.
+
+      Under a per-transaction mandate, each checkout's link goes to
+      `APP_BASE_URL/consent/checkout?token=...`: the page shows the checkout
+      (`POST /v1/consent/checkout/view`) and approves it - sending the
+      `checkout_hash` it showed - or rejects it.
   - name: Meta
     description: Health and the API contract itself.
 
@@ -964,8 +980,10 @@ paths:
         commerce.funding_method.registered, commerce.funding_method.disabled,
         commerce.funding_method.enabled, commerce.mandate.requested,
         commerce.mandate.approved, commerce.mandate.rejected,
-        commerce.mandate.revocation_requested, commerce.mandate.revoked.
-        Payments have
+        commerce.mandate.revocation_requested, commerce.mandate.revoked,
+        commerce.checkout.authorized, commerce.checkout.denied,
+        commerce.checkout.awaiting_approval, commerce.checkout.approved,
+        commerce.checkout.rejected, commerce.checkout.canceled. Payments have
         their own history (GET /v1/payments/{key}).
       security:
         - session: []
@@ -2211,6 +2229,240 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/commerce/checkouts:
+    post:
+      tags: [Commerce]
+      operationId: submitCheckout
+      summary: Submit a checkout for evaluation against a mandate
+      description: |
+        From the merchant's server, priced by it: never prices an agent
+        asserts. The body is decoded strictly: an undocumented field is a 400
+        naming it. The decision is recorded and returned (201); repeating the
+        same checkout (`external_id`) returns it (200); a changed one under
+        the same `external_id` is `409 registration_conflict`. A mandate that
+        is not this merchant's is `422 mandate_unknown`; every other failure
+        is a recorded `denied` checkout with its reasons.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [external_id, mandate_id, customer_id, agent_id, funding_method_id, checkout]
+              properties:
+                external_id:
+                  $ref: "#/components/schemas/ExternalID"
+                mandate_id:
+                  type: string
+                customer_id:
+                  type: string
+                agent_id:
+                  type: string
+                funding_method_id:
+                  type: string
+                checkout:
+                  $ref: "#/components/schemas/CheckoutLines"
+      responses:
+        "201":
+          description: "Evaluated: see `status` and `decision`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "200":
+          description: "Already submitted: the same checkout."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/RegistrationConflict"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "422":
+          description: "The mandate is not this merchant's (`mandate_unknown`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/checkouts/{id}:
+    parameters:
+      - $ref: "#/components/parameters/CheckoutID"
+    get:
+      tags: [Commerce]
+      operationId: getCheckout
+      summary: Get a checkout and its decision
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "The checkout."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/checkouts/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/CheckoutID"
+    post:
+      tags: [Commerce]
+      operationId: cancelCheckout
+      summary: Cancel an authorized checkout, or one awaiting the customer
+      description: |
+        Releases what it counted against the mandate. Cancelling a cancelled
+        checkout succeeds and changes nothing; anything else is `409
+        checkout_not_cancelable`.
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "Cancelled."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "409":
+          description: "Not authorized or awaiting approval (`checkout_not_cancelable`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/checkout/view:
+    post:
+      tags: [Consent]
+      operationId: viewCheckoutApproval
+      summary: Read the checkout an approval link is for
+      description: Does not spend the link.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: The `token` from the approval link.
+      responses:
+        "200":
+          description: "The checkout to show the customer."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "400":
+          description: "The link is unknown, spent or expired, or the checkout is no longer awaiting approval (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/checkout/approve:
+    post:
+      tags: [Consent]
+      operationId: approveCheckout
+      summary: Approve the checkout, as the customer
+      description: |
+        `checkout_hash` must be the one the page showed. The mandate's limits
+        are checked again: a checkout that no longer fits comes back `denied`.
+        Spends the link.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, checkout_hash]
+              properties:
+                token:
+                  type: string
+                checkout_hash:
+                  type: string
+      responses:
+        "200":
+          description: "Decided: `authorized`, or `denied` on the recheck."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "409":
+          description: "Not the checkout awaiting approval (`checkout_mismatch`). The link is not spent."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "400":
+          description: "The link is unknown, spent or expired, or the checkout is no longer awaiting approval (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/checkout/reject:
+    post:
+      tags: [Consent]
+      operationId: rejectCheckout
+      summary: Reject the checkout, as the customer
+      description: Spends the link.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: The `token` from the approval link.
+      responses:
+        "200":
+          description: "Rejected."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "400":
+          description: "The link is unknown, spent or expired, or the checkout is no longer awaiting approval (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/payments:
     get:
       tags: [History]
@@ -2742,6 +2994,12 @@ components:
       required: true
       schema:
         type: string
+    CheckoutID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
     ExternalIDFilter:
       name: external_id
       in: query
@@ -2913,6 +3171,9 @@ components:
             - funding_method_unknown
             - funding_method_disabled
             - terms_mismatch
+            - mandate_unknown
+            - checkout_mismatch
+            - checkout_not_cancelable
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.
@@ -3737,6 +3998,139 @@ components:
           format: date-time
           description: While `revocation_pending`, when the request lapses unconfirmed.
 
+    CheckoutLines:
+      type: object
+      additionalProperties: false
+      required: [currency, items, shipping_minor, tax_minor, fees_minor, total_minor]
+      description: |
+        In minor units. `total_minor` must equal the items (quantity times
+        unit price) plus shipping, tax and fees, and be positive.
+      properties:
+        currency:
+          type: string
+          enum: [USD, EUR, GBP]
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [product_id, name, category, quantity, unit_price_minor]
+            properties:
+              product_id:
+                type: string
+              name:
+                type: string
+              category:
+                type: string
+                description: Checked against the mandate's allowed categories.
+              quantity:
+                type: integer
+                minimum: 1
+                maximum: 10000
+              unit_price_minor:
+                type: integer
+                minimum: 0
+        shipping_minor:
+          type: integer
+          minimum: 0
+        tax_minor:
+          type: integer
+          minimum: 0
+        fees_minor:
+          type: integer
+          minimum: 0
+        total_minor:
+          type: integer
+          minimum: 1
+
+    Checkout:
+      type: object
+      required: [id, external_id, mandate_id, status, decision, checkout, checkout_hash, created_at, decided_at, approval_expires_at, canceled_at]
+      properties:
+        id:
+          type: string
+        external_id:
+          type: string
+        mandate_id:
+          type: string
+        status:
+          type: string
+          enum: [authorized, awaiting_customer_approval, denied, rejected, canceled, expired]
+          description: "`expired`: awaited the customer past `approval_expires_at`."
+        decision:
+          type: object
+          required: [allowed, reasons]
+          properties:
+            allowed:
+              type: boolean
+              description: True only when `authorized`.
+            reasons:
+              type: array
+              description: Every reason a `denied` checkout falls outside its mandate.
+              items:
+                type: object
+                required: [code, detail]
+                properties:
+                  code:
+                    type: string
+                    enum: [mandate_not_active, customer_mismatch, agent_mismatch, funding_method_mismatch, currency_mismatch,
+                      over_transaction_limit, category_not_allowed, over_transaction_count, over_budget]
+                  detail:
+                    type: string
+        checkout:
+          type: object
+          required: [customer_id, agent_id, funding_method_id, currency, items, shipping_minor, tax_minor, fees_minor, total_minor]
+          properties:
+            customer_id:
+              type: string
+            agent_id:
+              type: string
+            funding_method_id:
+              type: string
+            currency:
+              type: string
+            items:
+              type: array
+              items:
+                type: object
+                required: [product_id, name, category, quantity, unit_price_minor]
+                properties:
+                  product_id:
+                    type: string
+                  name:
+                    type: string
+                  category:
+                    type: string
+                  quantity:
+                    type: integer
+                  unit_price_minor:
+                    type: integer
+            shipping_minor:
+              type: integer
+            tax_minor:
+              type: integer
+            fees_minor:
+              type: integer
+            total_minor:
+              type: integer
+        checkout_hash:
+          type: string
+          description: "`sha256:` and the SHA-256 of the canonical snapshot of this checkout."
+        created_at:
+          type: string
+          format: date-time
+        decided_at:
+          type: [string, "null"]
+          format: date-time
+        approval_expires_at:
+          type: [string, "null"]
+          format: date-time
+        canceled_at:
+          type: [string, "null"]
+          format: date-time
+
     ConsentView:
       type: object
       required: [request_id, expires_at, terms]
@@ -3836,7 +4230,7 @@ components:
               properties:
                 type:
                   type: string
-                  enum: [user, agent, invitation, payee, merchant_integration, commerce_customer, commerce_agent, commerce_funding_method, commerce_mandate_request, commerce_mandate]
+                  enum: [user, agent, invitation, payee, merchant_integration, commerce_customer, commerce_agent, commerce_funding_method, commerce_mandate_request, commerce_mandate, commerce_checkout]
                 id:
                   type: string
             - type: "null"

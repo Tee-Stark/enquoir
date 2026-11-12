@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"enquoir/internal/app"
+	"enquoir/internal/commerce"
 	"enquoir/internal/commerce/commerceapp"
 	"enquoir/internal/domain"
 )
@@ -45,6 +46,9 @@ const (
 	codeFundingUnknown       = "funding_method_unknown"
 	codeFundingDisabled      = "funding_method_disabled"
 	codeTermsMismatch        = "terms_mismatch"
+	codeMandateUnknown       = "mandate_unknown"
+	codeCheckoutMismatch     = "checkout_mismatch"
+	codeNotCancelable        = "checkout_not_cancelable"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.
@@ -123,6 +127,12 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 		writeProblem(w, http.StatusUnprocessableEntity, codeFundingUnknown, err.Error())
 	case errors.Is(err, commerceapp.ErrFundingMethodDisabled):
 		writeProblem(w, http.StatusUnprocessableEntity, codeFundingDisabled, "the funding method is disabled; enable it first")
+	case errors.Is(err, commerceapp.ErrMandateUnknown):
+		writeProblem(w, http.StatusUnprocessableEntity, codeMandateUnknown, err.Error())
+	case errors.Is(err, commerceapp.ErrCheckoutMismatch):
+		writeProblem(w, http.StatusConflict, codeCheckoutMismatch, err.Error())
+	case errors.Is(err, commerce.ErrCheckoutNotCancelable):
+		writeProblem(w, http.StatusConflict, codeNotCancelable, err.Error())
 	case errors.Is(err, commerceapp.ErrTermsMismatch):
 		writeProblem(w, http.StatusConflict, codeTermsMismatch, err.Error())
 	case errors.Is(err, commerceapp.ErrRegistrationConflict):

@@ -64,9 +64,10 @@ type Handler struct {
 	Summary           *app.GetSummary
 	TimeSeries        *app.GetTimeSeries
 
-	Commerce CommerceUseCases
-	Funding  FundingUseCases
-	Mandates MandateUseCases
+	Commerce  CommerceUseCases
+	Funding   FundingUseCases
+	Mandates  MandateUseCases
+	Checkouts CheckoutUseCases
 }
 
 func NewRouter(h *Handler) chi.Router {
@@ -109,6 +110,9 @@ func NewRouter(h *Handler) chi.Router {
 		r.Get("/mandates", h.listMandates)
 		r.Get("/mandates/{id}", h.getMandate)
 		r.Post("/mandates/{id}/revoke", h.revokeMandate)
+		r.Post("/checkouts", h.submitCheckout)
+		r.Get("/checkouts/{id}", h.getCheckout)
+		r.Post("/checkouts/{id}/cancel", h.cancelCheckout)
 	})
 	// The customer's consent page, with the link Enquoir emailed them:
 	// the token is the only credential, and no merchant ever holds it.
@@ -117,6 +121,9 @@ func NewRouter(h *Handler) chi.Router {
 	r.Post("/v1/consent/reject", h.decideConsent(commerce.ConsentRejected))
 	r.Post("/v1/consent/revocation/view", h.viewRevocation)
 	r.Post("/v1/consent/revocation/confirm", h.confirmRevocation)
+	r.Post("/v1/consent/checkout/view", h.viewCheckoutApproval)
+	r.Post("/v1/consent/checkout/approve", h.decideCheckoutApproval(true))
+	r.Post("/v1/consent/checkout/reject", h.decideCheckoutApproval(false))
 
 	r.With(h.limitIP(app.RuleSignUpPerIP)).Post("/v1/auth/signup", h.signUp)
 	r.With(h.limitIP(app.RuleLoginPerIP)).Post("/v1/auth/login", h.logIn)

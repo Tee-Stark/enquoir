@@ -174,9 +174,10 @@ func main() {
 		TimeSeries:        &app.GetTimeSeries{Analytics: analytics, Clock: sysClock},
 		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
 
-		Commerce: commerceUseCases(pool, ids, secrets, sysClock, cache, audit),
-		Funding:  fundingUseCases(pool, ids, sysClock, audit),
-		Mandates: mandateUseCases(pool, tokens, emails, ids, sysClock, audit),
+		Commerce:  commerceUseCases(pool, ids, secrets, sysClock, cache, audit),
+		Funding:   fundingUseCases(pool, ids, sysClock, audit),
+		Mandates:  mandateUseCases(pool, tokens, emails, ids, sysClock, audit),
+		Checkouts: checkoutUseCases(pool, tokens, emails, ids, sysClock, audit),
 	}
 
 	srv := httpapi.NewServer(httpAddr, httpapi.NewRouter(handler))
@@ -315,5 +316,18 @@ func mandateUseCases(pool *pgxpool.Pool, tokens app.TokenStore, emails *app.Emai
 		Revoke:     &commerceapp.RequestMandateRevocation{Mandates: store, Customers: customers, Emails: emails, Clock: clock, Audit: audit},
 		ViewRevoke: &commerceapp.ViewRevocation{Tokens: tokens, Mandates: store, Clock: clock},
 		Confirm:    &commerceapp.ConfirmRevocation{Tokens: tokens, Mandates: store, Clock: clock, Audit: audit},
+	}
+}
+
+// checkoutUseCases wires checkout evaluation on /v1/commerce and the
+// customer's checkout approval page.
+func checkoutUseCases(pool *pgxpool.Pool, tokens app.TokenStore, emails *app.Emails, ids app.IDGenerator, clock app.Clock, audit *app.Audit) httpapi.CheckoutUseCases {
+	store := postgres.NewCommerceCheckoutStore(pool)
+	return httpapi.CheckoutUseCases{
+		Submit: &commerceapp.SubmitCheckout{Checkouts: store, Customers: postgres.NewCommerceCustomerStore(pool), Emails: emails, IDs: ids, Clock: clock, Audit: audit},
+		Get:    &commerceapp.GetCheckout{Checkouts: store, Clock: clock},
+		Cancel: &commerceapp.CancelCheckout{Checkouts: store, Clock: clock, Audit: audit},
+		View:   &commerceapp.ViewCheckoutApproval{Tokens: tokens, Checkouts: store, Clock: clock},
+		Decide: &commerceapp.DecideCheckoutApproval{Tokens: tokens, Checkouts: store, Clock: clock, Audit: audit},
 	}
 }
