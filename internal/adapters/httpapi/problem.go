@@ -135,7 +135,8 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 	case errors.Is(err, commerceapp.ErrAgentDisabled):
 		writeProblem(w, http.StatusUnprocessableEntity, codeAgentDisabled, "the agent is disabled; enable it first")
 	case errors.Is(err, commerceapp.ErrFundingMethodUnknown):
-		writeProblem(w, http.StatusUnprocessableEntity, codeFundingUnknown, err.Error())
+		writeProblem(w, http.StatusUnprocessableEntity, codeFundingUnknown,
+			"the funding method is not one this merchant registered; register it with POST /v1/commerce/funding-methods first")
 	case errors.Is(err, commerceapp.ErrFundingMethodDisabled):
 		writeProblem(w, http.StatusUnprocessableEntity, codeFundingDisabled, "the funding method is disabled; enable it first")
 	case errors.Is(err, commerce.ErrReportMismatch):
