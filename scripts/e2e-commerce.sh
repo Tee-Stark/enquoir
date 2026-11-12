@@ -360,6 +360,53 @@ with_key "$KEY_A" POST /v1/commerce/grants/redeem "$(redeem_body "$GRANT_6" chk_
 expect_status 201
 pass "issued to the merchant after approval, then redeemed"
 
+step "5f. Outcomes: succeeded stays spent, failed is released, unknown waits for reconciliation"
+outcome_body() { # OUTCOME REF AMOUNT [EXTRA]
+	local ref=""
+	[ -n "$2" ] && ref="\"provider_payment_reference\":\"$2\","
+	echo "{\"outcome\":\"$1\",${ref}\"provider\":\"stripe\",\"amount_minor\":$3,\"currency\":\"USD\"${4:-}}"
+}
+with_key "$KEY_A" GET "/v1/commerce/executions/$EXECUTION" ""
+check '[ "$(json .idempotency_key)" = "enquoir-$EXECUTION" ] && [ "$(json .status)" = pending ]' "the execution gives an idempotency key for the PSP request"
+show "curl -s -H 'Authorization: Bearer $(redact "$KEY_A")' -X POST $API/v1/commerce/executions/$EXECUTION/outcome -d '$(outcome_body succeeded pi_e2e_1 150000)'"
+with_key "$KEY_A" POST "/v1/commerce/executions/$EXECUTION/outcome" "$(outcome_body succeeded pi_e2e_1 150000)"
+got
+expect_status 200
+check '[ "$(json .status)" = succeeded ] && [ "$(json .result)" = applied ]' "succeeded"
+HOOK=",\"provider_event_id\":\"evt_e2e_$RUN\""
+with_key "$KEY_A" POST "/v1/commerce/executions/$EXECUTION/outcome" "$(outcome_body succeeded pi_e2e_1 150000 "$HOOK")"
+with_key "$KEY_A" POST "/v1/commerce/executions/$EXECUTION/outcome" "$(outcome_body succeeded pi_e2e_1 150000 "$HOOK")"
+check '[ "$STATUS" = 200 ] && [ "$(json .result)" = duplicate ]' "a redelivered webhook changes nothing"
+with_key "$KEY_A" POST "/v1/commerce/executions/$EXECUTION/reconcile" "$(outcome_body failed pi_e2e_1 150000)"
+check '[ "$STATUS" = 409 ] && [ "$(json .code)" = outcome_conflict ]' "a finished payment can't be contradicted"
+with_key "$KEY_A" POST "/v1/commerce/executions/$EXECUTION/outcome" "$(outcome_body succeeded pi_e2e_1 1)"
+check '[ "$STATUS" = 422 ] && [ "$(json .code)" = report_mismatch ]' "another amount is refused"
+with_key "$KEY_A" GET "/v1/commerce/executions/$EXECUTION" ""
+check '[ "$(json "[.history[].kind] | join(\",\")")" = "redeemed,reported,duplicate,duplicate,refused,refused" ]' "every report is in the history, refused ones too"
+with_key "$KEY_A" GET "/v1/commerce/checkouts/$CHK_4" ""
+check '[ "$(json .status)" = paid ]' "its checkout is paid"
+
+# chk_6's execution: the merchant's PSP call timed out.
+with_key "$KEY_A" GET "/v1/commerce/executions?mandate_id=$PER" ""
+EXEC_6=$(json ".data[0].id")
+with_key "$KEY_A" POST "/v1/commerce/executions/$EXEC_6/outcome" "$(outcome_body unknown "" 100500)"
+check '[ "$(json .status)" = unknown ]' "a timeout is reported unknown, not failed"
+with_key "$KEY_A" POST "/v1/commerce/executions/$EXEC_6/outcome" "$(outcome_body failed "" 100500)"
+check '[ "$STATUS" = 409 ] && [ "$(json .code)" = reconciliation_required ]' "unknown is resolved only by reconciling"
+with_key "$KEY_A" GET "/v1/commerce/executions?status=unknown" ""
+check '[ "$(json ".data | map(.id) | index(\"$EXEC_6\")")" != null ]' "it is in the reconciliation queue"
+with_key "$KEY_A" GET "/v1/commerce/mandates/$PER" ""
+check '[ "$(json .usage.held_minor)" = 100500 ]' "unknown keeps its amount held"
+with_key "$KEY_A" POST "/v1/commerce/executions/$EXEC_6/reconcile" "$(outcome_body failed pi_e2e_6 100500)"
+check '[ "$(json .status)" = failed ]' "reconciled: it failed"
+with_key "$KEY_A" GET "/v1/commerce/mandates/$PER" ""
+check '[ "$(json .usage.spent_minor)" = 0 ]' "the failed payment is released"
+with_key "$KEY_A" GET "/v1/commerce/mandates/$AUTO" ""
+got
+check '[ "$(json .usage.paid_minor)" = 150000 ] && [ "$(json .usage.purchases)" -ge 1 ]' "the mandate shows its usage"
+req GET "/v1/merchant-integrations/$INTEGRATION_A/checkouts?status=paid" "" -b "$JAR_A"
+check '[ "$STATUS" = 200 ] && [ "$(json ".data | length")" = 1 ]' "the dashboard lists the merchant's checkouts"
+
 step "6. Only a merchant key opens commerce, and it opens nothing else"
 req POST /v1/agents '{"name":"treasury bot"}' -b "$JAR_A"
 expect_status 201
@@ -400,6 +447,10 @@ expect_status 404
 with_key "$KEY_B" GET "/v1/commerce/checkouts/$CHK_1" ""
 expect_status 404
 with_key "$KEY_B" GET "/v1/commerce/executions/$EXECUTION" ""
+expect_status 404
+with_key "$KEY_B" POST "/v1/commerce/executions/$EXECUTION/outcome" "$(outcome_body failed "" 150000)"
+expect_status 404
+req GET "/v1/merchant-integrations/$INTEGRATION_A/executions" "" -b "$JAR_B"
 expect_status 404
 with_key "$KEY_B" POST /v1/commerce/grants/redeem "$(redeem_body "$GRANT_6" chk_6 "$CHK_HASH")"
 expect_status 422
@@ -452,7 +503,8 @@ for action in merchant_integration.created merchant_integration.disabled merchan
 	commerce.funding_method.registered commerce.mandate.requested commerce.mandate.approved \
 	commerce.mandate.rejected commerce.mandate.revoked commerce.checkout.authorized commerce.checkout.denied \
 	commerce.checkout.awaiting_approval commerce.checkout.approved commerce.checkout.canceled \
-	commerce.authorization.grant_issued commerce.authorization.redeemed; do
+	commerce.authorization.grant_issued commerce.authorization.redeemed commerce.execution.succeeded \
+	commerce.execution.unknown commerce.execution.reconciled commerce.execution.report_refused; do
 	check "grep -qF '\"$action\"' <<<\"\$BODY\"" "recorded: $action"
 done
 
