@@ -79,11 +79,41 @@ func decodeStrict(data []byte, v any, path string) error {
 
 var errNotJSON = errors.New("not JSON")
 
-func (h *Handler) registerFundingMethod(w http.ResponseWriter, r *http.Request) {
+// readBody reads r's body, up to its size limit, classifying any read
+// failure the same way every strict-decoding handler does - a body over
+// the limit is 413; anything else, decoding hasn't even started, so it
+// is reported as invalid JSON. Callers that need to decodeStrict more
+// than one sub-tree (registerFundingMethod's nested display object) call
+// this directly instead of going through readStrict, which only decodes
+// one.
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	body, err := io.ReadAll(r.Body)
 	var tooLarge *http.MaxBytesError
 	if errors.As(err, &tooLarge) {
 		writeProblem(w, http.StatusRequestEntityTooLarge, codeBodyTooLarge, fmt.Sprintf("the request body is over the %d-byte limit", MaxRequestBodyBytes))
+		return nil, false
+	}
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, codeInvalidJSON, "the request body is not valid JSON")
+		return nil, false
+	}
+	return body, true
+}
+
+// writeDecodeError classifies a decodeStrict error the same way every
+// strict-decoding handler does, and writes the matching response.
+func writeDecodeError(w http.ResponseWriter, err error) {
+	var verr *app.ValidationError
+	if errors.As(err, &verr) {
+		writeAppError(w, err, "")
+		return
+	}
+	writeProblem(w, http.StatusBadRequest, codeInvalidJSON, "the request body is not valid JSON")
+}
+
+func (h *Handler) registerFundingMethod(w http.ResponseWriter, r *http.Request) {
+	body, ok := readBody(w, r)
+	if !ok {
 		return
 	}
 	var req struct {
@@ -97,19 +127,15 @@ func (h *Handler) registerFundingMethod(w http.ResponseWriter, r *http.Request) 
 		Brand    string `json:"brand"`
 		LastFour string `json:"last_four"`
 	}
-	if err == nil {
-		err = decodeStrict(body, &req, "")
+	if err := decodeStrict(body, &req, ""); err != nil {
+		writeDecodeError(w, err)
+		return
 	}
-	if err == nil && len(req.Display) > 0 && string(req.Display) != "null" {
-		err = decodeStrict(req.Display, &display, "display.")
-	}
-	if err != nil {
-		if errors.Is(err, errNotJSON) || !errors.As(err, new(*app.ValidationError)) {
-			writeProblem(w, http.StatusBadRequest, codeInvalidJSON, "the request body is not valid JSON")
+	if len(req.Display) > 0 && string(req.Display) != "null" {
+		if err := decodeStrict(req.Display, &display, "display."); err != nil {
+			writeDecodeError(w, err)
 			return
 		}
-		writeAppError(w, err, "")
-		return
 	}
 	fm, created, err := h.Funding.Register.Run(r.Context(), merchantFrom(r.Context()), commerceapp.FundingMethodCommand{
 		CustomerID: commerce.CustomerID(req.CustomerID), Reference: req.Reference, ProviderReference: req.PSPRef, Provider: req.Provider,

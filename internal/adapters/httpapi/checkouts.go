@@ -1,15 +1,11 @@
 package httpapi
 
 import (
-	"errors"
-	"fmt"
-	"io"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
-	"enquoir/internal/app"
 	"enquoir/internal/commerce"
 	"enquoir/internal/commerce/commerceapp"
 )
@@ -91,25 +87,15 @@ func newCheckoutDTO(v commerceapp.CheckoutView) checkoutDTO {
 // from the merchant's server, and any field Enquoir doesn't know - card
 // data, a price an agent asserts - is refused, not ignored.
 func readStrict(w http.ResponseWriter, r *http.Request, v any) bool {
-	body, err := io.ReadAll(r.Body)
-	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
-		writeProblem(w, http.StatusRequestEntityTooLarge, codeBodyTooLarge, fmt.Sprintf("the request body is over the %d-byte limit", MaxRequestBodyBytes))
+	body, ok := readBody(w, r)
+	if !ok {
 		return false
 	}
-	if err == nil {
-		err = decodeStrict(body, v, "")
+	if err := decodeStrict(body, v, ""); err != nil {
+		writeDecodeError(w, err)
+		return false
 	}
-	var verr *app.ValidationError
-	switch {
-	case err == nil:
-		return true
-	case errors.As(err, &verr):
-		writeAppError(w, err, "")
-	default:
-		writeProblem(w, http.StatusBadRequest, codeInvalidJSON, "the request body is not valid JSON")
-	}
-	return false
+	return true
 }
 
 func (h *Handler) submitCheckout(w http.ResponseWriter, r *http.Request) {
