@@ -188,3 +188,26 @@ func TestMandate_StatusAt(t *testing.T) {
 		t.Errorf("revoked and expired: %s, want revoked", got)
 	}
 }
+
+// A revocation waits for the customer's confirmation. Meanwhile the
+// mandate grants nothing; unconfirmed, the request lapses after an hour.
+func TestMandate_StatusWhileARevocationAwaitsConfirmation(t *testing.T) {
+	all := Dependencies{IntegrationActive: true, CustomerActive: true, AgentActive: true, FundingMethodActive: true}
+	m := Mandate{Terms: testTerms(t)}
+	m.RequestRevocation(now)
+	if got := m.StatusAt(now.Add(59*time.Minute), all); got != MandateRevocationPending {
+		t.Errorf("within the hour: %s, want revocation_pending", got)
+	}
+	if got := m.StatusAt(now.Add(time.Hour), all); got != MandateActive {
+		t.Errorf("after the hour, unconfirmed: %s, want active again", got)
+	}
+	if got := m.StatusAt(now.Add(time.Minute), Dependencies{}); got != MandateRevocationPending {
+		t.Errorf("pending beats suspended: %s", got)
+	}
+	if !m.RevocationPendingAt(now) || m.RevocationPendingAt(now.Add(time.Hour)) {
+		t.Error("RevocationPendingAt disagrees with the hour")
+	}
+	if got, err := ParseMandateStatus("revocation_pending"); err != nil || got != MandateRevocationPending {
+		t.Errorf("parse: %s %v", got, err)
+	}
+}

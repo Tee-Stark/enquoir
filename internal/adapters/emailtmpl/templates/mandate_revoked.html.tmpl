@@ -1,7 +1,0 @@
-{{define "title"}}{{.P.agent}} can no longer buy for you{{end}}
-{{define "preheader"}}Your permission for {{.P.agent}} at {{.P.merchant}} was revoked.{{end}}
-{{define "action"}}{{end}}
-{{define "content"}}<h1 style="margin:0 0 14px;font-size:22px;color:{{.Brand.Ink}};">Permission revoked</h1>
-<p style="margin:0 0 12px;">Your permission for <strong>{{.P.agent}}</strong> to make purchases for you at <strong>{{.P.merchant}}</strong>, with {{.P.payment_method}}, has been revoked. It can't start any new purchase under it.</p>
-<p style="margin:0;">If you didn't ask for this, contact {{.P.merchant}}.</p>{{end}}
-{{define "why"}}We send this notice whenever a permission you gave is revoked.{{end}}

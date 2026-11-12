@@ -92,7 +92,18 @@ type MandateStore interface {
 	// ListMandates lists newest first; a status filter is the effective
 	// status at now.
 	ListMandates(ctx context.Context, s Scope, f MandateFilter, now time.Time) ([]MandateRow, string, error)
-	RevokeMandate(ctx context.Context, s Scope, id commerce.MandateID, at time.Time) (changed bool, err error)
+	// RequestRevocation marks the mandate revocation_pending from at
+	// until expires, unless it is revoked or a revocation is already
+	// pending at at; changed reports whether it did.
+	RequestRevocation(ctx context.Context, s Scope, id commerce.MandateID, at, expires time.Time) (changed bool, err error)
+	// MandateForRevocation reads a mandate without a merchant scope: for
+	// the confirmation page, where the customer's link is the authority.
+	MandateForRevocation(ctx context.Context, id commerce.MandateID) (MandateRow, error)
+	// ConfirmRevocation spends the revocation link and revokes the
+	// mandate, atomically. app.ErrTokenInvalid unless the token is an
+	// unspent, unexpired revocation link for it and its revocation is
+	// pending at at.
+	ConfirmRevocation(ctx context.Context, tokenHash string, id commerce.MandateID, at time.Time) error
 }
 
 const (
@@ -419,10 +430,12 @@ func (g *GetMandate) Run(ctx context.Context, p MerchantPrincipal, id commerce.M
 	return view(row, g.Clock.Now()), nil
 }
 
-// RevokeMandate revokes a mandate, for the customer, through the
-// merchant. It takes effect at once - it only removes authority - and
-// the customer is told by email.
-type RevokeMandate struct {
+// RequestMandateRevocation is the merchant asking, for its customer, to
+// revoke a mandate. The mandate grants nothing from that moment, and
+// Enquoir emails the customer a one-time link to confirm; only the
+// customer's confirmation revokes it. Unconfirmed within the hour, the
+// request lapses and the mandate is active again.
+type RequestMandateRevocation struct {
 	Mandates  MandateStore
 	Customers CustomerStore
 	Emails    *app.Emails
@@ -430,9 +443,9 @@ type RevokeMandate struct {
 	Audit     *app.Audit
 }
 
-func (r *RevokeMandate) Run(ctx context.Context, p MerchantPrincipal, id commerce.MandateID) (MandateView, error) {
+func (r *RequestMandateRevocation) Run(ctx context.Context, p MerchantPrincipal, id commerce.MandateID) (MandateView, error) {
 	now := r.Clock.Now()
-	changed, err := r.Mandates.RevokeMandate(ctx, p.Scope(), id, now)
+	changed, err := r.Mandates.RequestRevocation(ctx, p.Scope(), id, now, now.Add(commerce.RevocationLinkTTL))
 	if err != nil {
 		return MandateView{}, err
 	}
@@ -442,14 +455,81 @@ func (r *RevokeMandate) Run(ctx context.Context, p MerchantPrincipal, id commerc
 	}
 	if changed {
 		terms := row.Terms
-		if c, err := r.Customers.GetCustomer(ctx, p.Scope(), terms.Parties.CustomerID); err == nil {
-			_, _ = r.Emails.Send(ctx, app.Email{OrgID: p.OrgID, To: c.Email, Template: app.TemplateMandateRevoked, Params: map[string]string{
-				"merchant": terms.Parties.MerchantName, "agent": terms.Parties.AgentName, "payment_method": paymentMethod(terms.Parties.FundingDisplay),
-			}})
+		c, err := r.Customers.GetCustomer(ctx, p.Scope(), terms.Parties.CustomerID)
+		if err != nil {
+			return MandateView{}, err
 		}
-		r.Audit.Record(ctx, p.OrgID, app.AuditMandateRevoked, auditTargetMandate, string(id), map[string]string{
+		if _, err := r.Emails.Send(ctx, app.Email{OrgID: p.OrgID, To: c.Email, Template: app.TemplateMandateRevocation,
+			Params: map[string]string{"merchant": terms.Parties.MerchantName, "agent": terms.Parties.AgentName, "payment_method": paymentMethod(terms.Parties.FundingDisplay)},
+			Link:   &app.LinkSpec{Purpose: app.PurposeMandateRevocation, Subject: string(id), TTL: commerce.RevocationLinkTTL},
+		}); err != nil {
+			return MandateView{}, fmt.Errorf("queueing the revocation email: %w", err)
+		}
+		r.Audit.Record(ctx, p.OrgID, app.AuditMandateRevocationRequested, auditTargetMandate, string(id), map[string]string{
 			"merchant_id": string(p.MerchantID), "customer_id": string(terms.Parties.CustomerID),
 		})
 	}
+	return view(row, now), nil
+}
+
+// revocationMandate resolves a revocation link to its mandate, without
+// spending the link. Any problem is app.ErrTokenInvalid.
+func revocationMandate(ctx context.Context, tokens app.TokenStore, mandates MandateStore, token string, now time.Time) (MandateRow, string, error) {
+	if token == "" {
+		return MandateRow{}, "", app.ErrTokenInvalid
+	}
+	hash := app.HashSecret(token)
+	t, err := tokens.Peek(ctx, hash, app.PurposeMandateRevocation, now)
+	if err != nil {
+		return MandateRow{}, "", app.ErrTokenInvalid
+	}
+	row, err := mandates.MandateForRevocation(ctx, commerce.MandateID(t.Subject))
+	if err != nil || !row.RevocationPendingAt(now) {
+		return MandateRow{}, "", app.ErrTokenInvalid
+	}
+	return row, hash, nil
+}
+
+// ViewRevocation is the confirmation page reading the mandate by its
+// link. It does not spend the link.
+type ViewRevocation struct {
+	Tokens   app.TokenStore
+	Mandates MandateStore
+	Clock    app.Clock
+}
+
+func (v *ViewRevocation) Run(ctx context.Context, token string) (MandateView, error) {
+	now := v.Clock.Now()
+	row, _, err := revocationMandate(ctx, v.Tokens, v.Mandates, token, now)
+	if err != nil {
+		return MandateView{}, err
+	}
+	return view(row, now), nil
+}
+
+// ConfirmRevocation is the customer confirming, with the link Enquoir
+// emailed them, the revocation the merchant asked for. It spends the
+// link and revokes the mandate for good.
+type ConfirmRevocation struct {
+	Tokens   app.TokenStore
+	Mandates MandateStore
+	Clock    app.Clock
+	Audit    *app.Audit
+}
+
+func (c *ConfirmRevocation) Run(ctx context.Context, token string) (MandateView, error) {
+	now := c.Clock.Now()
+	row, hash, err := revocationMandate(ctx, c.Tokens, c.Mandates, token, now)
+	if err != nil {
+		return MandateView{}, err
+	}
+	if err := c.Mandates.ConfirmRevocation(ctx, hash, row.ID, now); err != nil {
+		return MandateView{}, err
+	}
+	row.Revoked, row.RevokedAt = true, &now
+	p := row.Terms.Parties
+	c.Audit.Record(ctx, p.OrgID, app.AuditMandateRevoked, auditTargetMandate, string(row.ID), map[string]string{
+		"merchant_id": string(p.MerchantID), "customer_id": string(p.CustomerID), "decided_by": "customer", "method": commerce.ConsentMethodEmailLink,
+	})
 	return view(row, now), nil
 }

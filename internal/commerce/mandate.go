@@ -269,15 +269,22 @@ const (
 	MandateSuspended MandateStatus = "suspended"
 	MandateExpired   MandateStatus = "expired"
 	MandateRevoked   MandateStatus = "revoked"
+	// MandateRevocationPending: the merchant asked to revoke it and the
+	// customer hasn't confirmed yet. It grants nothing meanwhile.
+	MandateRevocationPending MandateStatus = "revocation_pending"
 )
+
+// RevocationLinkTTL is how long a customer has to confirm a revocation
+// the merchant asked for; unconfirmed, the request lapses.
+const RevocationLinkTTL = time.Hour
 
 // ParseMandateStatus reads a status name, for filters.
 func ParseMandateStatus(s string) (MandateStatus, error) {
 	switch st := MandateStatus(strings.ToLower(strings.TrimSpace(s))); st {
-	case MandateActive, MandateSuspended, MandateExpired, MandateRevoked:
+	case MandateActive, MandateSuspended, MandateExpired, MandateRevoked, MandateRevocationPending:
 		return st, nil
 	}
-	return "", fmt.Errorf("unknown status %q: must be active, suspended, expired or revoked", s)
+	return "", fmt.Errorf("unknown status %q: must be active, suspended, revocation_pending, expired or revoked", s)
 }
 
 // Dependencies are whether each thing a mandate names may still take
@@ -300,16 +307,37 @@ type Mandate struct {
 	ApprovedAt      time.Time
 	Revoked         bool
 	RevokedAt       *time.Time
+	// RevocationRequestedAt and RevocationExpiresAt are set while a
+	// revocation the merchant asked for awaits the customer.
+	RevocationRequestedAt *time.Time
+	RevocationExpiresAt   *time.Time
+}
+
+// RequestRevocation records that the merchant asked to revoke the
+// mandate at now; the customer has RevocationLinkTTL to confirm.
+func (m *Mandate) RequestRevocation(now time.Time) {
+	exp := now.Add(RevocationLinkTTL)
+	m.RevocationRequestedAt, m.RevocationExpiresAt = &now, &exp
+}
+
+// RevocationPendingAt reports whether a revocation awaits the customer's
+// confirmation at now.
+func (m Mandate) RevocationPendingAt(now time.Time) bool {
+	return !m.Revoked && m.RevocationExpiresAt != nil && now.Before(*m.RevocationExpiresAt)
 }
 
 // StatusAt is the mandate's status at now: revoked, else expired, else
-// suspended while anything it names is disabled, else active.
+// revocation_pending while a revocation awaits the customer, else
+// suspended while anything it names is disabled, else active. Only an
+// active mandate grants anything.
 func (m Mandate) StatusAt(now time.Time, d Dependencies) MandateStatus {
 	switch {
 	case m.Revoked:
 		return MandateRevoked
 	case !now.Before(m.Terms.ExpiresAt):
 		return MandateExpired
+	case m.RevocationPendingAt(now):
+		return MandateRevocationPending
 	case !d.all():
 		return MandateSuspended
 	}

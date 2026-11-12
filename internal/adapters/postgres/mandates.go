@@ -132,10 +132,12 @@ func (s *CommerceMandateStore) Decide(ctx context.Context, cmd commerceapp.Conse
 // so lists can filter on it).
 const mandateSelect = `
 	SELECT * FROM (
-		SELECT m.id, m.request_id, m.consent_record_id, m.terms, m.approved_at, m.revoked_at, m.org_id, m.merchant_id,
+		SELECT m.id, m.request_id, m.consent_record_id, m.terms, m.approved_at, m.revoked_at,
+		       m.revocation_requested_at, m.revocation_expires_at, m.org_id, m.merchant_id,
 		       m.customer_id, mi.status = 'active', c.status = 'active', a.status = 'active', f.status = 'active',
 		       CASE WHEN m.revoked_at IS NOT NULL THEN 'revoked'
 		            WHEN m.expires_at <= $1 THEN 'expired'
+		            WHEN m.revocation_expires_at > $1 THEN 'revocation_pending'
 		            WHEN mi.status <> 'active' OR c.status <> 'active' OR a.status <> 'active' OR f.status <> 'active' THEN 'suspended'
 		            ELSE 'active' END AS effective
 		FROM commerce_mandates m
@@ -148,7 +150,7 @@ const mandateSelect = `
 func scanMandate(row pgx.Row) (commerceapp.MandateRow, string, error) {
 	var r commerceapp.MandateRow
 	var id, req, consent, terms, org, merchant, customer, effective string
-	err := row.Scan(&id, &req, &consent, &terms, &r.ApprovedAt, &r.RevokedAt, &org, &merchant, &customer,
+	err := row.Scan(&id, &req, &consent, &terms, &r.ApprovedAt, &r.RevokedAt, &r.RevocationRequestedAt, &r.RevocationExpiresAt, &org, &merchant, &customer,
 		&r.Deps.IntegrationActive, &r.Deps.CustomerActive, &r.Deps.AgentActive, &r.Deps.FundingMethodActive, &effective)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return commerceapp.MandateRow{}, "", app.ErrNotFound
@@ -213,10 +215,13 @@ func (s *CommerceMandateStore) ListMandates(ctx context.Context, sc commerceapp.
 	return out, next, nil
 }
 
-func (s *CommerceMandateStore) RevokeMandate(ctx context.Context, sc commerceapp.Scope, id commerce.MandateID, at time.Time) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE commerce_mandates SET revoked_at = $4
-		WHERE org_id = $1 AND merchant_id = $2 AND id = $3 AND revoked_at IS NULL`,
-		string(sc.OrgID), string(sc.MerchantID), string(id), at)
+// RequestRevocation opens the confirmation window, unless the mandate is
+// revoked or a window is already open at at.
+func (s *CommerceMandateStore) RequestRevocation(ctx context.Context, sc commerceapp.Scope, id commerce.MandateID, at, expires time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE commerce_mandates SET revocation_requested_at = $4, revocation_expires_at = $5
+		WHERE org_id = $1 AND merchant_id = $2 AND id = $3 AND revoked_at IS NULL
+		  AND (revocation_expires_at IS NULL OR revocation_expires_at <= $4)`,
+		string(sc.OrgID), string(sc.MerchantID), string(id), at, expires)
 	if err != nil {
 		return false, err
 	}
@@ -225,4 +230,37 @@ func (s *CommerceMandateStore) RevokeMandate(ctx context.Context, sc commerceapp
 	}
 	_, err = s.GetMandate(ctx, sc, id)
 	return false, err
+}
+
+func (s *CommerceMandateStore) MandateForRevocation(ctx context.Context, id commerce.MandateID) (commerceapp.MandateRow, error) {
+	r, _, err := scanMandate(s.pool.QueryRow(ctx, mandateSelect+` WHERE id = $2`, time.Now().UTC(), string(id)))
+	return r, err
+}
+
+// ConfirmRevocation revokes the mandate and spends its revocation link
+// in one transaction, only while the confirmation window is open.
+func (s *CommerceMandateStore) ConfirmRevocation(ctx context.Context, tokenHash string, id commerce.MandateID, at time.Time) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE commerce_mandates SET revoked_at = $2
+			WHERE id = $1 AND revoked_at IS NULL AND revocation_expires_at > $2`, string(id), at)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return app.ErrTokenInvalid
+		}
+		tag, err = tx.Exec(ctx, `
+			UPDATE one_time_tokens SET used_at = $3
+			WHERE purpose = 'mandate_revocation' AND subject = $1 AND used_at IS NULL AND expires_at > $3
+			  AND EXISTS (SELECT 1 FROM one_time_tokens t WHERE t.token_hash = $2 AND t.purpose = 'mandate_revocation'
+			              AND t.subject = $1 AND t.used_at IS NULL AND t.expires_at > $3)`,
+			string(id), tokenHash, at)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return app.ErrTokenInvalid
+		}
+		return nil
+	})
 }

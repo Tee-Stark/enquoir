@@ -242,13 +242,14 @@ check '[ "$(json .request.id)" = "$REQUEST_2" ] && [ "$(json .request.status)" =
 
 with_key "$KEY_A" POST "/v1/commerce/mandates/$MANDATE/revoke" ""
 got
+expect_status 202
+check '[ "$(json .status)" = revocation_pending ]' "paused at once, awaiting the customer"
+REVOKE_TOKEN=$(token_for "$SHOPPER" /consent/revoke) || fail "no revocation email reached the customer"
+pass "the confirmation link reached the customer's inbox"
+req POST /v1/consent/revocation/confirm "{\"token\":\"$REVOKE_TOKEN\"}"
+got
 expect_status 200
-check '[ "$(json .status)" = revoked ]' "revoked at once"
-for _ in $(seq 1 "$WAIT_SECONDS"); do
-	grep -F "\"to\":\"$SHOPPER\"" "$MAIL_FILE" 2>/dev/null | grep -q "has been revoked" && break
-	sleep 1
-done
-check 'grep -F "\"to\":\"$SHOPPER\"" "$MAIL_FILE" | grep -q "has been revoked"' "the customer was told by email"
+check '[ "$(json .status)" = revoked ]' "revoked once the customer confirmed"
 
 step "6. Only a merchant key opens commerce, and it opens nothing else"
 req POST /v1/agents '{"name":"treasury bot"}' -b "$JAR_A"

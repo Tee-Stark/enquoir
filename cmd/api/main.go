@@ -312,6 +312,8 @@ func mandateUseCases(pool *pgxpool.Pool, tokens app.TokenStore, emails *app.Emai
 		Decide:     &commerceapp.DecideConsent{Tokens: tokens, Mandates: store, IDs: ids, Clock: clock, Audit: audit},
 		List:       &commerceapp.ListMandates{Mandates: store, Clock: clock},
 		Get:        &commerceapp.GetMandate{Mandates: store, Clock: clock},
-		Revoke:     &commerceapp.RevokeMandate{Mandates: store, Customers: customers, Emails: emails, Clock: clock, Audit: audit},
+		Revoke:     &commerceapp.RequestMandateRevocation{Mandates: store, Customers: customers, Emails: emails, Clock: clock, Audit: audit},
+		ViewRevoke: &commerceapp.ViewRevocation{Tokens: tokens, Mandates: store, Clock: clock},
+		Confirm:    &commerceapp.ConfirmRevocation{Tokens: tokens, Mandates: store, Clock: clock, Audit: audit},
 	}
 }

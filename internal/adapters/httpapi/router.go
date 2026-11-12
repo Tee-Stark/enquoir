@@ -115,6 +115,8 @@ func NewRouter(h *Handler) chi.Router {
 	r.Post("/v1/consent/view", h.viewConsent)
 	r.Post("/v1/consent/approve", h.decideConsent(commerce.ConsentApproved))
 	r.Post("/v1/consent/reject", h.decideConsent(commerce.ConsentRejected))
+	r.Post("/v1/consent/revocation/view", h.viewRevocation)
+	r.Post("/v1/consent/revocation/confirm", h.confirmRevocation)
 
 	r.With(h.limitIP(app.RuleSignUpPerIP)).Post("/v1/auth/signup", h.signUp)
 	r.With(h.limitIP(app.RuleLoginPerIP)).Post("/v1/auth/login", h.logIn)

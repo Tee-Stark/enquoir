@@ -20,7 +20,9 @@ type MandateUseCases struct {
 	Decide     *commerceapp.DecideConsent
 	List       *commerceapp.ListMandates
 	Get        *commerceapp.GetMandate
-	Revoke     *commerceapp.RevokeMandate
+	Revoke     *commerceapp.RequestMandateRevocation
+	ViewRevoke *commerceapp.ViewRevocation
+	Confirm    *commerceapp.ConfirmRevocation
 }
 
 type namedRefDTO struct {
@@ -99,11 +101,17 @@ type mandateDTO struct {
 	Terms           mandateTermsDTO `json:"terms"`
 	ApprovedAt      time.Time       `json:"approved_at"`
 	RevokedAt       *time.Time      `json:"revoked_at"`
+	// Set while a revocation awaits the customer's confirmation.
+	RevocationExpiresAt *time.Time `json:"revocation_expires_at"`
 }
 
 func newMandateDTO(m commerce.Mandate, status commerce.MandateStatus) mandateDTO {
-	return mandateDTO{ID: string(m.ID), RequestID: string(m.RequestID), ConsentRecordID: string(m.ConsentRecordID), Status: string(status),
+	d := mandateDTO{ID: string(m.ID), RequestID: string(m.RequestID), ConsentRecordID: string(m.ConsentRecordID), Status: string(status),
 		Terms: newMandateTermsDTO(m.Terms), ApprovedAt: m.ApprovedAt.UTC(), RevokedAt: utcPtr(m.RevokedAt)}
+	if status == commerce.MandateRevocationPending {
+		d.RevocationExpiresAt = utcPtr(m.RevocationExpiresAt)
+	}
+	return d
 }
 
 func (h *Handler) requestMandate(w http.ResponseWriter, r *http.Request) {
@@ -187,7 +195,7 @@ func (h *Handler) revokeMandate(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, err, "could not revoke the mandate")
 		return
 	}
-	writeJSON(w, http.StatusOK, newMandateDTO(m.Mandate, m.Status))
+	writeJSON(w, http.StatusAccepted, newMandateDTO(m.Mandate, m.Status))
 }
 
 // The consent page's routes. They take no credential but the link's
@@ -239,4 +247,34 @@ func (h *Handler) decideConsent(decision commerce.ConsentDecision) http.HandlerF
 		}
 		writeJSON(w, http.StatusOK, dto)
 	}
+}
+
+func (h *Handler) viewRevocation(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	m, err := h.Mandates.ViewRevoke.Run(r.Context(), req.Token)
+	if err != nil {
+		writeAppError(w, err, "could not load the mandate")
+		return
+	}
+	writeJSON(w, http.StatusOK, newMandateDTO(m.Mandate, m.Status))
+}
+
+func (h *Handler) confirmRevocation(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	m, err := h.Mandates.Confirm.Run(r.Context(), req.Token)
+	if err != nil {
+		writeAppError(w, err, "could not revoke the mandate")
+		return
+	}
+	writeJSON(w, http.StatusOK, newMandateDTO(m.Mandate, m.Status))
 }

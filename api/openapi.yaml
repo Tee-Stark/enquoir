@@ -106,8 +106,9 @@ tags:
       link to its consent page, valid 1 hour. The merchant never receives
       the link and has no way to approve: poll the request, or list
       mandates, to see the customer's decision. Merchants then manage
-      mandates for their customers: list, get, revoke. Revoking takes effect
-      at once and Enquoir emails the customer. A mandate reads `suspended`
+      mandates for their customers: list, get, revoke. Revoking waits for
+      the customer: the mandate pauses at once (`revocation_pending`) and
+      Enquoir emails them a link to confirm. A mandate reads `suspended`
       while its customer, agent, funding method or integration is disabled,
       and `expired` after its expiry. No purchase is evaluated against a
       mandate yet.
@@ -120,6 +121,11 @@ tags:
       - sending the `terms_hash` it showed, so consent binds to exactly those
       terms - or rejects. Either decision spends the link and is recorded,
       with the time, IP and user agent, as immutable evidence.
+
+      When a merchant asks to revoke a mandate, Enquoir emails the customer a
+      link to `APP_BASE_URL/consent/revoke?token=...`: the page shows the
+      mandate (`POST /v1/consent/revocation/view`) and confirms
+      (`POST /v1/consent/revocation/confirm`), which revokes it for good.
   - name: Meta
     description: Health and the API contract itself.
 
@@ -958,7 +964,8 @@ paths:
         commerce.funding_method.registered, commerce.funding_method.disabled,
         commerce.funding_method.enabled, commerce.mandate.requested,
         commerce.mandate.approved, commerce.mandate.rejected,
-        commerce.mandate.revoked. Payments have
+        commerce.mandate.revocation_requested, commerce.mandate.revoked.
+        Payments have
         their own history (GET /v1/payments/{key}).
       security:
         - session: []
@@ -2001,16 +2008,18 @@ paths:
     post:
       tags: [Commerce]
       operationId: revokeMandate
-      summary: Revoke a mandate for the customer
+      summary: Ask to revoke a mandate, for the customer
       description: |
-        At once: revoking only removes authority. Enquoir emails the customer
-        that it happened. Revoking a revoked mandate succeeds and changes
-        nothing.
+        The mandate reads `revocation_pending` and grants nothing from now.
+        Enquoir emails the customer a one-time link (1 hour) to confirm;
+        only their confirmation revokes it. Unconfirmed, the request lapses
+        at `revocation_expires_at` and the mandate is active again. Asking
+        while one is pending, or after revocation, changes and sends nothing.
       security:
         - merchantKey: []
       responses:
-        "200":
-          description: "Revoked."
+        "202":
+          description: "Asked: see `status` (`revocation_pending`, or `revoked` if it already was)."
           content:
             application/json:
               schema:
@@ -2127,6 +2136,74 @@ paths:
                 $ref: "#/components/schemas/ConsentOutcome"
         "400":
           description: "The link is unknown, spent or expired, or its request was decided or has expired (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/revocation/view:
+    post:
+      tags: [Consent]
+      operationId: viewRevocation
+      summary: Read the mandate a revocation link is for
+      description: Does not spend the link.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: The `token` from the revocation link.
+      responses:
+        "200":
+          description: The mandate, `revocation_pending`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mandate"
+        "400":
+          description: "The link is unknown, spent or expired, or no revocation is pending (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/revocation/confirm:
+    post:
+      tags: [Consent]
+      operationId: confirmRevocation
+      summary: Confirm the revocation, as the customer
+      description: Revokes the mandate for good and spends the link.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: The `token` from the revocation link.
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mandate"
+        "400":
+          description: "The link is unknown, spent or expired, or no revocation is pending (`token_invalid`); or the body is not JSON."
           content:
             application/problem+json:
               schema:
@@ -3543,10 +3620,12 @@ components:
 
     MandateStatus:
       type: string
-      enum: [active, suspended, expired, revoked]
+      enum: [active, suspended, revocation_pending, expired, revoked]
       description: |
-        `suspended` while the customer, agent, funding method or integration
-        is disabled; `expired` after `expires_at`; `revoked` once revoked.
+        Only `active` grants anything. `suspended` while the customer, agent,
+        funding method or integration is disabled; `revocation_pending` while
+        a revocation awaits the customer's confirmation (at most an hour);
+        `expired` after `expires_at`; `revoked` once the customer confirmed.
 
     MandateTerms:
       type: object
@@ -3634,7 +3713,7 @@ components:
 
     Mandate:
       type: object
-      required: [id, request_id, consent_record_id, status, terms, approved_at, revoked_at]
+      required: [id, request_id, consent_record_id, status, terms, approved_at, revoked_at, revocation_expires_at]
       properties:
         id:
           type: string
@@ -3653,6 +3732,10 @@ components:
         revoked_at:
           type: [string, "null"]
           format: date-time
+        revocation_expires_at:
+          type: [string, "null"]
+          format: date-time
+          description: While `revocation_pending`, when the request lapses unconfirmed.
 
     ConsentView:
       type: object

@@ -151,19 +151,45 @@ func (s *Mandates) ListMandates(ctx context.Context, sc commerceapp.Scope, f com
 	return rows, next, nil
 }
 
-func (s *Mandates) RevokeMandate(ctx context.Context, sc commerceapp.Scope, id commerce.MandateID, at time.Time) (bool, error) {
+func (s *Mandates) RequestRevocation(ctx context.Context, sc commerceapp.Scope, id commerce.MandateID, at, expires time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m, ok := s.mandates[id]
 	if !ok || scopeOfTerms(m.Terms) != sc {
 		return false, app.ErrNotFound
 	}
-	if m.Revoked {
+	if m.Revoked || m.RevocationPendingAt(at) {
 		return false, nil
+	}
+	m.RevocationRequestedAt, m.RevocationExpiresAt = &at, &expires
+	s.mandates[id] = m
+	return true, nil
+}
+
+func (s *Mandates) MandateForRevocation(ctx context.Context, id commerce.MandateID) (commerceapp.MandateRow, error) {
+	s.mu.Lock()
+	m, ok := s.mandates[id]
+	s.mu.Unlock()
+	if !ok {
+		return commerceapp.MandateRow{}, app.ErrNotFound
+	}
+	return commerceapp.MandateRow{Mandate: m, Deps: s.deps(m)}, nil
+}
+
+func (s *Mandates) ConfirmRevocation(ctx context.Context, tokenHash string, id commerce.MandateID, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.mandates[id]
+	if !ok || !m.RevocationPendingAt(at) {
+		return app.ErrTokenInvalid
+	}
+	tok, err := s.tokens.Consume(ctx, tokenHash, app.PurposeMandateRevocation, at)
+	if err != nil || tok.Subject != string(id) {
+		return app.ErrTokenInvalid
 	}
 	m.Revoked, m.RevokedAt = true, &at
 	s.mandates[id] = m
-	return true, nil
+	return nil
 }
 
 // Consent returns a stored consent record.

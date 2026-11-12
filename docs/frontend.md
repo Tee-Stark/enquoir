@@ -133,8 +133,15 @@ credential. Never put it anywhere but the request body.
 
 The page's origin must be in the API's `CORS_ALLOWED_ORIGINS` (the
 approve and reject calls are state-changing). After deciding, there is
-nothing more for the customer to do at Enquoir: the merchant shows and
-revokes their mandates.
+nothing more for the customer to do at Enquoir: the merchant shows their
+mandates, and asks to revoke them.
+
+A revocation needs the customer's confirmation. The merchant asks; the
+mandate pauses (`revocation_pending`) and Enquoir emails the customer a
+link to `APP_BASE_URL/consent/revoke?token=...`. That page reads the
+mandate with `POST /v1/consent/revocation/view` (`{"token"}`), shows what
+is being revoked, and confirms with `POST /v1/consent/revocation/confirm`.
+Same errors as above; unconfirmed, the request lapses after an hour.
 
 ## Limits
 

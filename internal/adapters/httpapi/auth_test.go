@@ -129,7 +129,9 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		Decide:     &commerceapp.DecideConsent{Tokens: tokens, Mandates: mandates, IDs: ids, Clock: clock, Audit: audit},
 		List:       &commerceapp.ListMandates{Mandates: mandates, Clock: clock},
 		Get:        &commerceapp.GetMandate{Mandates: mandates, Clock: clock},
-		Revoke:     &commerceapp.RevokeMandate{Mandates: mandates, Customers: customers, Emails: emails, Clock: clock, Audit: audit},
+		Revoke:     &commerceapp.RequestMandateRevocation{Mandates: mandates, Customers: customers, Emails: emails, Clock: clock, Audit: audit},
+		ViewRevoke: &commerceapp.ViewRevocation{Tokens: tokens, Mandates: mandates, Clock: clock},
+		Confirm:    &commerceapp.ConfirmRevocation{Tokens: tokens, Mandates: mandates, Clock: clock, Audit: audit},
 	}
 	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments, accounts: accounts, mailer: mailer}
 }

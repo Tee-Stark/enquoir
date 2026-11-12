@@ -20,9 +20,9 @@ const (
 	TemplateInvitation      TemplateID = "invitation"
 	TemplatePasswordReset   TemplateID = "password_reset"
 	TemplatePasswordChanged TemplateID = "password_changed"
-	// Commerce: a customer's consent link, and notice that a mandate was revoked.
-	TemplateMandateConsent TemplateID = "mandate_consent"
-	TemplateMandateRevoked TemplateID = "mandate_revoked"
+	// Commerce: a customer's consent link, and the link confirming a revocation.
+	TemplateMandateConsent    TemplateID = "mandate_consent"
+	TemplateMandateRevocation TemplateID = "mandate_revocation"
 )
 
 // RenderedEmail is a template filled in: ready to send.
@@ -136,10 +136,11 @@ func (s *Emails) Send(ctx context.Context, e Email) (string, error) {
 
 // linkPaths are where the frontend serves each link (docs/frontend.md).
 var linkPaths = map[TokenPurpose]string{
-	PurposeVerifyEmail:    "/verify-email",
-	PurposeResetPassword:  "/reset-password",
-	PurposeInvitation:     "/invitations/accept",
-	PurposeMandateConsent: "/consent",
+	PurposeVerifyEmail:       "/verify-email",
+	PurposeResetPassword:     "/reset-password",
+	PurposeInvitation:        "/invitations/accept",
+	PurposeMandateConsent:    "/consent",
+	PurposeMandateRevocation: "/consent/revoke",
 }
 
 // DeliverEmail sends one queued email. It is what the durable send

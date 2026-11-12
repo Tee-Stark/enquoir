@@ -15,7 +15,7 @@ var sample = map[app.TemplateID]map[string]string{
 	app.TemplateMandateConsent: {"link": "https://enquoir.etimi.me/consent?token=t4", "merchant": "Acme Electronics", "agent": "Acme Shopping Assistant",
 		"payment_method": "visa ending 4242", "approval": "without asking you each time", "max_per_transaction": "USD 1500.00",
 		"max_total": "USD 3000.00", "max_transactions": "3", "categories": "electronics", "expires": "11 Dec 2026 09:00 UTC"},
-	app.TemplateMandateRevoked: {"merchant": "Acme Electronics", "agent": "Acme Shopping Assistant", "payment_method": "visa ending 4242"},
+	app.TemplateMandateRevocation: {"link": "https://enquoir.etimi.me/consent/revoke?token=t5", "merchant": "Acme Electronics", "agent": "Acme Shopping Assistant", "payment_method": "visa ending 4242"},
 }
 
 // A consent email shows the customer every term they are asked to

@@ -148,16 +148,35 @@ func TestMandates_TheWholeConsentFlow(t *testing.T) {
 		t.Errorf("active mandates: %+v", list.Data)
 	}
 
-	// Revoked by the merchant, for the customer: at once, and the customer is told.
+	// The merchant asks to revoke, for the customer; the mandate pauses
+	// at once, and only the customer's confirmation makes it final.
 	before := len(f.mailer.Sent())
 	rec = f.doBearer(t, http.MethodPost, "/v1/commerce/mandates/"+approved.Mandate.ID+"/revoke", "", w.key)
+	var pending struct {
+		mandateBody
+		RevocationExpiresAt *string `json:"revocation_expires_at"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &pending)
+	if rec.Code != http.StatusAccepted || pending.Status != "revocation_pending" || pending.RevokedAt != nil || pending.RevocationExpiresAt == nil {
+		t.Fatalf("asking to revoke: %d %s", rec.Code, rec.Body)
+	}
+	sent := f.mailer.Sent()
+	link := f.mailer.LastLinkTo("ada@example.com")
+	if len(sent) != before+1 || !strings.Contains(link, "/consent/revoke?token=") {
+		t.Fatalf("confirmation email: %d emails, link %q", len(sent)-before, link)
+	}
+	revokeToken := f.consentToken(t)
+	if rec := f.do(t, http.MethodPost, "/v1/consent/revocation/view", fmt.Sprintf(`{"token":%q}`, revokeToken)); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"revocation_pending"`) {
+		t.Errorf("confirmation page: %d %s", rec.Code, rec.Body)
+	}
+	rec = f.do(t, http.MethodPost, "/v1/consent/revocation/confirm", fmt.Sprintf(`{"token":%q}`, revokeToken))
 	var revoked mandateBody
 	json.Unmarshal(rec.Body.Bytes(), &revoked)
 	if rec.Code != http.StatusOK || revoked.Status != "revoked" || revoked.RevokedAt == nil {
-		t.Fatalf("revoke: %d %s", rec.Code, rec.Body)
+		t.Fatalf("confirm: %d %s", rec.Code, rec.Body)
 	}
-	if sent := f.mailer.Sent(); len(sent) != before+1 || sent[len(sent)-1].To != "ada@example.com" {
-		t.Errorf("revocation notice: %d emails", len(sent)-before)
+	if rec := f.do(t, http.MethodPost, "/v1/consent/revocation/confirm", fmt.Sprintf(`{"token":%q}`, token)); rec.Code != http.StatusBadRequest {
+		t.Errorf("confirming with the consent link: %d, want 400", rec.Code)
 	}
 }
 

@@ -233,8 +233,9 @@ and revoke it.
   terms and their hash, method, time, IP and user agent) in one
   transaction. A request is not a mandate; they are separate resources.
 - Mandates are managed by the merchant on the customer's behalf: list,
-  get, revoke. Revoking takes effect at once (it only removes authority)
-  and Enquoir emails the customer that it happened. A mandate reads as
+  get, revoke. A revocation the merchant asks for pauses the mandate at
+  once and waits for the customer to confirm it from an emailed one-time
+  link (1 hour); unconfirmed, it lapses and the mandate works again. A mandate reads as
   suspended while its integration, customer, agent or binding is
   disabled, and expired after its expiry.
 - No checkouts, reservations or grants yet (phases 4 and 5). Audit events

@@ -16,6 +16,9 @@ const (
 	// PurposeMandateConsent is a commerce customer's consent link; its
 	// subject is the mandate request.
 	PurposeMandateConsent TokenPurpose = "mandate_consent"
+	// PurposeMandateRevocation confirms a revocation the merchant asked
+	// for; its subject is the mandate.
+	PurposeMandateRevocation TokenPurpose = "mandate_revocation"
 )
 
 // OneTimeToken is a link token as stored: only its hash. Subject is

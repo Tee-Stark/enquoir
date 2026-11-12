@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,7 +28,8 @@ type mandateWorld struct {
 	view    *commerceapp.ViewConsent
 	list    *commerceapp.ListMandates
 	get     *commerceapp.GetMandate
-	revoke  *commerceapp.RevokeMandate
+	revoke  *commerceapp.RequestMandateRevocation
+	confirm *commerceapp.ConfirmRevocation
 
 	merchant commerceapp.MerchantPrincipal
 	customer commerce.Customer
@@ -55,7 +57,8 @@ func newMandateWorld(t *testing.T) *mandateWorld {
 		view:    &commerceapp.ViewConsent{Tokens: tokens, Mandates: store, Clock: clock},
 		list:    &commerceapp.ListMandates{Mandates: store, Clock: clock},
 		get:     &commerceapp.GetMandate{Mandates: store, Clock: clock},
-		revoke:  &commerceapp.RevokeMandate{Mandates: store, Customers: customers, Emails: emails, Clock: clock, Audit: audit},
+		revoke:  &commerceapp.RequestMandateRevocation{Mandates: store, Customers: customers, Emails: emails, Clock: clock, Audit: audit},
+		confirm: &commerceapp.ConfirmRevocation{Tokens: tokens, Mandates: store, Clock: clock, Audit: audit},
 	}
 	w.merchant, _ = u.newMerchant(t, NewAccountStore(pool))
 	addr := fmt.Sprintf("delivered+%s@resend.dev", ids.NewID("c"))
@@ -133,8 +136,21 @@ func TestMandateStore_RequestApproveListRevoke(t *testing.T) {
 	w.fu.status.Run(ctx, w.merchant, w.card.ID, commerce.Active)
 
 	got, err := w.revoke.Run(ctx, w.merchant, m.ID)
-	if err != nil || got.Status != commerce.MandateRevoked {
-		t.Fatalf("revoke: %+v %v", got, err)
+	if err != nil || got.Status != commerce.MandateRevocationPending {
+		t.Fatalf("asking to revoke: %+v %v", got, err)
+	}
+	if page, _ := w.list.Run(ctx, w.merchant, commerceapp.MandateFilter{Status: commerce.MandateRevocationPending}); len(page.Mandates) != 1 {
+		t.Errorf("revocation_pending: %+v", page.Mandates)
+	}
+	revocationToken := w.token() // the last link emailed: the revocation one
+	if !strings.Contains(w.mailer.LastLinkTo(w.customer.Email), "/consent/revoke?token=") {
+		t.Fatalf("no revocation link was emailed")
+	}
+	if err := w.store.ConfirmRevocation(ctx, app.HashSecret("not-the-link"), m.ID, time.Now()); !errors.Is(err, app.ErrTokenInvalid) {
+		t.Errorf("confirming with another token: %v", err)
+	}
+	if got, err := w.confirm.Run(ctx, revocationToken); err != nil || got.Status != commerce.MandateRevoked {
+		t.Fatalf("confirm: %+v %v", got, err)
 	}
 	page, _ := w.list.Run(ctx, w.merchant, commerceapp.MandateFilter{Status: commerce.MandateRevoked, CustomerID: w.customer.ID})
 	if len(page.Mandates) != 1 {
@@ -260,5 +276,27 @@ func TestMandateStore_ASiblingStorefrontCannotRevoke(t *testing.T) {
 	}
 	if m, _ := w.get.Run(ctx, w.merchant, d.Mandate.ID); m.Status != commerce.MandateActive {
 		t.Errorf("after the sibling's attempt: %s, want still active", m.Status)
+	}
+}
+
+// The store revokes only while a revocation the merchant asked for is
+// awaiting confirmation: a valid-looking link for a mandate nobody asked
+// to revoke does nothing.
+func TestMandateStore_ConfirmOnlyAPendingRevocation(t *testing.T) {
+	ctx := context.Background()
+	w := newMandateWorld(t)
+	r, _, _ := w.request.Run(ctx, w.merchant, w.cmd("mreq_1"))
+	d, err := w.decide.Run(ctx, w.token(), r.Terms.Hash(), commerce.ConsentApproved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	link := app.HashSecret(credentials.RandomIDs{}.NewID("tok"))
+	NewTokenStore(testPool(t)).Create(ctx, app.OneTimeToken{Hash: link, Purpose: app.PurposeMandateRevocation, Subject: string(d.Mandate.ID), CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	if err := w.store.ConfirmRevocation(ctx, link, d.Mandate.ID, now); !errors.Is(err, app.ErrTokenInvalid) {
+		t.Errorf("confirming with no revocation pending: %v", err)
+	}
+	if m, _ := w.get.Run(ctx, w.merchant, d.Mandate.ID); m.Status != commerce.MandateActive {
+		t.Errorf("after: %s, want still active", m.Status)
 	}
 }

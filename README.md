@@ -208,8 +208,8 @@ Spending authority comes only from the customer. The merchant requests a
 mandate - one agent, one card, a scope and an expiry of at most 90 days
 - and Enquoir emails the customer a one-time link (1 hour) to its consent
 page; the merchant never sees the link and cannot approve. Once approved,
-the merchant lists, shows and revokes the customer's mandates; revoking
-is immediate and Enquoir emails the customer.
+the merchant lists and shows the customer's mandates, and asks to revoke
+them: the mandate pauses at once and the customer confirms by email.
 
 ```sh
 curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce/mandate-requests \

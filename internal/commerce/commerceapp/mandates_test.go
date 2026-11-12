@@ -25,7 +25,9 @@ type mandatesFixture struct {
 	decide  *commerceapp.DecideConsent
 	list    *commerceapp.ListMandates
 	get     *commerceapp.GetMandate
-	revoke  *commerceapp.RevokeMandate
+	revoke  *commerceapp.RequestMandateRevocation
+	viewRev *commerceapp.ViewRevocation
+	confirm *commerceapp.ConfirmRevocation
 	ada     commerce.Customer
 	bot     commerce.Agent
 	card    commerce.FundingMethod
@@ -50,7 +52,9 @@ func newMandatesFixture(t *testing.T) *mandatesFixture {
 		decide:  &commerceapp.DecideConsent{Tokens: tokens, Mandates: store, IDs: ids, Clock: f.clock, Audit: audit},
 		list:    &commerceapp.ListMandates{Mandates: store, Clock: f.clock},
 		get:     &commerceapp.GetMandate{Mandates: store, Clock: f.clock},
-		revoke:  &commerceapp.RevokeMandate{Mandates: store, Customers: customers, Emails: emails, Clock: f.clock, Audit: audit},
+		revoke:  &commerceapp.RequestMandateRevocation{Mandates: store, Customers: customers, Emails: emails, Clock: f.clock, Audit: audit},
+		viewRev: &commerceapp.ViewRevocation{Tokens: tokens, Mandates: store, Clock: f.clock},
+		confirm: &commerceapp.ConfirmRevocation{Tokens: tokens, Mandates: store, Clock: f.clock, Audit: audit},
 	}
 	m.ada = f.customer(t, shopA1, "cust_42", "ada@example.com")
 	m.bot = f.agent(t, shopA1, "assistant", "Acme Shopping Assistant")
@@ -381,32 +385,122 @@ func TestMandates_StatusFollowsWhatTheyName(t *testing.T) {
 	}
 }
 
-func TestRevokeMandate_TakesEffectAtOnceAndTellsTheCustomer(t *testing.T) {
+// revokeConfirmed has the merchant ask to revoke m, and the customer
+// confirm from the emailed link.
+func (f *mandatesFixture) revokeConfirmed(t *testing.T, id commerce.MandateID) {
+	t.Helper()
+	if _, err := f.revoke.Run(context.Background(), shopA1, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.confirm.Run(context.Background(), f.revocationToken()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *mandatesFixture) revocationToken() string {
+	link := f.mailer.LastLinkTo(f.ada.Email)
+	if !strings.Contains(link, "/consent/revoke?token=") {
+		return ""
+	}
+	return f.mailer.TokenTo(f.ada.Email)
+}
+
+// The merchant asks; the mandate grants nothing at once; only the
+// customer, from the emailed link, makes the revocation final.
+func TestRevokeMandate_WaitsForTheCustomersConfirmation(t *testing.T) {
 	f := newMandatesFixture(t)
 	ctx := context.Background()
 	m := f.approve(t, "mreq_1")
 	before := len(f.mailer.Sent())
 
 	got, err := f.revoke.Run(ctx, shopA1, m.ID)
-	if err != nil || got.Status != commerce.MandateRevoked || got.RevokedAt == nil {
-		t.Fatalf("revoke: %+v, %v", got, err)
+	if err != nil || got.Status != commerce.MandateRevocationPending || got.RevokedAt != nil {
+		t.Fatalf("asking: %+v, %v; want revocation_pending, not revoked", got, err)
 	}
 	sent := f.mailer.Sent()
-	if len(sent) != before+1 || sent[len(sent)-1].To != "ada@example.com" || !strings.Contains(sent[len(sent)-1].Text, "Acme Shopping Assistant") {
-		t.Errorf("revocation notice: %+v", sent[before:])
+	if len(sent) != before+1 || sent[len(sent)-1].To != "ada@example.com" || f.revocationToken() == "" {
+		t.Fatalf("confirmation email: %+v", sent[before:])
 	}
-	if f.mailer.LastLinkTo("ada@example.com") != "" && strings.Contains(sent[len(sent)-1].Text, "token=") {
-		t.Error("the revocation notice carries a link")
+	// Asking again while it's pending sends nothing more.
+	if again, err := f.revoke.Run(ctx, shopA1, m.ID); err != nil || again.Status != commerce.MandateRevocationPending || len(f.mailer.Sent()) != before+1 {
+		t.Errorf("asking again: %+v, %v, %d emails", again, err, len(f.mailer.Sent())-before)
 	}
-	// Revoking again changes nothing and tells nobody again.
-	if again, err := f.revoke.Run(ctx, shopA1, m.ID); err != nil || again.Status != commerce.MandateRevoked {
-		t.Errorf("revoking again: %+v, %v", again, err)
+
+	token := f.revocationToken()
+	if v, err := f.viewRev.Run(ctx, token); err != nil || v.ID != m.ID || v.Status != commerce.MandateRevocationPending {
+		t.Errorf("the confirmation page: %+v, %v", v, err)
 	}
-	if n := len(f.mailer.Sent()); n != before+1 {
-		t.Errorf("%d notices, want 1", n-before)
+	actx := app.WithActor(ctx, app.Actor{IP: "203.0.113.7", UserAgent: "Mozilla/5.0"})
+	done, err := f.confirm.Run(actx, token)
+	if err != nil || done.Status != commerce.MandateRevoked || done.RevokedAt == nil {
+		t.Fatalf("confirming: %+v, %v", done, err)
 	}
-	if a := f.actions("commerce.mandate.revoked"); len(a) != 1 {
-		t.Errorf("audit = %v", a)
+	if _, err := f.confirm.Run(actx, token); !errors.Is(err, app.ErrTokenInvalid) {
+		t.Errorf("the link a second time: %v", err)
+	}
+	if got, _ := f.get.Run(ctx, shopA1, m.ID); got.Status != commerce.MandateRevoked {
+		t.Errorf("as the merchant sees it: %s", got.Status)
+	}
+	var events []app.AuditEvent
+	for _, e := range f.audit.All() {
+		if e.Action == app.AuditMandateRevocationRequested || e.Action == app.AuditMandateRevoked {
+			events = append(events, e)
+		}
+	}
+	if len(events) != 2 || events[1].Action != app.AuditMandateRevoked || events[1].Details["decided_by"] != "customer" || events[1].IP != "203.0.113.7" {
+		t.Errorf("audit = %+v", events)
+	}
+	// Revoked is final: asking again changes and sends nothing.
+	if again, err := f.revoke.Run(ctx, shopA1, m.ID); err != nil || again.Status != commerce.MandateRevoked || len(f.mailer.Sent()) != before+1 {
+		t.Errorf("asking after revocation: %+v, %v", again, err)
+	}
+}
+
+// Unconfirmed, the request lapses after the hour and the mandate works
+// again; the old link no longer revokes; the merchant may ask again.
+func TestRevokeMandate_AnUnconfirmedRequestLapses(t *testing.T) {
+	f := newMandatesFixture(t)
+	ctx := context.Background()
+	m := f.approve(t, "mreq_1")
+	f.revoke.Run(ctx, shopA1, m.ID)
+	stale := f.revocationToken()
+	f.clock.Advance(time.Hour)
+
+	if got, _ := f.get.Run(ctx, shopA1, m.ID); got.Status != commerce.MandateActive {
+		t.Errorf("after the hour: %s, want active again", got.Status)
+	}
+	if _, err := f.confirm.Run(ctx, stale); !errors.Is(err, app.ErrTokenInvalid) {
+		t.Errorf("an expired link: %v", err)
+	}
+	before := len(f.mailer.Sent())
+	if got, err := f.revoke.Run(ctx, shopA1, m.ID); err != nil || got.Status != commerce.MandateRevocationPending || len(f.mailer.Sent()) != before+1 {
+		t.Errorf("asking again: %+v, %v", got, err)
+	}
+	if _, err := f.confirm.Run(ctx, f.revocationToken()); err != nil {
+		t.Errorf("confirming the new request: %v", err)
+	}
+}
+
+// A consent link is not a revocation link, nor the other way round.
+func TestRevokeMandate_OnlyTheRevocationLinkConfirms(t *testing.T) {
+	f := newMandatesFixture(t)
+	ctx := context.Background()
+	r := f.mustRequest(t, "mreq_1")
+	consentToken := f.token()
+	d, err := f.decide.Run(ctx, consentToken, r.Terms.Hash(), commerce.ConsentApproved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mustRequest(t, "mreq_2")
+	otherConsent := f.token()
+	f.revoke.Run(ctx, shopA1, d.Mandate.ID)
+	for _, tok := range []string{"", consentToken, otherConsent, "tok_made_up"} {
+		if _, err := f.confirm.Run(ctx, tok); !errors.Is(err, app.ErrTokenInvalid) {
+			t.Errorf("confirming with %q: %v", tok, err)
+		}
+	}
+	if got, _ := f.get.Run(ctx, shopA1, d.Mandate.ID); got.Status != commerce.MandateRevocationPending {
+		t.Errorf("after the refused confirmations: %s", got.Status)
 	}
 }
 
@@ -440,7 +534,7 @@ func TestListMandates_FiltersByCustomerAndStatus(t *testing.T) {
 	m1 := f.approve(t, "mreq_1")
 	f.clock.Advance(time.Second)
 	m2 := f.approve(t, "mreq_2")
-	f.revoke.Run(ctx, shopA1, m1.ID)
+	f.revokeConfirmed(t, m1.ID)
 
 	all, err := f.list.Run(ctx, shopA1, commerceapp.MandateFilter{CustomerID: f.ada.ID})
 	if err != nil || len(all.Mandates) != 2 || all.Mandates[0].ID != m2.ID {

@@ -1,8 +1,0 @@
-{{define "subject"}}{{.P.agent}} can no longer buy for you at {{.P.merchant}}{{end}}
-{{define "action"}}{{end}}
-{{define "content"}}Permission revoked
-
-Your permission for {{.P.agent}} to make purchases for you at {{.P.merchant}}, with {{.P.payment_method}}, has been revoked. It can't start any new purchase under it.
-
-If you didn't ask for this, contact {{.P.merchant}}.{{end}}
-{{define "why"}}We send this notice whenever a permission you gave is revoked.{{end}}
