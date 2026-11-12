@@ -1370,5 +1370,8 @@ Branch `feat/commerce-checkouts`, stacked on `feat/commerce-mandates`
 
 - No list of checkouts (per mandate or customer), and no mandate usage
   (spent, purchases left) in the API yet: both wanted for the dashboard.
+  **Scheduled for commerce phase 6** (the user's decision, 2026-11-12).
 - No grant is issued for an authorized checkout (phase 5), and nothing
-  expires an authorized checkout that is never charged.
+  expires an authorized checkout that is never charged. Agreed with the
+  user: phase 5's grants give it an expiry, and phases 6 and 7 settle it
+  against what was actually paid.

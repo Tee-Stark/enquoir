@@ -310,7 +310,9 @@ customers.
 
 Commerce phases 2 to 8 (funding-method bindings, consent and mandates,
 checkout evaluation, grants, execution reporting, reconciliation, SDK and
-demo) come after, one at a time. The spending-policy engine and escalation
+demo) come after, one at a time. Phase 6 also lists checkouts (per
+mandate and customer) and shows each mandate's usage (spent, purchases
+left), for the dashboard. The spending-policy engine and escalation
 to humans follow commerce and are wired in alongside commerce mandates.
 
 ## Phase 5: authentication hardening (done)
