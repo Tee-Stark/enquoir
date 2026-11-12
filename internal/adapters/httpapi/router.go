@@ -64,11 +64,12 @@ type Handler struct {
 	Summary           *app.GetSummary
 	TimeSeries        *app.GetTimeSeries
 
-	Commerce  CommerceUseCases
-	Funding   FundingUseCases
-	Mandates  MandateUseCases
-	Checkouts CheckoutUseCases
-	Grants    GrantUseCases
+	Commerce   CommerceUseCases
+	Funding    FundingUseCases
+	Mandates   MandateUseCases
+	Checkouts  CheckoutUseCases
+	Grants     GrantUseCases
+	Executions ExecutionUseCases
 }
 
 func NewRouter(h *Handler) chi.Router {
@@ -117,6 +118,10 @@ func NewRouter(h *Handler) chi.Router {
 		r.Post("/checkouts/{id}/grant", h.issueGrant)
 		r.Post("/grants/redeem", h.redeemGrant)
 		r.Get("/executions/{id}", h.getExecution)
+		r.Get("/executions", h.listExecutions)
+		r.Post("/executions/{id}/outcome", h.reportExecution(commerce.ReportDirect))
+		r.Post("/executions/{id}/reconcile", h.reportExecution(commerce.ReportReconciliation))
+		r.Get("/checkouts", h.listCheckouts)
 	})
 	// The customer's consent page, with the link Enquoir emailed them:
 	// the token is the only credential, and no merchant ever holds it.
@@ -194,6 +199,10 @@ func NewRouter(h *Handler) chi.Router {
 		r.With(integrations, verified).Post("/v1/merchant-integrations/{id}/enable", h.setIntegrationStatus(commerce.Active))
 		r.With(integrations, verified).Post("/v1/merchant-integrations/{id}/rotate-key", h.rotateIntegrationKey)
 		r.With(integrations).Delete("/v1/merchant-integrations/{id}/key", h.revokeIntegrationKey)
+		// A merchant's commerce activity, read-only, for any member.
+		r.With(read).Get("/v1/merchant-integrations/{id}/checkouts", h.dashboardMerchant(h.listCheckoutsFor))
+		r.With(read).Get("/v1/merchant-integrations/{id}/mandates", h.dashboardMerchant(h.listMandatesFor))
+		r.With(read).Get("/v1/merchant-integrations/{id}/executions", h.dashboardMerchant(h.listExecutionsFor))
 	})
 	return r
 }

@@ -103,6 +103,36 @@ type mandateDTO struct {
 	RevokedAt       *time.Time      `json:"revoked_at"`
 	// Set while a revocation awaits the customer's confirmation.
 	RevocationExpiresAt *time.Time `json:"revocation_expires_at"`
+	// What counts against it, where read with usage.
+	Usage *mandateUsageDTO `json:"usage"`
+}
+
+type mandateUsageDTO struct {
+	Currency      string `json:"currency"`
+	Purchases     int    `json:"purchases"`
+	PurchasesLeft *int   `json:"purchases_left"`
+	SpentMinor    int64  `json:"spent_minor"`
+	PaidMinor     int64  `json:"paid_minor"`
+	HeldMinor     int64  `json:"held_minor"`
+	Remaining     int64  `json:"remaining_minor"`
+}
+
+func newMandateUsageDTO(t commerce.MandateTerms, u commerce.MandateUsage) *mandateUsageDTO {
+	d := &mandateUsageDTO{Currency: string(t.Scope.Currency), Purchases: u.Purchases, SpentMinor: u.SpentMinor, PaidMinor: u.PaidMinor,
+		HeldMinor: u.SpentMinor - u.PaidMinor, Remaining: max(t.Scope.MaxTotalMinor-u.SpentMinor, 0)}
+	if t.Scope.MaxTransactions > 0 {
+		left := max(t.Scope.MaxTransactions-u.Purchases, 0)
+		d.PurchasesLeft = &left
+	}
+	return d
+}
+
+func newMandateViewDTO(v commerceapp.MandateView) mandateDTO {
+	d := newMandateDTO(v.Mandate, v.Status)
+	if v.Usage != nil {
+		d.Usage = newMandateUsageDTO(v.Terms, *v.Usage)
+	}
+	return d
 }
 
 func newMandateDTO(m commerce.Mandate, status commerce.MandateStatus) mandateDTO {
@@ -175,7 +205,7 @@ func (h *Handler) listMandates(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]mandateDTO, len(page.Mandates))
 	for i, m := range page.Mandates {
-		out[i] = newMandateDTO(m.Mandate, m.Status)
+		out[i] = newMandateViewDTO(m)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": out, "next_cursor": optional(page.NextCursor)})
 }
@@ -186,7 +216,7 @@ func (h *Handler) getMandate(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, err, "could not load the mandate")
 		return
 	}
-	writeJSON(w, http.StatusOK, newMandateDTO(m.Mandate, m.Status))
+	writeJSON(w, http.StatusOK, newMandateViewDTO(m))
 }
 
 func (h *Handler) revokeMandate(w http.ResponseWriter, r *http.Request) {
@@ -261,7 +291,7 @@ func (h *Handler) viewRevocation(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, err, "could not load the mandate")
 		return
 	}
-	writeJSON(w, http.StatusOK, newMandateDTO(m.Mandate, m.Status))
+	writeJSON(w, http.StatusOK, newMandateViewDTO(m))
 }
 
 func (h *Handler) confirmRevocation(w http.ResponseWriter, r *http.Request) {

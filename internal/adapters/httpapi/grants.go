@@ -60,7 +60,13 @@ type executionDTO struct {
 	Currency           string              `json:"currency"`
 	FundingMethod      executionFundingDTO `json:"funding_method"`
 	Status             string              `json:"status"`
+	PaymentReference   *string             `json:"provider_payment_reference"`
+	FailureReason      *string             `json:"failure_reason"`
+	IdempotencyKey     string              `json:"idempotency_key"`
+	ReportDeadline     time.Time           `json:"report_deadline"`
 	CreatedAt          time.Time           `json:"created_at"`
+	UpdatedAt          time.Time           `json:"updated_at"`
+	FinishedAt         *time.Time          `json:"finished_at"`
 }
 
 func newExecutionDTO(e commerce.Execution) executionDTO {
@@ -69,6 +75,8 @@ func newExecutionDTO(e commerce.Execution) executionDTO {
 		ID: string(e.ID), AuthorizationID: string(e.AuthorizationID), CheckoutID: string(e.CheckoutID),
 		ExternalCheckoutID: string(e.ExternalCheckoutID), CheckoutHash: e.CheckoutHash, MandateID: string(e.MandateID),
 		AmountMinor: e.AmountMinor, Currency: string(e.Currency), Status: string(e.Status), CreatedAt: e.CreatedAt.UTC(),
+		PaymentReference: optional(e.ProviderPaymentReference), FailureReason: optional(e.FailureReason), IdempotencyKey: e.IdempotencyKey(),
+		ReportDeadline: e.ReportDeadline.UTC(), UpdatedAt: e.UpdatedAt.UTC(), FinishedAt: utcPtr(e.FinishedAt),
 		FundingMethod: executionFundingDTO{ID: string(f.ID), Provider: string(f.Provider), Reference: optional(string(f.Reference)),
 			PSPRef: optional(string(f.ProviderReference)), Brand: f.Display.Brand, LastFour: optional(f.Display.LastFour)},
 	}
@@ -106,5 +114,9 @@ func (h *Handler) getExecution(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, err, "could not load the execution")
 		return
 	}
-	writeJSON(w, http.StatusOK, newExecutionDTO(e.Execution))
+	history := make([]executionEventDTO, len(e.History))
+	for i, ev := range e.History {
+		history[i] = newExecutionEventDTO(ev)
+	}
+	writeJSON(w, http.StatusOK, executionDetailDTO{executionDTO: newExecutionDTO(e.Execution), History: history})
 }

@@ -56,6 +56,10 @@ const (
 	codeGrantNotIssuable     = "grant_not_issuable"
 	codeRedemptionMismatch   = "redemption_mismatch"
 	codeMandateNotActive     = "mandate_not_active"
+	codeReportMismatch       = "report_mismatch"
+	codeOutcomeConflict      = "outcome_conflict"
+	codeReconcileRequired    = "reconciliation_required"
+	codeEventConflict        = "event_conflict"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.
@@ -134,6 +138,14 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 		writeProblem(w, http.StatusUnprocessableEntity, codeFundingUnknown, err.Error())
 	case errors.Is(err, commerceapp.ErrFundingMethodDisabled):
 		writeProblem(w, http.StatusUnprocessableEntity, codeFundingDisabled, "the funding method is disabled; enable it first")
+	case errors.Is(err, commerce.ErrReportMismatch):
+		writeProblem(w, http.StatusUnprocessableEntity, codeReportMismatch, err.Error())
+	case errors.Is(err, commerce.ErrOutcomeConflict):
+		writeProblem(w, http.StatusConflict, codeOutcomeConflict, err.Error())
+	case errors.Is(err, commerce.ErrReconciliationRequired):
+		writeProblem(w, http.StatusConflict, codeReconcileRequired, err.Error())
+	case errors.Is(err, commerce.ErrEventConflict):
+		writeProblem(w, http.StatusConflict, codeEventConflict, err.Error())
 	case errors.Is(err, commerceapp.ErrGrantInvalid):
 		writeProblem(w, http.StatusUnprocessableEntity, codeGrantInvalid, err.Error())
 	case errors.Is(err, commerce.ErrGrantExpired):

@@ -141,6 +141,13 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		View:   &commerceapp.ViewCheckoutApproval{Tokens: tokens, Checkouts: checkouts, Clock: clock},
 		Decide: &commerceapp.DecideCheckoutApproval{Tokens: tokens, Checkouts: checkouts, IDs: ids, Clock: clock, Audit: audit},
 	}
+	h.Mandates.Get.Usage, h.Mandates.List.Usage = checkouts, checkouts
+	h.Executions = ExecutionUseCases{
+		Report:        &commerceapp.ReportExecutionOutcome{Checkouts: checkouts, Clock: clock, Audit: audit},
+		List:          &commerceapp.ListExecutions{Checkouts: checkouts},
+		ListCheckouts: &commerceapp.ListCheckouts{Checkouts: checkouts, Clock: clock},
+		Dashboard:     &commerceapp.MerchantForDashboard{Integrations: integrations},
+	}
 	h.Grants = GrantUseCases{
 		Issue:  &commerceapp.IssueGrant{Checkouts: checkouts, Secrets: secrets, Clock: clock, Audit: audit},
 		Redeem: &commerceapp.RedeemGrant{Checkouts: checkouts, IDs: ids, Clock: clock, Audit: audit},

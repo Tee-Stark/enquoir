@@ -174,11 +174,12 @@ func main() {
 		TimeSeries:        &app.GetTimeSeries{Analytics: analytics, Clock: sysClock},
 		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
 
-		Commerce:  commerceUseCases(pool, ids, secrets, sysClock, cache, audit),
-		Funding:   fundingUseCases(pool, ids, sysClock, audit),
-		Mandates:  mandateUseCases(pool, tokens, emails, ids, sysClock, audit),
-		Checkouts: checkoutUseCases(pool, tokens, emails, ids, secrets, sysClock, audit),
-		Grants:    grantUseCases(pool, ids, secrets, sysClock, audit),
+		Commerce:   commerceUseCases(pool, ids, secrets, sysClock, cache, audit),
+		Funding:    fundingUseCases(pool, ids, sysClock, audit),
+		Mandates:   mandateUseCases(pool, tokens, emails, ids, sysClock, audit),
+		Checkouts:  checkoutUseCases(pool, tokens, emails, ids, secrets, sysClock, audit),
+		Grants:     grantUseCases(pool, ids, secrets, sysClock, audit),
+		Executions: executionUseCases(pool, sysClock, audit),
 	}
 
 	srv := httpapi.NewServer(httpAddr, httpapi.NewRouter(handler))
@@ -312,8 +313,8 @@ func mandateUseCases(pool *pgxpool.Pool, tokens app.TokenStore, emails *app.Emai
 		GetRequest: &commerceapp.GetMandateRequest{Mandates: store, Clock: clock},
 		View:       &commerceapp.ViewConsent{Tokens: tokens, Mandates: store, Clock: clock},
 		Decide:     &commerceapp.DecideConsent{Tokens: tokens, Mandates: store, IDs: ids, Clock: clock, Audit: audit},
-		List:       &commerceapp.ListMandates{Mandates: store, Clock: clock},
-		Get:        &commerceapp.GetMandate{Mandates: store, Clock: clock},
+		List:       &commerceapp.ListMandates{Mandates: store, Usage: postgres.NewCommerceCheckoutStore(pool), Clock: clock},
+		Get:        &commerceapp.GetMandate{Mandates: store, Usage: postgres.NewCommerceCheckoutStore(pool), Clock: clock},
 		Revoke:     &commerceapp.RequestMandateRevocation{Mandates: store, Customers: customers, Emails: emails, Clock: clock, Audit: audit},
 		ViewRevoke: &commerceapp.ViewRevocation{Tokens: tokens, Mandates: store, Clock: clock},
 		Confirm:    &commerceapp.ConfirmRevocation{Tokens: tokens, Mandates: store, Clock: clock, Audit: audit},
@@ -340,5 +341,17 @@ func grantUseCases(pool *pgxpool.Pool, ids app.IDGenerator, secrets app.SecretGe
 		Issue:  &commerceapp.IssueGrant{Checkouts: store, Secrets: secrets, Clock: clock, Audit: audit},
 		Redeem: &commerceapp.RedeemGrant{Checkouts: store, IDs: ids, Clock: clock, Audit: audit},
 		Get:    &commerceapp.GetExecution{Checkouts: store},
+	}
+}
+
+// executionUseCases wires outcome reporting, reconciliation, and the
+// checkout and execution lists (merchant API and dashboard).
+func executionUseCases(pool *pgxpool.Pool, clock app.Clock, audit *app.Audit) httpapi.ExecutionUseCases {
+	store := postgres.NewCommerceCheckoutStore(pool)
+	return httpapi.ExecutionUseCases{
+		Report:        &commerceapp.ReportExecutionOutcome{Checkouts: store, Clock: clock, Audit: audit},
+		List:          &commerceapp.ListExecutions{Checkouts: store},
+		ListCheckouts: &commerceapp.ListCheckouts{Checkouts: store, Clock: clock},
+		Dashboard:     &commerceapp.MerchantForDashboard{Integrations: postgres.NewMerchantIntegrationStore(pool)},
 	}
 }

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Enquoir API
-  version: 0.9.0
+  version: 0.10.0
   summary: The safe control and observability layer for agentic finance.
   description: |
     Enquoir sits between an AI agent and a payment rail. The agent states an
@@ -136,6 +136,23 @@ tags:
       counting against the mandate; cancelling the checkout or confirming
       the mandate's revocation revokes it. Enquoir records what it allowed;
       a grant is not a guarantee the payment will succeed at the PSP.
+
+      **Outcomes.** Charge with the execution's `idempotency_key` as your
+      PSP request's idempotency key, so a retried charge can't charge twice.
+      Then report what happened (`POST /v1/commerce/executions/{id}/outcome`):
+      `succeeded` (with the PSP's payment reference), `failed`, or `unknown`
+      if your PSP call timed out. Forward a verified PSP webhook the same way
+      with its `provider_event_id`: a redelivery changes nothing. **Outcomes
+      are your word**: Enquoir checks them against the execution - amount,
+      currency, provider, and the payment reference once known - but cannot
+      verify them with the PSP. A succeeded payment stays spent against the
+      mandate; a failed one is released; pending and unknown stay held.
+      Unknown is not failed: only a reconciliation (`POST .../reconcile`,
+      after looking the payment up at your PSP) or a webhook resolves it;
+      `GET /v1/commerce/executions?status=unknown` is the queue. An
+      execution left pending for 30 minutes is presumed unknown. A report
+      contradicting a finished payment is refused and recorded; every report
+      is in the execution's history.
   - name: Consent
     description: |
       The customer's consent page, at `APP_BASE_URL/consent?token=...`, the
@@ -997,8 +1014,10 @@ paths:
         commerce.checkout.authorized, commerce.checkout.denied,
         commerce.checkout.awaiting_approval, commerce.checkout.approved,
         commerce.checkout.rejected, commerce.checkout.canceled,
-        commerce.authorization.grant_issued, commerce.authorization.redeemed.
-        Payments have
+        commerce.authorization.grant_issued, commerce.authorization.redeemed,
+        commerce.execution.succeeded, commerce.execution.failed,
+        commerce.execution.unknown, commerce.execution.reconciled,
+        commerce.execution.report_refused. Payments have
         their own history (GET /v1/payments/{key}).
       security:
         - session: []
@@ -2245,6 +2264,50 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   /v1/commerce/checkouts:
+    get:
+      tags: [Commerce]
+      operationId: listCheckouts
+      summary: List the merchant's checkouts
+      description: Newest first.
+      security:
+        - merchantKey: []
+      parameters:
+        - name: mandate_id
+          in: query
+          schema:
+            type: string
+        - name: customer_id
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: The effective status (see Checkout).
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: "One page of checkouts."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Checkout"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
     post:
       tags: [Commerce]
       operationId: submitCheckout
@@ -2586,20 +2649,358 @@ paths:
     get:
       tags: [Commerce]
       operationId: getExecution
-      summary: Get an execution
+      summary: Get an execution, with its history
       security:
         - merchantKey: []
       responses:
         "200":
-          description: "The execution."
+          description: "The execution and every report on it, in order."
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Execution"
+                $ref: "#/components/schemas/ExecutionDetail"
         "404":
           $ref: "#/components/responses/NotFound"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/executions:
+    get:
+      tags: [Commerce]
+      operationId: listExecutions
+      summary: List the merchant's executions
+      description: Newest first.
+      security:
+        - merchantKey: []
+      parameters:
+        - name: status
+          in: query
+          description: "`unknown` is the reconciliation queue."
+          schema:
+            type: string
+            enum: [pending, succeeded, failed, unknown]
+        - name: mandate_id
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: "One page of executions."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Execution"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/executions/{id}/outcome:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Commerce]
+      operationId: reportExecutionOutcome
+      summary: Report a payment's outcome
+      description: |
+        Your own report after charging, or - with `provider_event_id` - a PSP
+        webhook you verified. The outcome is your word; Enquoir checks it
+        against the execution. A direct report can't resolve `unknown`: use
+        `.../reconcile`.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [outcome, provider, amount_minor, currency]
+              properties:
+                outcome:
+                  type: string
+                  enum: [succeeded, failed, unknown]
+                provider:
+                  type: string
+                provider_payment_reference:
+                  type: string
+                  description: The PSP's payment ID. Required for succeeded.
+                provider_event_id:
+                  type: string
+                  description: A verified PSP webhook's event ID. Makes this a webhook report.
+                amount_minor:
+                  type: integer
+                currency:
+                  type: string
+                failure_reason:
+                  type: string
+                  maxLength: 200
+                  description: e.g. the PSP's decline code. Never card data.
+      responses:
+        "200":
+          description: "Recorded: see `result` - applied, duplicate (nothing changed) or ignored (older than what is recorded)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionReportResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: "Contradicts a finished payment (`outcome_conflict`), an unknown outcome needs reconciling (`reconciliation_required`), or the webhook event ID reported something else (`event_conflict`). Recorded for investigation."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "422":
+          description: "Not the execution's amount, currency, provider or payment reference (`report_mismatch`). Recorded for investigation."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/executions/{id}/reconcile:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Commerce]
+      operationId: reconcileExecution
+      summary: Report what a lookup at the PSP found
+      description: |
+        After looking the payment up at your PSP: resolves an `unknown`
+        outcome. A finished payment can't be contradicted.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [outcome, provider, amount_minor, currency]
+              properties:
+                outcome:
+                  type: string
+                  enum: [succeeded, failed, unknown]
+                provider:
+                  type: string
+                provider_payment_reference:
+                  type: string
+                  description: The PSP's payment ID. Required for succeeded.
+                amount_minor:
+                  type: integer
+                currency:
+                  type: string
+                failure_reason:
+                  type: string
+                  maxLength: 200
+                  description: e.g. the PSP's decline code. Never card data.
+      responses:
+        "200":
+          description: "Recorded: see `result` - applied, duplicate (nothing changed) or ignored (older than what is recorded)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionReportResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: "Contradicts a finished payment (`outcome_conflict`), an unknown outcome needs reconciling (`reconciliation_required`), or the webhook event ID reported something else (`event_conflict`). Recorded for investigation."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "422":
+          description: "Not the execution's amount, currency, provider or payment reference (`report_mismatch`). Recorded for investigation."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}/checkouts:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    get:
+      tags: [Merchant integrations]
+      operationId: listIntegrationCheckouts
+      summary: A merchant's checkouts, for the dashboard
+      description: Read-only; any member.
+      security:
+        - session: []
+      parameters:
+        - name: mandate_id
+          in: query
+          schema:
+            type: string
+        - name: customer_id
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: The effective status (see Checkout).
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: "One page of checkouts."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Checkout"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}/mandates:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    get:
+      tags: [Merchant integrations]
+      operationId: listIntegrationMandates
+      summary: A merchant's mandates and their usage, for the dashboard
+      description: Read-only; any member.
+      security:
+        - session: []
+      parameters:
+        - name: customer_id
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/MandateStatus"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: "One page of mandates."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Mandate"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}/executions:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    get:
+      tags: [Merchant integrations]
+      operationId: listIntegrationExecutions
+      summary: A merchant's executions, for the dashboard
+      description: Read-only; any member.
+      security:
+        - session: []
+      parameters:
+        - name: status
+          in: query
+          description: "`unknown` is the reconciliation queue."
+          schema:
+            type: string
+            enum: [pending, succeeded, failed, unknown]
+        - name: mandate_id
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: "One page of executions."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Execution"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -3321,6 +3722,10 @@ components:
             - grant_not_issuable
             - redemption_mismatch
             - mandate_not_active
+            - report_mismatch
+            - outcome_conflict
+            - reconciliation_required
+            - event_conflict
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.
@@ -4121,7 +4526,7 @@ components:
 
     Mandate:
       type: object
-      required: [id, request_id, consent_record_id, status, terms, approved_at, revoked_at, revocation_expires_at]
+      required: [id, request_id, consent_record_id, status, terms, approved_at, revoked_at, revocation_expires_at, usage]
       properties:
         id:
           type: string
@@ -4144,6 +4549,30 @@ components:
           type: [string, "null"]
           format: date-time
           description: While `revocation_pending`, when the request lapses unconfirmed.
+        usage:
+          description: What counts against it - on get and list; null elsewhere.
+          oneOf:
+            - type: object
+              required: [currency, purchases, purchases_left, spent_minor, paid_minor, held_minor, remaining_minor]
+              properties:
+                currency:
+                  type: string
+                purchases:
+                  type: integer
+                purchases_left:
+                  type: [integer, "null"]
+                  description: null without a purchase limit.
+                spent_minor:
+                  type: integer
+                  description: Paid plus held.
+                paid_minor:
+                  type: integer
+                held_minor:
+                  type: integer
+                  description: Authorized or redeemed, not yet settled (pending or unknown).
+                remaining_minor:
+                  type: integer
+            - type: "null"
 
     CheckoutLines:
       type: object
@@ -4204,11 +4633,13 @@ components:
           type: string
         status:
           type: string
-          enum: [authorized, awaiting_customer_approval, denied, rejected, canceled, expired, redeemed, revoked]
+          enum: [authorized, awaiting_customer_approval, denied, rejected, canceled, expired, redeemed, revoked, paid, payment_failed]
           description: |
             `expired`: awaited the customer past `approval_expires_at`, or its
             grant went unredeemed past `authorization.expires_at`. `redeemed`:
-            its grant was redeemed. `revoked`: its mandate was revoked before.
+            its grant was redeemed (payment pending or unknown). `paid` and
+            `payment_failed`: the reported outcome. `revoked`: its mandate was
+            revoked before.
         decision:
           type: object
           required: [allowed, reasons]
@@ -4320,7 +4751,8 @@ components:
     Execution:
       type: object
       description: The one payment a redeemed grant permits.
-      required: [id, authorization_id, checkout_id, external_checkout_id, checkout_hash, mandate_id, amount_minor, currency, funding_method, status, created_at]
+      required: [id, authorization_id, checkout_id, external_checkout_id, checkout_hash, mandate_id, amount_minor, currency, funding_method, status,
+        provider_payment_reference, failure_reason, idempotency_key, report_deadline, created_at, updated_at, finished_at]
       properties:
         id:
           type: string
@@ -4356,11 +4788,77 @@ components:
               type: [string, "null"]
         status:
           type: string
-          enum: [pending]
-          description: Reporting the payment's outcome comes next.
+          enum: [pending, succeeded, failed, unknown]
+          description: The outcome is the merchant's word, checked against the execution.
+        provider_payment_reference:
+          type: [string, "null"]
+        failure_reason:
+          type: [string, "null"]
+        idempotency_key:
+          type: string
+          description: Send it as your PSP request's idempotency key.
+        report_deadline:
+          type: string
+          format: date-time
+          description: Still pending then, it is presumed unknown.
         created_at:
           type: string
           format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+
+    ExecutionReportResult:
+      allOf:
+        - $ref: "#/components/schemas/Execution"
+        - type: object
+          required: [result]
+          properties:
+            result:
+              type: string
+              enum: [applied, duplicate, ignored]
+
+    ExecutionDetail:
+      allOf:
+        - $ref: "#/components/schemas/Execution"
+        - type: object
+          required: [history]
+          properties:
+            history:
+              type: array
+              items:
+                type: object
+                required: [sequence, kind, source, outcome, status_after, provider_payment_reference, provider_event_id, amount_minor, currency, detail, at]
+                properties:
+                  sequence:
+                    type: integer
+                  kind:
+                    type: string
+                    enum: [redeemed, reported, duplicate, ignored, refused, swept]
+                  source:
+                    type: [string, "null"]
+                    description: direct, webhook, reconciliation or sweep.
+                  outcome:
+                    type: [string, "null"]
+                  status_after:
+                    type: string
+                  provider_payment_reference:
+                    type: [string, "null"]
+                  provider_event_id:
+                    type: [string, "null"]
+                  amount_minor:
+                    type: [integer, "null"]
+                  currency:
+                    type: [string, "null"]
+                  detail:
+                    type: [string, "null"]
+                    description: Why a report was refused, or the reported failure reason.
+                  at:
+                    type: string
+                    format: date-time
 
     ConsentView:
       type: object
@@ -4461,7 +4959,7 @@ components:
               properties:
                 type:
                   type: string
-                  enum: [user, agent, invitation, payee, merchant_integration, commerce_customer, commerce_agent, commerce_funding_method, commerce_mandate_request, commerce_mandate, commerce_checkout, commerce_authorization]
+                  enum: [user, agent, invitation, payee, merchant_integration, commerce_customer, commerce_agent, commerce_funding_method, commerce_mandate_request, commerce_mandate, commerce_checkout, commerce_authorization, commerce_execution]
                 id:
                   type: string
             - type: "null"
