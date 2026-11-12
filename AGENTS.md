@@ -211,7 +211,31 @@ each one you depend on, and record differences in docs/rail-notes.md.
   FAILED. Read failure_type and failure_reason.
 - Limits: 20 requests per second overall, 10 per endpoint, 10 concurrent.
 
-## Commerce Phase 4: checkout evaluation (current)
+## Commerce Phase 5: authorization grants (current)
+
+Done when one-time grants can be issued, redeemed and replay-protected.
+
+- Every authorized checkout gets one authorization, valid 15 minutes from
+  the moment it was authorized. Its grant is an opaque secret
+  (`enq_gr_`), stored only as a hash and shown once: in the response that
+  authorizes an autonomous checkout, or when the merchant (re)issues it,
+  which replaces any unredeemed secret without extending the expiry.
+  Per-transaction checkouts get theirs that way after the customer
+  approves; the customer never sees one.
+- The merchant redeems the grant before charging, naming the checkout's
+  external ID and hash. Redemption is atomic and checks: the merchant's
+  authorization, the grant, not expired, not revoked, the same checkout,
+  and the mandate still active. It creates one execution record (the
+  payment to be made, with the funding method to charge); a repeat with
+  the same grant returns the same execution and never a second.
+- An unredeemed grant that expires stops counting against the mandate.
+  Cancelling the checkout revokes its grant; a redeemed one can't be
+  cancelled. Confirming a mandate's revocation revokes its unredeemed
+  grants.
+- Audit events for redemption and reissue. Reporting the payment's
+  outcome is phase 6.
+
+## Commerce Phase 4: checkout evaluation (done)
 
 Done when Enquoir can evaluate a purchase against a mandate.
 
