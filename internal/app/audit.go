@@ -96,6 +96,12 @@ const (
 	AuditMandateRejected            = "commerce.mandate.rejected"
 	AuditMandateRevoked             = "commerce.mandate.revoked"
 	AuditMandateRevocationRequested = "commerce.mandate.revocation_requested"
+	AuditCheckoutAuthorized         = "commerce.checkout.authorized"
+	AuditCheckoutDenied             = "commerce.checkout.denied"
+	AuditCheckoutAwaitingApproval   = "commerce.checkout.awaiting_approval"
+	AuditCheckoutApproved           = "commerce.checkout.approved"
+	AuditCheckoutRejected           = "commerce.checkout.rejected"
+	AuditCheckoutCanceled           = "commerce.checkout.canceled"
 )
 
 // AuditFilter narrows the audit log. Zero fields don't filter.
@@ -170,6 +176,8 @@ var knownAuditActions = map[string]bool{
 	AuditCommerceAgentRegistered: true, AuditCommerceAgentDisabled: true, AuditCommerceAgentEnabled: true,
 	AuditFundingMethodRegistered: true, AuditFundingMethodDisabled: true, AuditFundingMethodEnabled: true,
 	AuditMandateRequested: true, AuditMandateApproved: true, AuditMandateRejected: true, AuditMandateRevoked: true, AuditMandateRevocationRequested: true,
+	AuditCheckoutAuthorized: true, AuditCheckoutDenied: true, AuditCheckoutAwaitingApproval: true,
+	AuditCheckoutApproved: true, AuditCheckoutRejected: true, AuditCheckoutCanceled: true,
 }
 
 // ListMyActivity lists the events about the signed-in user's account:

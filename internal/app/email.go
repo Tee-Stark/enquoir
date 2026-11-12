@@ -23,6 +23,7 @@ const (
 	// Commerce: a customer's consent link, and the link confirming a revocation.
 	TemplateMandateConsent    TemplateID = "mandate_consent"
 	TemplateMandateRevocation TemplateID = "mandate_revocation"
+	TemplateCheckoutApproval  TemplateID = "checkout_approval"
 )
 
 // RenderedEmail is a template filled in: ready to send.
@@ -141,6 +142,7 @@ var linkPaths = map[TokenPurpose]string{
 	PurposeInvitation:        "/invitations/accept",
 	PurposeMandateConsent:    "/consent",
 	PurposeMandateRevocation: "/consent/revoke",
+	PurposeCheckoutApproval:  "/consent/checkout",
 }
 
 // DeliverEmail sends one queued email. It is what the durable send

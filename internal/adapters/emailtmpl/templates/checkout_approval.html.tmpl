@@ -1,0 +1,9 @@
+{{define "title"}}Approve a purchase at {{.P.merchant}}{{end}}
+{{define "preheader"}}{{.P.agent}} wants to buy for you: {{.P.total}}. Nothing is charged unless you approve.{{end}}
+{{define "action"}}Review the purchase{{end}}
+{{define "content"}}<h1 style="margin:0 0 14px;font-size:22px;color:{{.Brand.Ink}};">Approve this purchase?</h1>
+<p style="margin:0 0 12px;"><strong>{{.P.agent}}</strong> chose a purchase for you at <strong>{{.P.merchant}}</strong>, to be paid with {{.P.payment_method}}:</p>
+<p style="margin:0 0 12px;">{{.P.items}}</p>
+<p style="margin:0 0 12px;font-size:17px;"><strong>Total: {{.P.total}}</strong></p>
+<p style="margin:0;">Nothing is charged unless you approve this exact purchase. The link works once and expires in 1 hour.</p>{{end}}
+{{define "why"}}You received this because you asked to approve each purchase {{.P.agent}} makes for you at {{.P.merchant}}. If you didn't expect it, ignore this email: nothing happens unless you approve.{{end}}

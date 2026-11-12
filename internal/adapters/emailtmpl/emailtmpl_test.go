@@ -15,6 +15,8 @@ var sample = map[app.TemplateID]map[string]string{
 	app.TemplateMandateConsent: {"link": "https://enquoir.etimi.me/consent?token=t4", "merchant": "Acme Electronics", "agent": "Acme Shopping Assistant",
 		"payment_method": "visa ending 4242", "approval": "without asking you each time", "max_per_transaction": "USD 1500.00",
 		"max_total": "USD 3000.00", "max_transactions": "3", "categories": "electronics", "expires": "11 Dec 2026 09:00 UTC"},
+	app.TemplateCheckoutApproval: {"link": "https://enquoir.etimi.me/consent/checkout?token=t6", "merchant": "Acme Electronics", "agent": "Acme Shopping Assistant",
+		"payment_method": "visa ending 4242", "items": "1 x Lenovo ThinkPad, USD 1300.00 each; Shipping, USD 5.00", "total": "USD 1305.00"},
 	app.TemplateMandateRevocation: {"link": "https://enquoir.etimi.me/consent/revoke?token=t5", "merchant": "Acme Electronics", "agent": "Acme Shopping Assistant", "payment_method": "visa ending 4242"},
 }
 
