@@ -51,9 +51,11 @@ func TestNewCheckoutSnapshot_NormalisesAndChecksTheTotal(t *testing.T) {
 			c.Items = []CheckoutItem{{ProductID: "x", Name: "x", Category: "x", Quantity: 1}}
 			c.ShippingMinor, c.FeesMinor, c.TotalMinor = 0, 0, 0
 		}, "total_minor"},
-		"absurd price":   {func(c *CheckoutSnapshot) { c.Items[0].UnitPriceMinor = maxCheckoutAmount + 1 }, "items[0].unit_price_minor"},
-		"too many items": {func(c *CheckoutSnapshot) { c.Items = make([]CheckoutItem, maxCheckoutItems+1) }, "items"},
-		"no external ID": {func(c *CheckoutSnapshot) { c.ExternalID = "" }, "external_id"},
+		"absurd price":                      {func(c *CheckoutSnapshot) { c.Items[0].UnitPriceMinor = maxCheckoutAmount + 1 }, "items[0].unit_price_minor"},
+		"too many items":                    {func(c *CheckoutSnapshot) { c.Items = make([]CheckoutItem, maxCheckoutItems+1) }, "items"},
+		"no external ID":                    {func(c *CheckoutSnapshot) { c.ExternalID = "" }, "external_id"},
+		"name looks like a card number":     {func(c *CheckoutSnapshot) { c.Items[0].Name = "4242.4242.4242.4242" }, "items[0].name"},
+		"category looks like a card number": {func(c *CheckoutSnapshot) { c.Items[0].Category = "424242424242" }, "items[0].category"},
 	}
 	for name, tc := range bad {
 		c := laptop()

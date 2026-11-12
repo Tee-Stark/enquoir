@@ -101,6 +101,9 @@ func TestCreateIntegration_ValidatesTheName(t *testing.T) {
 	if !errors.As(err, &verr) || verr.Field != "name" {
 		t.Fatalf("blank name: %v, want a validation error on name", err)
 	}
+	if _, err := f.create.Run(context.Background(), orgA, "4242.4242.4242.4242"); !errors.As(err, &verr) || verr.Field != "name" {
+		t.Fatalf("name looks like a card number: %v, want a validation error on name", err)
+	}
 }
 
 func TestIntegrations_AreScopedToTheirOrganisation(t *testing.T) {

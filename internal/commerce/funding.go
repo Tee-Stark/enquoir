@@ -20,7 +20,7 @@ type FundingMethodID string
 type FundingReference ExternalID
 
 // minPANDigits is the shortest card number (PAN) in use. A reference
-// holding this many digits in a row - spaces and dashes ignored - may
+// holding this many digits in a row - common separators ignored - may
 // be a card number, and is refused rather than stored.
 const minPANDigits = 12
 
@@ -28,18 +28,45 @@ const minPANDigits = 12
 // a card number. Enquoir never accepts card data, so it is refused.
 var ErrLooksLikeCardNumber = errors.New("must not contain a card number: send your own reference for the payment method, never the card")
 
-// holdsCardNumber reports whether s has minPANDigits or more digits in a
-// row, ignoring the spaces and dashes card numbers are written with.
-func holdsCardNumber(s string) bool {
+// isDigitSeparator reports whether r is a character people commonly write
+// a card number's digit groups apart with. A guard that only recognized
+// some of these would be defeated by simply picking a different one; see
+// docs/progress.md.
+func isDigitSeparator(r rune) bool {
+	switch r {
+	case ' ', '-', '.', '_':
+		return true
+	}
+	return false
+}
+
+// asciiDigit reports whether r is a decimal digit - including the
+// full-width Unicode forms (U+FF10-U+FF19), which a plain '0'-'9' range
+// check would miss - and returns its value as an ASCII digit byte.
+func asciiDigit(r rune) (byte, bool) {
+	switch {
+	case r >= '0' && r <= '9':
+		return byte(r), true
+	case r >= 0xFF10 && r <= 0xFF19:
+		return byte(r-0xFF10) + '0', true
+	}
+	return 0, false
+}
+
+// HoldsCardNumber reports whether s has minPANDigits or more digits in a
+// row, ignoring any separator a digit group is commonly written apart with.
+// Exported so every merchant-supplied free-text field across the commerce
+// package - not just an allowlist of call sites here - can check itself.
+func HoldsCardNumber(s string) bool {
 	run := 0
 	for _, r := range s {
-		switch {
-		case r >= '0' && r <= '9':
+		if _, ok := asciiDigit(r); ok {
 			if run++; run >= minPANDigits {
 				return true
 			}
-		case r == ' ' || r == '-':
-		default:
+			continue
+		}
+		if !isDigitSeparator(r) {
 			run = 0
 		}
 	}
@@ -49,7 +76,7 @@ func holdsCardNumber(s string) bool {
 // NewFundingReference checks a merchant's payment-method reference: no
 // run of 12 or more digits, which may be a card number.
 func NewFundingReference(s string) (FundingReference, error) {
-	if holdsCardNumber(s) {
+	if HoldsCardNumber(s) {
 		return "", fmt.Errorf("reference %w", ErrLooksLikeCardNumber)
 	}
 	ext, err := NewExternalID(s)
@@ -66,38 +93,39 @@ func NewFundingReference(s string) (FundingReference, error) {
 type ProviderReference string
 
 // NewProviderReference checks a PSP's reference. Adyen's are 16-digit
-// numbers, so digits alone are allowed; a card number - 13 to 19 digits
-// (spaces and dashes ignored) with a valid Luhn checksum - is refused.
+// numbers, so digits alone are allowed; a card number - minPANDigits (the
+// shortest PAN) to 19 digits, common separators ignored - with a valid
+// Luhn checksum - is refused.
 func NewProviderReference(s string) (ProviderReference, error) {
 	if holdsLuhnCardNumber(s) {
 		return "", fmt.Errorf("provider reference %w", ErrLooksLikeCardNumber)
 	}
-	ext, err := NewExternalID(s)
+	s, err := checkExternalIDShape(s)
 	if err != nil {
 		return "", err
 	}
-	return ProviderReference(ext), nil
+	return ProviderReference(s), nil
 }
 
-// holdsLuhnCardNumber reports whether a whole run of 13 to 19 digits in
-// s (spaces and dashes inside it ignored) passes the Luhn check, as every
-// card number does. About one random 16-digit token in ten passes too;
-// see docs/progress.md.
+// holdsLuhnCardNumber reports whether a whole run of minPANDigits to 19
+// digits in s (common separators inside it ignored) passes the Luhn
+// check, as every card number does. About one random 16-digit token in
+// ten passes too; see docs/progress.md.
 func holdsLuhnCardNumber(s string) bool {
 	var runs [][]byte
 	var cur []byte
-	for i := 0; i < len(s); i++ {
-		switch c := s[i]; {
-		case c >= '0' && c <= '9':
-			cur = append(cur, c)
-		case c == ' ' || c == '-':
-		default:
+	for _, r := range s {
+		if d, ok := asciiDigit(r); ok {
+			cur = append(cur, d)
+			continue
+		}
+		if !isDigitSeparator(r) {
 			runs, cur = append(runs, cur), nil
 		}
 	}
 	runs = append(runs, cur)
 	for _, r := range runs {
-		if len(r) >= 13 && len(r) <= 19 && luhn(r) {
+		if len(r) >= minPANDigits && len(r) <= 19 && luhn(r) {
 			return true
 		}
 	}
@@ -133,7 +161,7 @@ func NewProvider(s string) (Provider, error) {
 	if !providerPattern.MatchString(s) {
 		return "", errors.New("provider must be 1 to 40 lower-case letters, digits, '_', '.' or '-', starting with a letter or digit")
 	}
-	if holdsCardNumber(s) {
+	if HoldsCardNumber(s) {
 		return "", fmt.Errorf("provider %w", ErrLooksLikeCardNumber)
 	}
 	return Provider(s), nil

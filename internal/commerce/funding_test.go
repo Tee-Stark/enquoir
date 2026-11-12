@@ -17,7 +17,10 @@ func TestNewFundingReference(t *testing.T) {
 		{in: "4242424242424242", wantErr: "card number"},
 		{in: "4242-4242-4242-4242", wantErr: "card number"},
 		{in: "card_4242424242424242_x", wantErr: "card number"},
-		{in: "123456789012", wantErr: "card number"}, // 12 digits
+		{in: "123456789012", wantErr: "card number"},        // 12 digits
+		{in: "4242.4242.4242.4242", wantErr: "card number"}, // dot-delimited bypass, closed
+		{in: "4242_4242_4242_4242", wantErr: "card number"}, // underscore-delimited bypass, closed
+		{in: "４２４２４２４２４２４２４２４２", wantErr: "card number"},    // full-width digits, closed
 		{in: "has space", wantErr: "spaces"},
 	}
 	for _, tc := range tests {
@@ -100,7 +103,12 @@ func TestNewProviderReference(t *testing.T) {
 			t.Errorf("NewProviderReference(%q) = %q, %v", ok, got, err)
 		}
 	}
-	for _, bad := range []string{"", "4242424242424242", "4111 1111 1111 1111", "5555-5555-5555-4444", "378282246310005", "pm 1"} {
+	for _, bad := range []string{
+		"", "4242424242424242", "4111 1111 1111 1111", "5555-5555-5555-4444", "378282246310005", "pm 1",
+		"411111111117",        // 12-digit Luhn-valid PAN, below the old 13-digit floor
+		"4111.1111.1111.1111", // dot-delimited bypass, closed
+		"4111_1111_1111_1111", // underscore-delimited bypass, closed
+	} {
 		if got, err := NewProviderReference(bad); err == nil {
 			t.Errorf("NewProviderReference(%q) = %q; want an error", bad, got)
 		}

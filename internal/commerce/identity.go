@@ -36,8 +36,26 @@ type ExternalID string
 const maxExternalIDLength = 255
 
 // NewExternalID trims s and checks it is 1 to 255 characters of UTF-8
-// with no spaces or control characters inside.
+// with no spaces or control characters inside, and does not hold a run
+// of digits as long as a card number.
 func NewExternalID(s string) (ExternalID, error) {
+	s, err := checkExternalIDShape(s)
+	if err != nil {
+		return "", err
+	}
+	if HoldsCardNumber(s) {
+		return "", fmt.Errorf("external ID %w", ErrLooksLikeCardNumber)
+	}
+	return ExternalID(s), nil
+}
+
+// checkExternalIDShape applies every ExternalID check except the card-
+// number guard. NewProviderReference uses this directly instead of
+// NewExternalID: a PSP reference may legitimately be a long run of
+// digits (Adyen's storedPaymentMethodId is 16 digits), so it applies its
+// own, deliberately narrower Luhn-based check instead of this package's
+// general digit-run guard.
+func checkExternalIDShape(s string) (string, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return "", errors.New("external ID is required")
@@ -51,7 +69,7 @@ func NewExternalID(s string) (ExternalID, error) {
 	if strings.IndexFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
 		return "", errors.New("external ID must not contain spaces or control characters")
 	}
-	return ExternalID(s), nil
+	return s, nil
 }
 
 // Status is whether a merchant integration, customer or agent may take

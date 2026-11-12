@@ -91,9 +91,15 @@ func NewCheckoutSnapshot(c CheckoutSnapshot) (CheckoutSnapshot, error) {
 		if it.Name == "" || utf8.RuneCountInString(it.Name) > maxItemNameLength {
 			return CheckoutSnapshot{}, checkoutErr(f("name"), "name must be 1 to %d characters", maxItemNameLength)
 		}
+		if HoldsCardNumber(it.Name) {
+			return CheckoutSnapshot{}, &FieldError{Field: f("name"), Err: fmt.Errorf("name %w", ErrLooksLikeCardNumber)}
+		}
 		it.Category = strings.ToLower(strings.TrimSpace(it.Category))
 		if !categoryPattern.MatchString(it.Category) {
 			return CheckoutSnapshot{}, checkoutErr(f("category"), "category must be 1 to 50 lower-case letters, digits, '_' or '-'")
+		}
+		if HoldsCardNumber(it.Category) {
+			return CheckoutSnapshot{}, &FieldError{Field: f("category"), Err: fmt.Errorf("category %w", ErrLooksLikeCardNumber)}
 		}
 		if it.Quantity < 1 || it.Quantity > maxCheckoutQuantity {
 			return CheckoutSnapshot{}, checkoutErr(f("quantity"), "quantity must be 1 to %d", maxCheckoutQuantity)

@@ -105,6 +105,9 @@ func (c *CreateIntegration) Run(ctx context.Context, org domain.OrgID, name stri
 	if err != nil {
 		return IssuedIntegration{}, invalid("name", err)
 	}
+	if commerce.HoldsCardNumber(name) {
+		return IssuedIntegration{}, invalid("name", fmt.Errorf("name %w", commerce.ErrLooksLikeCardNumber))
+	}
 	now := c.Clock.Now()
 	m := commerce.Merchant{ID: commerce.MerchantID(c.IDs.NewID("mi")), OrgID: org, Name: name, Status: commerce.Active, CreatedAt: now}
 	key, secret := newIntegrationKey(c.IDs, c.Secrets, org, m.ID, now)

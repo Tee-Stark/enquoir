@@ -263,6 +263,9 @@ func TestRegisterAgent_CreatesThenResolvesAndRefusesARename(t *testing.T) {
 	if _, _, err := f.registerAgent.Run(ctx, shopA1, "shopping-assistant", " "); !errors.As(err, &verr) || verr.Field != "name" {
 		t.Errorf("blank name: %v, want a validation error on name", err)
 	}
+	if _, _, err := f.registerAgent.Run(ctx, shopA1, "another-agent", "4242.4242.4242.4242"); !errors.As(err, &verr) || verr.Field != "name" {
+		t.Errorf("name looks like a card number: %v, want a validation error on name", err)
+	}
 	if e := f.audit.All(); len(e) != 1 || e[0].Action != app.AuditCommerceAgentRegistered || e[0].Details["name"] != "Acme Shopping Assistant" {
 		t.Errorf("audit = %+v", e)
 	}

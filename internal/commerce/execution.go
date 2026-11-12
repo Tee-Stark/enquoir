@@ -178,7 +178,7 @@ func NewExecutionReport(r ExecutionReport) (ExecutionReport, error) {
 	if utf8.RuneCountInString(r.FailureReason) > maxFailureReason {
 		return ExecutionReport{}, reportErr("failure_reason", fmt.Errorf("failure_reason must be at most %d characters", maxFailureReason))
 	}
-	if holdsCardNumber(r.FailureReason) {
+	if HoldsCardNumber(r.FailureReason) {
 		return ExecutionReport{}, reportErr("failure_reason", fmt.Errorf("failure_reason %w", ErrLooksLikeCardNumber))
 	}
 	return r, nil

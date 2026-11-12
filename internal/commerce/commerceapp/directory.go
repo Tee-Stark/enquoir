@@ -208,6 +208,9 @@ func (r *RegisterAgent) Run(ctx context.Context, p MerchantPrincipal, externalID
 	if err != nil {
 		return commerce.Agent{}, false, invalid("name", err)
 	}
+	if commerce.HoldsCardNumber(name) {
+		return commerce.Agent{}, false, invalid("name", fmt.Errorf("name %w", commerce.ErrLooksLikeCardNumber))
+	}
 	a := commerce.Agent{
 		ID: commerce.AgentID(r.IDs.NewID("cagt")), MerchantID: p.MerchantID, OrgID: p.OrgID,
 		ExternalID: ext, Name: name, Status: commerce.Active, CreatedAt: r.Clock.Now(),

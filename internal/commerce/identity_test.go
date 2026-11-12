@@ -23,6 +23,9 @@ func TestNewExternalID(t *testing.T) {
 		{name: "inner space", in: "cust 42", wantErr: "spaces or control characters"},
 		{name: "control character", in: "cust\x0042", wantErr: "spaces or control characters"},
 		{name: "not UTF-8", in: "cust\xff", wantErr: "UTF-8"},
+		{name: "looks like a card number", in: "4242424242424242", wantErr: "card number"},
+		{name: "looks like a card number, dot-delimited", in: "4242.4242.4242.4242", wantErr: "card number"},
+		{name: "looks like a card number, underscore-delimited", in: "4242_4242_4242_4242", wantErr: "card number"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
