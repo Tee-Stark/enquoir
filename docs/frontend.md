@@ -104,6 +104,13 @@ one integration per storefront, each with one key.
   them. Hide the buttons for them.
 - Customers and agents are registered by the merchant's backend with its
   key, not from the dashboard; the dashboard has no view of them yet.
+- Each integration's commerce activity is readable by any member:
+  `GET /v1/merchant-integrations/{id}/checkouts` (filter by mandate,
+  customer, status), `/mandates` (with `usage`: spent, paid, held,
+  remaining, purchases left - amounts in minor units of `usage.currency`)
+  and `/executions` (`status=unknown` are payments awaiting the
+  merchant's reconciliation: worth a warning badge). Outcomes are the
+  merchant's word: label them "reported by the merchant".
   The audit log shows their registration with an actor of type
   `merchant_integration`.
 

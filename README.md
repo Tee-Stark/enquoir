@@ -173,9 +173,10 @@ The second bounded context: a merchant's AI shopping agent proposes
 purchases funded by the merchant's customers, and Enquoir decides
 whether the customer's authority allows each one. The merchant charges
 through its own payment provider; Enquoir never holds customer funds,
-card data or PSP secrets. Phases 1 to 5 of 8 are built: merchant
+card data or PSP secrets. Phases 1 to 7 of 8 are built: merchant
 integration and identity, funding-method bindings, consent and mandates,
-checkout evaluation, and one-time authorization grants.
+checkout evaluation, one-time authorization grants, execution tracking,
+and reconciliation.
 
 An owner or admin connects a merchant from the dashboard and gets its
 integration key (`enq_mk_...`, shown once). The merchant's backend uses
@@ -236,6 +237,17 @@ redemption returns the same execution, never a second.
 curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce/grants/redeem \
   -d '{"grant":"enq_gr_...","external_checkout_id":"checkout_987","checkout_hash":"sha256:..."}'
 ```
+
+The merchant charges with the execution's `idempotency_key`, then reports
+the outcome - `succeeded`, `failed`, or `unknown` if its PSP call timed
+out - directly, or by forwarding a verified PSP webhook (a redelivery
+changes nothing). Outcomes are the merchant's word, checked against the
+execution. A success stays spent against the mandate, a failure is
+released, and unknown stays held until a reconciliation resolves it. A
+durable Temporal sweep presumes unknown any execution left unreported for
+30 minutes - a crashed merchant - so it is reconciled, never retried
+blind. Every report is in the execution's history; checkouts, executions
+and mandate usage are listed for the merchant and the dashboard.
 
 The merchant always comes from the key, never from the request; another
 merchant's records (another storefront's too) are not found. An agent

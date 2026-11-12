@@ -1465,3 +1465,102 @@ Branch `feat/commerce-grants`, stacked on `feat/commerce-checkouts`
 - Nothing reports the payment's outcome yet (phase 6); an execution stays
   `pending`, and a redeemed checkout counts for good.
 - Checkout listing and mandate usage: phase 6, as agreed.
+
+## Commerce Phases 6 and 7: execution tracking, reconciliation and resilience - done (2026-11-12)
+
+Built together, at the user's request, on `feat/commerce-executions`,
+stacked on `feat/commerce-grants` (PR #16). Tags `commerce-phase-6` and
+`commerce-phase-7` are on the same final commit: the phases' work is
+interleaved (one report path carries both).
+
+### What exists
+
+- **Domain** (`internal/commerce/execution.go`): executions are `pending`,
+  then `succeeded`, `failed` or `unknown`. `ExecutionReport` (source
+  `direct`, `webhook`, `reconciliation`, or Enquoir's `sweep`), validated
+  - a success needs the PSP's payment reference; no card data in
+  references or the failure reason. `Execution.Apply`: the report must
+  match (amount, currency, provider, and the payment reference once
+  known); pending takes any outcome; unknown is resolved only by a
+  reconciliation or a webhook; a finished payment can't be contradicted;
+  a late `unknown` after the end is ignored; a repeat is a duplicate.
+  Each execution has a 30-minute report deadline and an
+  `idempotency_key` (`enquoir-<execution id>`) for the merchant's PSP
+  request. Checkouts gain `paid` (stays spent) and `payment_failed`
+  (released); usage gains the paid part.
+- **Use cases**: `ReportExecutionOutcome`, `SweepExecutions`,
+  `ListExecutions`, `ListCheckouts`, `GetExecution` (with history),
+  `MerchantForDashboard`; `GetMandate`/`ListMandates` carry usage.
+- **Temporal**: `CommerceSweepWorkflow` sweeps every minute, continues as
+  new every 60 sweeps; every worker starts it under one ID and attaches to
+  the running one.
+- **Postgres** (migration 0022): execution outcome columns, the
+  append-only `commerce_execution_events` (a trigger refuses changes),
+  `commerce_webhook_events` (per merchant, provider and event ID).
+- **HTTP**: `POST /v1/commerce/executions/{id}/outcome` (with
+  `provider_event_id`: a webhook) and `.../reconcile`; `GET
+  /v1/commerce/executions` (`status=unknown` is the reconciliation
+  queue); `GET .../executions/{id}` with history; `GET
+  /v1/commerce/checkouts`; dashboard `/v1/merchant-integrations/{id}/
+  checkouts|mandates|executions`, any member, read-only. OpenAPI 0.10.0.
+
+### Design choices
+
+- **Outcomes are the merchant's word.** Enquoir checks them against the
+  execution but cannot verify them with the PSP; the spec says so, and
+  the frontend guide asks for "reported by the merchant".
+- **Unknown is not failed.** It keeps its amount held. A `direct` report
+  can't resolve it (`409 reconciliation_required`); the merchant looks the
+  payment up and reports with `.../reconcile`, or forwards the PSP's
+  webhook. Its source is recorded.
+- **Every report is history.** Applied, duplicate, ignored and refused
+  reports are all appended; a refused one is committed before its error
+  is returned, so contradictions stay for investigation (and audited as
+  `commerce.execution.report_refused`).
+- **Webhook deduplication** by `(merchant, provider, event_id)` with a
+  fingerprint of the report and the execution: a redelivery is
+  `duplicate`; the same ID with other content, or for another execution,
+  is `409 event_conflict`.
+- **Crashes**: the sweep moves executions pending past their deadline to
+  `unknown` - a merchant that died mid-charge never reports, and its
+  payment may have gone through. The idempotency key makes the merchant's
+  retried charge safe at the PSP. Enquoir never retries a charge itself
+  (it never charges).
+- **Locks**: a report locks the mandate (the one lock order), then the
+  execution row; the sweep locks only execution rows, so they can't
+  deadlock, and a report racing the sweep sees `unknown`.
+- **Usage**: spent = paid + held (authorized with an unexpired grant, or
+  redeemed with the payment pending or unknown); `remaining` and
+  `purchases_left` follow from the mandate's scope.
+- Not built: refunds and partial captures (the design keeps refunds as
+  separate events; out of scope), a failed payment's retry (the merchant
+  submits a new checkout under a new external ID).
+
+### Verified
+
+- `make test` and `make test-integration` at every commit (each commit's
+  exit status checked before committing).
+- Mutation checks caught: a direct report resolving unknown; a late
+  unknown overriding a finished outcome; the payment reference allowed to
+  change; the provider unchecked; the report store without its locks (12
+  concurrent redeliveries of one webhook: unique-key errors and lost
+  duplicates, never two applications, thanks to the event table's key);
+  refused reports not recorded.
+- Live, `make e2e-commerce`, all steps: idempotency key; succeeded; a
+  redelivered webhook a duplicate; a contradiction and another amount
+  refused and in the history; the checkout paid; a timeout reported
+  unknown, refused as a direct resolution, listed for reconciliation,
+  held in usage, reconciled as failed and released; usage on the mandate;
+  the dashboard list; another organisation can't report or read.
+- **Live, the Temporal sweep**: started with the worker, it swept 31
+  executions earlier e2e runs had left pending past their deadline. The
+  worker was killed with `SIGKILL` mid-run for 75 seconds and restarted:
+  the same workflow run (same run ID) resumed and kept sweeping; exactly
+  one sweep workflow exists.
+
+### Not verified / open
+
+- A real PSP: reports are exercised with made-up `pi_...` references.
+- The sweep's one-minute cadence means `unknown` can lag the deadline by
+  up to a minute (plus a worker outage).
+- Phase 8 (SDK and demo) remains.
