@@ -211,7 +211,43 @@ each one you depend on, and record differences in docs/rail-notes.md.
   FAILED. Read failure_type and failure_reason.
 - Limits: 20 requests per second overall, 10 per endpoint, 10 concurrent.
 
-## Commerce Phase 5: authorization grants (current)
+## Commerce Phase 7: reconciliation and resilience (current, with 6)
+
+Done when unknown outcomes, retries, duplicate webhooks and crashes are
+handled.
+
+- Unknown is not failed: an `unknown` execution keeps its amount counted,
+  and only a definitive report (a reconciliation, or a verified webhook)
+  resolves it. The merchant lists executions to reconcile, looks the
+  payment up at its PSP, and reports what it found.
+- Duplicate webhooks: a webhook report carries the PSP's event ID, unique
+  per merchant and provider; a repeat changes nothing, and the same ID
+  reporting something else is a conflict.
+- Out of order: a report older than the execution's state (an `unknown`
+  after it ended) is recorded and ignored; a report contradicting a
+  finished payment is refused and recorded for investigation.
+- Crashes: an execution left `pending` past its report deadline (30
+  minutes) is moved to `unknown` by a durable Temporal sweep. Each
+  execution gives the merchant an idempotency key for its PSP request, so
+  a retried charge can't charge twice.
+
+## Commerce Phase 6: execution tracking (current, with 7)
+
+Done when the merchant can report verified PSP outcomes.
+
+- The merchant reports a redeemed execution's PSP outcome (succeeded,
+  failed, unknown) with the PSP's payment reference. Enquoir checks it
+  against the execution: amount, currency, provider, and the same
+  payment reference once known. Outcomes are the merchant's word; the
+  documentation says so.
+- Every report is recorded in the execution's append-only history.
+- Settlement: a succeeded payment's amount stays spent; a failed one is
+  released; pending or unknown stays counted.
+- Checkouts can be listed (per mandate, customer, status) and mandates
+  show their usage (spent, held, purchases left): on the merchant API,
+  and read-only on the dashboard per merchant integration.
+
+## Commerce Phase 5: authorization grants (done)
 
 Done when one-time grants can be issued, redeemed and replay-protected.
 
