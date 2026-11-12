@@ -173,9 +173,9 @@ The second bounded context: a merchant's AI shopping agent proposes
 purchases funded by the merchant's customers, and Enquoir decides
 whether the customer's authority allows each one. The merchant charges
 through its own payment provider; Enquoir never holds customer funds,
-card data or PSP secrets. Phases 1 to 4 of 8 are built: merchant
+card data or PSP secrets. Phases 1 to 5 of 8 are built: merchant
 integration and identity, funding-method bindings, consent and mandates,
-and checkout evaluation.
+checkout evaluation, and one-time authorization grants.
 
 An owner or admin connects a merchant from the dashboard and gets its
 integration key (`enq_mk_...`, shown once). The merchant's backend uses
@@ -225,6 +225,17 @@ categories - under a lock on the mandate, and answers `authorized`,
 `denied` with every reason, or, under a per-transaction mandate,
 `awaiting_customer_approval` while the customer approves that exact
 checkout from an emailed link.
+
+An authorized checkout comes with a one-time grant (`enq_gr_...`, valid
+15 minutes). Before charging, the merchant redeems it, naming the
+checkout's external ID and hash; Enquoir checks it and creates the one
+execution - what to charge, with which saved method. Repeating the
+redemption returns the same execution, never a second.
+
+```sh
+curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce/grants/redeem \
+  -d '{"grant":"enq_gr_...","external_checkout_id":"checkout_987","checkout_hash":"sha256:..."}'
+```
 
 The merchant always comes from the key, never from the request; another
 merchant's records (another storefront's too) are not found. An agent

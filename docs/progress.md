@@ -1375,3 +1375,93 @@ Branch `feat/commerce-checkouts`, stacked on `feat/commerce-mandates`
   expires an authorized checkout that is never charged. Agreed with the
   user: phase 5's grants give it an expiry, and phases 6 and 7 settle it
   against what was actually paid.
+
+## Commerce Phase 5: authorization grants - done (2026-11-12)
+
+Branch `feat/commerce-grants`, stacked on `feat/commerce-checkouts`
+(PR #15). Tag `commerce-phase-5`.
+
+### What exists
+
+- **Domain** (`internal/commerce/grant.go`): `Authorization` - Enquoir's
+  permission for one authorized checkout to be charged once, binding its
+  amount, currency, card, external ID and checkout hash, redeemable for 15
+  minutes from the decision (`active`, `redeemed`, `expired`, `revoked`);
+  `CheckRedemption` (redeemed, revoked, expired, then the same checkout
+  and version); `Execution` - the one payment a redemption permits
+  (amount, currency, the funding method to charge), `pending` until phase
+  6 reports its outcome. Checkouts gain `redeemed` and `revoked`, and an
+  authorized checkout whose grant expires unredeemed reads `expired`.
+- **Use cases**: `SubmitCheckout` and `DecideCheckoutApproval` create the
+  authorization with the decision; `IssueGrant`, `RedeemGrant`,
+  `GetExecution`.
+- **Postgres** (migration 0021): `commerce_authorizations`,
+  `commerce_executions`.
+- **HTTP**: `POST /v1/commerce/checkouts/{id}/grant`,
+  `POST /v1/commerce/grants/redeem`, `GET /v1/commerce/executions/{id}`;
+  checkouts carry their `authorization`. OpenAPI 0.9.0.
+
+### Design choices
+
+- **The grant** is `enq_gr_` + 256 random bits, kept only as a SHA-256.
+  Its secret appears once: in the submit response of an autonomous
+  checkout, or from `POST .../grant`. A per-transaction checkout's
+  authorization is created at the customer's approval with no grant (the
+  consent page must never hand one out); the merchant has it issued.
+  Reissuing replaces the secret, never the 15 minutes.
+- **The redemption names the checkout** (external ID and hash), so a
+  grant can't be spent on another checkout or a changed one. A repeat -
+  even after the 15 minutes - returns the same execution (200): it is a
+  lookup, not a second charge; a repeat naming another checkout is a 409.
+- **The mandate must be active at redemption** (not paused, pending
+  revocation, revoked or expired); the grant stays redeemable if the
+  mandate becomes active again within the window.
+- **Budget**: redeemed checkouts count for good; authorized ones until
+  their grant expires unredeemed. Cancelling (only before redemption)
+  revokes the grant; confirming a mandate's revocation revokes its
+  unredeemed grants and marks those checkouts `revoked`, in the same
+  transaction.
+- **One lock order**: every write touching a mandate's checkouts or
+  grants - deciding, cancelling, issuing, redeeming, confirming a
+  revocation - locks the mandate row first. Redemption finds the grant,
+  locks the mandate, then re-reads the authorization: a concurrent winner
+  has committed and is returned. `UNIQUE (authorization_id)` on
+  executions is the backstop.
+- Checkouts authorized before this phase got an authorization (no grant)
+  that expired 15 minutes after their decision, as one issued then would
+  have; they stop counting.
+- Enquoir records what it allowed; a grant is not a guarantee the payment
+  succeeds at the PSP (the spec says so).
+
+### Verified
+
+- `make test` and `make test-integration`, with one exception below.
+- **`cfa0ac8` does not build on its own.** It changed the store contract
+  without the Postgres store and the HTTP test fixture, and was committed
+  although `make test` failed (`;` instead of `&&` in the command). The
+  next commit, `2455fde`, fixes it; history is not rewritten. Commits
+  since check `make test`'s exit status before committing.
+- Mutation checks caught: redemption not checking the checkout; not
+  checking the mandate's status; a repeat naming another checkout
+  accepted; an expired grant still counting. Not caught, by design: the
+  `enq_gr_` prefix check (a non-grant is never found anyway; the check
+  only skips a lookup). **The mandate lock in redemption** was first not
+  caught: with a cold pool, dialling connections spaced the redemptions
+  out. The test now opens the pool's connections first and releases 40
+  redemptions at once; without the lock, losers then get unique-key
+  errors (2 runs in 3) - never a second execution, thanks to the unique
+  index; with it, all get the one execution.
+- Live, `make e2e-commerce`: the grant with the authorization, never
+  shown again; a redemption naming another checkout refused; one
+  execution with the card's PSP reference; repeats return it; a redeemed
+  checkout can't be cancelled or re-granted; a per-transaction checkout's
+  grant issued to the merchant after the customer approved, then
+  redeemed; another organisation can't redeem or read. No grant secret in
+  the database, the audit log or the API log. The script itself printed
+  one grant in full in its own output; it now cuts grants to a prefix.
+
+### Not verified / open
+
+- Nothing reports the payment's outcome yet (phase 6); an execution stays
+  `pending`, and a redeemed checkout counts for good.
+- Checkout listing and mandate usage: phase 6, as agreed.
