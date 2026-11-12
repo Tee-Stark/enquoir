@@ -85,8 +85,9 @@ func TestCheckoutSnapshot_HashBindsEveryField(t *testing.T) {
 		"quantity and price": func(c *CheckoutSnapshot) {
 			c.Items[1].Quantity, c.Items[1].UnitPriceMinor = 4, 1000
 		},
-		"shipping into tax": func(c *CheckoutSnapshot) { c.ShippingMinor, c.TaxMinor = 0, 500 },
-		"merchant":          func(c *CheckoutSnapshot) { c.MerchantID = "mi_2" },
+		"shipping into tax":   func(c *CheckoutSnapshot) { c.ShippingMinor, c.TaxMinor = 0, 500 },
+		"price into shipping": func(c *CheckoutSnapshot) { c.Items[0].UnitPriceMinor -= 1000; c.ShippingMinor += 1000 },
+		"merchant":            func(c *CheckoutSnapshot) { c.MerchantID = "mi_2" },
 	}
 	for name, change := range changes {
 		c := laptop()
