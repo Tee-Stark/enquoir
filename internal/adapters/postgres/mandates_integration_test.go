@@ -158,6 +158,47 @@ func TestMandateStore_RequestApproveListRevoke(t *testing.T) {
 	}
 }
 
+// Disabling the funding method, the customer, and the agent were each
+// already exercised against this real suspension read (see
+// TestMandateStore_RequestApproveListRevoke and TestMandateStore_
+// ScopedToTheMerchant's siblings). Disabling the merchant integration
+// itself was not: mandateSelect's SQL join with merchant_integrations
+// was only checked by inspection, and the in-memory commercetest fake
+// hardcodes IntegrationActive: true, so no unit test could catch a
+// regression in that join either. This is the one real end-to-end check.
+func TestMandateStore_SuspendedWhenIntegrationDisabled(t *testing.T) {
+	ctx := context.Background()
+	w := newMandateWorld(t)
+	r, _, err := w.request.Run(ctx, w.merchant, w.cmd("mreq_1"))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	d, err := w.decide.Run(app.WithActor(ctx, app.Actor{}), w.token(), r.Terms.Hash(), commerce.ConsentApproved)
+	if err != nil || d.Mandate == nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if m, err := w.get.Run(ctx, w.merchant, d.Mandate.ID); err != nil || m.Status != commerce.MandateActive {
+		t.Fatalf("before disabling the integration: %+v %v", m, err)
+	}
+
+	if _, err := w.u.status.Run(ctx, w.merchant.OrgID, w.merchant.MerchantID, commerce.Disabled); err != nil {
+		t.Fatalf("disabling the integration: %v", err)
+	}
+	if m, err := w.get.Run(ctx, w.merchant, d.Mandate.ID); err != nil || m.Status != commerce.MandateSuspended {
+		t.Errorf("integration disabled: %s, %v; want suspended", m.Status, err)
+	}
+	if page, err := w.list.Run(ctx, w.merchant, commerceapp.MandateFilter{Status: commerce.MandateSuspended}); err != nil || len(page.Mandates) != 1 {
+		t.Errorf("suspended list: %+v, %v", page.Mandates, err)
+	}
+
+	if _, err := w.u.status.Run(ctx, w.merchant.OrgID, w.merchant.MerchantID, commerce.Active); err != nil {
+		t.Fatalf("re-enabling the integration: %v", err)
+	}
+	if m, err := w.get.Run(ctx, w.merchant, d.Mandate.ID); err != nil || m.Status != commerce.MandateActive {
+		t.Errorf("integration re-enabled: %s, %v; want active", m.Status, err)
+	}
+}
+
 func TestMandateStore_ScopedToTheMerchant(t *testing.T) {
 	ctx := context.Background()
 	w := newMandateWorld(t)
