@@ -9,33 +9,57 @@ import (
 	"time"
 
 	"enquoir/internal/app"
+	"enquoir/internal/commerce"
+	"enquoir/internal/commerce/commerceapp"
 	"enquoir/internal/domain"
 )
 
 // Problem codes: stable, machine-readable reasons a client can branch
 // on. The human-readable detail may change; these may not.
 const (
-	codeInvalidJSON      = "invalid_json"
-	codeValidationFailed = "validation_failed"
-	codeNotFound         = "not_found"
-	codeRailRejected     = "rail_rejected"
-	codeInternal         = "internal_error"
-	codeUnauthenticated  = "unauthenticated"
-	codeInvalidCreds     = "invalid_credentials"
-	codeEmailTaken       = "email_taken"
-	codePayeeUnknown     = "payee_unknown"
-	codeForbiddenOrigin  = "forbidden_origin"
-	codeNotImplemented   = "not_implemented"
-	codeBodyTooLarge     = "body_too_large"
-	codeForbidden        = "forbidden"
-	codeNoOrganisation   = "no_organisation"
-	codeEmailUnverified  = "email_unverified"
-	codeAlreadyVerified  = "already_verified"
-	codeTokenInvalid     = "token_invalid"
-	codeLastOwner        = "last_owner"
-	codeAlreadyMember    = "already_member"
-	codeRateLimited      = "rate_limited"
-	codeAccountLocked    = "account_locked"
+	codeInvalidJSON          = "invalid_json"
+	codeValidationFailed     = "validation_failed"
+	codeNotFound             = "not_found"
+	codeRailRejected         = "rail_rejected"
+	codeInternal             = "internal_error"
+	codeUnauthenticated      = "unauthenticated"
+	codeInvalidCreds         = "invalid_credentials"
+	codeEmailTaken           = "email_taken"
+	codePayeeUnknown         = "payee_unknown"
+	codeForbiddenOrigin      = "forbidden_origin"
+	codeNotImplemented       = "not_implemented"
+	codeBodyTooLarge         = "body_too_large"
+	codeForbidden            = "forbidden"
+	codeNoOrganisation       = "no_organisation"
+	codeEmailUnverified      = "email_unverified"
+	codeAlreadyVerified      = "already_verified"
+	codeTokenInvalid         = "token_invalid"
+	codeLastOwner            = "last_owner"
+	codeAlreadyMember        = "already_member"
+	codeRateLimited          = "rate_limited"
+	codeAccountLocked        = "account_locked"
+	codeRegistrationConflict = "registration_conflict"
+	codeCustomerUnknown      = "customer_unknown"
+	codeCustomerDisabled     = "customer_disabled"
+	codeAgentUnknown         = "agent_unknown"
+	codeAgentDisabled        = "agent_disabled"
+	codeFundingUnknown       = "funding_method_unknown"
+	codeFundingDisabled      = "funding_method_disabled"
+	codeTermsMismatch        = "terms_mismatch"
+	codeMandateUnknown       = "mandate_unknown"
+	codeCheckoutMismatch     = "checkout_mismatch"
+	codeNotCancelable        = "checkout_not_cancelable"
+	codeGrantInvalid         = "grant_invalid"
+	codeGrantExpired         = "grant_expired"
+	codeGrantRevoked         = "grant_revoked"
+	codeGrantRedeemed        = "grant_redeemed"
+	codeGrantNotIssuable     = "grant_not_issuable"
+	codeRedemptionMismatch   = "redemption_mismatch"
+	codeMandateNotActive     = "mandate_not_active"
+	codeReportMismatch       = "report_mismatch"
+	codeOutcomeConflict      = "outcome_conflict"
+	codeReconcileRequired    = "reconciliation_required"
+	codeEventConflict        = "event_conflict"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.
@@ -101,6 +125,52 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 	case errors.Is(err, app.ErrPayeeUnknown):
 		writeProblem(w, http.StatusUnprocessableEntity, codePayeeUnknown,
 			"the payee is not a beneficiary this organisation registered; register it with POST /v1/beneficiaries first")
+	case errors.Is(err, commerceapp.ErrCustomerUnknown):
+		writeProblem(w, http.StatusUnprocessableEntity, codeCustomerUnknown,
+			"the customer is not one this merchant registered; register it with POST /v1/commerce/customers first")
+	case errors.Is(err, commerceapp.ErrCustomerDisabled):
+		writeProblem(w, http.StatusUnprocessableEntity, codeCustomerDisabled, "the customer is disabled; enable it first")
+	case errors.Is(err, commerceapp.ErrAgentUnknown):
+		writeProblem(w, http.StatusUnprocessableEntity, codeAgentUnknown, "the agent is not one this merchant registered; register it with POST /v1/commerce/agents first")
+	case errors.Is(err, commerceapp.ErrAgentDisabled):
+		writeProblem(w, http.StatusUnprocessableEntity, codeAgentDisabled, "the agent is disabled; enable it first")
+	case errors.Is(err, commerceapp.ErrFundingMethodUnknown):
+		writeProblem(w, http.StatusUnprocessableEntity, codeFundingUnknown,
+			"the funding method is not one this merchant registered; register it with POST /v1/commerce/funding-methods first")
+	case errors.Is(err, commerceapp.ErrFundingMethodDisabled):
+		writeProblem(w, http.StatusUnprocessableEntity, codeFundingDisabled, "the funding method is disabled; enable it first")
+	case errors.Is(err, commerce.ErrReportMismatch):
+		writeProblem(w, http.StatusUnprocessableEntity, codeReportMismatch, err.Error())
+	case errors.Is(err, commerce.ErrOutcomeConflict):
+		writeProblem(w, http.StatusConflict, codeOutcomeConflict, err.Error())
+	case errors.Is(err, commerce.ErrReconciliationRequired):
+		writeProblem(w, http.StatusConflict, codeReconcileRequired, err.Error())
+	case errors.Is(err, commerce.ErrEventConflict):
+		writeProblem(w, http.StatusConflict, codeEventConflict, err.Error())
+	case errors.Is(err, commerceapp.ErrGrantInvalid):
+		writeProblem(w, http.StatusUnprocessableEntity, codeGrantInvalid, err.Error())
+	case errors.Is(err, commerce.ErrGrantExpired):
+		writeProblem(w, http.StatusUnprocessableEntity, codeGrantExpired, err.Error()+"; submit the checkout again under a new external ID")
+	case errors.Is(err, commerce.ErrGrantRevoked):
+		writeProblem(w, http.StatusUnprocessableEntity, codeGrantRevoked, err.Error())
+	case errors.Is(err, commerceapp.ErrMandateNotActive):
+		writeProblem(w, http.StatusUnprocessableEntity, codeMandateNotActive, err.Error())
+	case errors.Is(err, commerce.ErrGrantRedeemed):
+		writeProblem(w, http.StatusConflict, codeGrantRedeemed, err.Error())
+	case errors.Is(err, commerceapp.ErrGrantNotIssuable):
+		writeProblem(w, http.StatusConflict, codeGrantNotIssuable, err.Error())
+	case errors.Is(err, commerce.ErrRedemptionMismatch):
+		writeProblem(w, http.StatusConflict, codeRedemptionMismatch, err.Error())
+	case errors.Is(err, commerceapp.ErrMandateUnknown):
+		writeProblem(w, http.StatusUnprocessableEntity, codeMandateUnknown, err.Error())
+	case errors.Is(err, commerceapp.ErrCheckoutMismatch):
+		writeProblem(w, http.StatusConflict, codeCheckoutMismatch, err.Error())
+	case errors.Is(err, commerce.ErrCheckoutNotCancelable):
+		writeProblem(w, http.StatusConflict, codeNotCancelable, err.Error())
+	case errors.Is(err, commerceapp.ErrTermsMismatch):
+		writeProblem(w, http.StatusConflict, codeTermsMismatch, err.Error())
+	case errors.Is(err, commerceapp.ErrRegistrationConflict):
+		writeProblem(w, http.StatusConflict, codeRegistrationConflict, err.Error())
 	case errors.Is(err, app.ErrNotFound):
 		writeProblem(w, http.StatusNotFound, codeNotFound, "not found")
 	default:

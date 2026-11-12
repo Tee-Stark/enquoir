@@ -21,6 +21,7 @@ import (
 	"enquoir/internal/adapters/postgres"
 	"enquoir/internal/app"
 	"enquoir/internal/chaos"
+	"enquoir/internal/commerce/commerceapp"
 	enquoirworkflow "enquoir/internal/workflow"
 )
 
@@ -94,6 +95,9 @@ func main() {
 			Secrets: credentials.RandomSecrets{}, Clock: clock.System{}, AppBaseURL: appBaseURL,
 		},
 		EmailGiveUp: &app.GiveUpEmail{Outbox: outbox, Clock: clock.System{}},
+
+		ExecutionSweep: &commerceapp.SweepExecutions{Checkouts: postgres.NewCommerceCheckoutStore(pool), Clock: clock.System{},
+			Audit: &app.Audit{Log: postgres.NewAuditLog(pool), IDs: credentials.RandomIDs{}, Clock: clock.System{}}},
 	}
 
 	stopSweep := make(chan struct{})
@@ -104,7 +108,16 @@ func main() {
 	w.RegisterWorkflow(enquoirworkflow.PaymentWorkflow)
 	w.RegisterWorkflow(enquoirworkflow.BeneficiaryWorkflow)
 	w.RegisterWorkflow(enquoirworkflow.SendEmailWorkflow)
+	w.RegisterWorkflow(enquoirworkflow.CommerceSweepWorkflow)
 	w.RegisterActivity(activities)
+
+	// The commerce execution sweep runs for good; every worker starts it,
+	// and all but the first attach to the one running.
+	startCtx, cancelStart := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := enquoirworkflow.StartCommerceSweep(startCtx, temporalClient); err != nil {
+		logger.Warn("starting the commerce execution sweep; a restarted worker will try again", "error", err)
+	}
+	cancelStart()
 
 	logger.Info("worker starting", "task_queue", enquoirworkflow.TaskQueue)
 	if err := w.Run(worker.InterruptCh()); err != nil {

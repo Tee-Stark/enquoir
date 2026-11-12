@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Enquoir API
-  version: 0.4.0
+  version: 0.10.0
   summary: The safe control and observability layer for agentic finance.
   description: |
     Enquoir sits between an AI agent and a payment rail. The agent states an
@@ -13,7 +13,10 @@ info:
 
     **Authentication.** Agents send their API key as `Authorization: Bearer
     <key>` on the payment routes. The dashboard uses the `enquoir_session`
-    cookie set by sign-up and log-in. Dashboard frontends on another origin
+    cookie set by sign-up and log-in. A merchant's backend sends its
+    integration key (`enq_mk_...`) as `Authorization: Bearer <key>` on the
+    `/v1/commerce` routes. The two kinds of key are never interchangeable:
+    an agent key is refused on commerce routes, a merchant key everywhere else. Dashboard frontends on another origin
     must be listed in the server's `CORS_ALLOWED_ORIGINS`; a state-changing
     request a browser sends from any other origin is refused
     (`403 forbidden_origin`).
@@ -60,6 +63,115 @@ tags:
       (`tz`, default UTC). Calendar buckets follow the caller's zone: days
       start at local midnight, also across daylight-saving changes. Money is
       never added up across currencies. Dashboard-only.
+  - name: Merchant integrations
+    description: |
+      Merchant-delegated commerce, from the dashboard: connect a merchant
+      (one integration per storefront) and manage its key. The key is how
+      the merchant's backend authenticates on `/v1/commerce`. Owners and
+      admins manage integrations; issuing or re-enabling a key needs a
+      verified email. Any member may look.
+  - name: Commerce
+    description: |
+      Merchant-delegated commerce, from the merchant's backend, with its
+      integration key. A merchant registers the customers whose purchases
+      its AI shopping agents will propose, and the agents themselves.
+      Everything is scoped to the merchant the key belongs to - never to
+      one named in a request; another merchant's record is `404`, even
+      another storefront of the same organisation. External IDs are the
+      merchant's own references, unique per merchant. Agents have no
+      credentials of their own: the merchant names them.
+
+      Registering is register-or-resolve: repeating it returns the same
+      record (`200`); the first time, `201`. Repeating it with different
+      details is `409 registration_conflict`.
+
+      Funding methods are bindings to a customer's payment methods saved
+      with the merchant's PSP: the merchant's own reference for the method,
+      the PSP's own ID for it (`pm_...`), or both; the PSP's name; and what a
+      consent screen shows (brand, last four). Enquoir returns its own
+      binding ID (`fmb_...`). Registering a binding grants no spending
+      authority.
+
+      Enquoir never receives card data or PSP secrets. A funding-method
+      request with any undocumented field is refused (`400
+      validation_failed`, naming the field), as is any value holding 12 or
+      more digits in a row - a card number's shape - in the merchant's
+      reference, or a Luhn-valid card number in the PSP's.
+
+      **Mandates** are spending authority, and only the customer grants
+      them. The merchant requests one (`POST /v1/commerce/mandate-requests`)
+      for one customer, one agent and one of that customer's funding
+      methods, with a scope and an expiry (at most 90 days). Enquoir freezes
+      the terms (hashed in `terms_hash`) and emails the customer a one-time
+      link to its consent page, valid 1 hour. The merchant never receives
+      the link and has no way to approve: poll the request, or list
+      mandates, to see the customer's decision. Merchants then manage
+      mandates for their customers: list, get, revoke. Revoking waits for
+      the customer: the mandate pauses at once (`revocation_pending`) and
+      Enquoir emails them a link to confirm. A mandate reads `suspended`
+      while its customer, agent, funding method or integration is disabled,
+      and `expired` after its expiry.
+
+      **Checkouts** are evaluated against a mandate. The merchant's server -
+      never the agent - submits the priced checkout (`POST
+      /v1/commerce/checkouts`): items, shipping, tax, fees and a total that
+      must add up, in minor units. Enquoir freezes it (`checkout_hash`) and
+      decides, under a lock on the mandate so concurrent checkouts can't
+      overspend it: `denied` with every reason, `authorized` at once under an
+      autonomous mandate, or `awaiting_customer_approval` under a
+      per-transaction one, when the customer is emailed a link (1 hour) to
+      approve that exact checkout; limits are checked again then. Authorized
+      checkouts count against the mandate's budget and purchase count at
+      once; cancelling one releases it.
+
+      **Grants.** An authorized checkout has an `authorization`, redeemable
+      for 15 minutes from the decision, and a one-time grant (`enq_gr_...`)
+      - its secret shown once: in the submit response for an autonomous
+      checkout, or from `POST .../grant`, which (re)issues it, replacing any
+      earlier secret without extending the 15 minutes. Before charging, the
+      merchant redeems it (`POST /v1/commerce/grants/redeem`) naming the
+      checkout's external ID and hash; that creates the one execution - the
+      payment to make, and the funding method to charge - and repeating it
+      returns the same execution. An unredeemed grant that expires stops
+      counting against the mandate; cancelling the checkout or confirming
+      the mandate's revocation revokes it. Enquoir records what it allowed;
+      a grant is not a guarantee the payment will succeed at the PSP.
+
+      **Outcomes.** Charge with the execution's `idempotency_key` as your
+      PSP request's idempotency key, so a retried charge can't charge twice.
+      Then report what happened (`POST /v1/commerce/executions/{id}/outcome`):
+      `succeeded` (with the PSP's payment reference), `failed`, or `unknown`
+      if your PSP call timed out. Forward a verified PSP webhook the same way
+      with its `provider_event_id`: a redelivery changes nothing. **Outcomes
+      are your word**: Enquoir checks them against the execution - amount,
+      currency, provider, and the payment reference once known - but cannot
+      verify them with the PSP. A succeeded payment stays spent against the
+      mandate; a failed one is released; pending and unknown stay held.
+      Unknown is not failed: only a reconciliation (`POST .../reconcile`,
+      after looking the payment up at your PSP) or a webhook resolves it;
+      `GET /v1/commerce/executions?status=unknown` is the queue. An
+      execution left pending for 30 minutes is presumed unknown. A report
+      contradicting a finished payment is refused and recorded; every report
+      is in the execution's history.
+  - name: Consent
+    description: |
+      The customer's consent page, at `APP_BASE_URL/consent?token=...`, the
+      link Enquoir emails the customer. These routes take no credential but
+      that token, sent in the body. The page shows the terms
+      (`POST /v1/consent/view`, which doesn't spend the link), then approves
+      - sending the `terms_hash` it showed, so consent binds to exactly those
+      terms - or rejects. Either decision spends the link and is recorded,
+      with the time, IP and user agent, as immutable evidence.
+
+      When a merchant asks to revoke a mandate, Enquoir emails the customer a
+      link to `APP_BASE_URL/consent/revoke?token=...`: the page shows the
+      mandate (`POST /v1/consent/revocation/view`) and confirms
+      (`POST /v1/consent/revocation/confirm`), which revokes it for good.
+
+      Under a per-transaction mandate, each checkout's link goes to
+      `APP_BASE_URL/consent/checkout?token=...`: the page shows the checkout
+      (`POST /v1/consent/checkout/view`) and approves it - sending the
+      `checkout_hash` it showed - or rejects it.
   - name: Meta
     description: Health and the API contract itself.
 
@@ -889,8 +1001,24 @@ paths:
         auth.password_changed, auth.sessions_revoked, member.invited,
         invitation.revoked, invitation.accepted, member.role_changed,
         member.removed, member.left, agent.created, agent.key_rotated,
-        agent.revoked, payee.registered. Payments have their own history
-        (GET /v1/payments/{key}).
+        agent.revoked, payee.registered, merchant_integration.created,
+        merchant_integration.disabled, merchant_integration.enabled,
+        merchant_integration.key_rotated, merchant_integration.key_revoked,
+        commerce.customer.registered, commerce.customer.disabled,
+        commerce.customer.enabled, commerce.agent.registered,
+        commerce.agent.disabled, commerce.agent.enabled,
+        commerce.funding_method.registered, commerce.funding_method.disabled,
+        commerce.funding_method.enabled, commerce.mandate.requested,
+        commerce.mandate.approved, commerce.mandate.rejected,
+        commerce.mandate.revocation_requested, commerce.mandate.revoked,
+        commerce.checkout.authorized, commerce.checkout.denied,
+        commerce.checkout.awaiting_approval, commerce.checkout.approved,
+        commerce.checkout.rejected, commerce.checkout.canceled,
+        commerce.authorization.grant_issued, commerce.authorization.redeemed,
+        commerce.execution.succeeded, commerce.execution.failed,
+        commerce.execution.unknown, commerce.execution.reconciled,
+        commerce.execution.report_refused. Payments have
+        their own history (GET /v1/payments/{key}).
       security:
         - session: []
       parameters:
@@ -1067,6 +1195,1812 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations:
+    post:
+      tags: [Merchant integrations]
+      operationId: createMerchantIntegration
+      summary: Connect a merchant and issue its key
+      description: The response is the only time the key's secret is shown. Store it then.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                  description: The merchant or storefront, as people will recognise it.
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedMerchantIntegration"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Merchant integrations]
+      operationId: listMerchantIntegrations
+      summary: List the organisation's merchant integrations
+      description: Oldest first, disabled ones included.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The integrations.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MerchantIntegration"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    get:
+      tags: [Merchant integrations]
+      operationId: getMerchantIntegration
+      summary: Get a merchant integration
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The integration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MerchantIntegration"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}/disable:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    post:
+      tags: [Merchant integrations]
+      operationId: disableMerchantIntegration
+      summary: Disable a merchant integration
+      description: |
+        Its key stops working at once. Its customers, agents and history
+        stay. Disabling a disabled integration succeeds and changes nothing.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: Disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MerchantIntegration"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}/enable:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    post:
+      tags: [Merchant integrations]
+      operationId: enableMerchantIntegration
+      summary: Enable a disabled merchant integration
+      description: Its active key, if it has one, works again. Needs a verified email.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: Enabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MerchantIntegration"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}/rotate-key:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    post:
+      tags: [Merchant integrations]
+      operationId: rotateMerchantIntegrationKey
+      summary: Issue a new integration key
+      description: |
+        Replaces the active key, which stops working at once, or issues one
+        to an integration whose key was revoked. The new secret is shown
+        only in this response. Needs a verified email.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: Issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedMerchantIntegration"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}/key:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    delete:
+      tags: [Merchant integrations]
+      operationId: revokeMerchantIntegrationKey
+      summary: Revoke the integration key
+      description: |
+        The key stops working at once and no new one is issued: the merchant
+        is cut off until a key is rotated in. Revoking when there is no key
+        succeeds.
+      security:
+        - session: []
+      responses:
+        "204":
+          description: Revoked.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/customers:
+    post:
+      tags: [Commerce]
+      operationId: registerCommerceCustomer
+      summary: Register a customer, or resolve one already registered
+      description: |
+        The email is where Enquoir will send the customer consent links, so
+        that spending authority never rests on the merchant's word. It is not
+        written to the audit log.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [external_id, email]
+              properties:
+                external_id:
+                  $ref: "#/components/schemas/ExternalID"
+                email:
+                  type: string
+                  format: email
+      responses:
+        "201":
+          description: Registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceCustomer"
+        "200":
+          description: "Already registered with these details: the same customer."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceCustomer"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/RegistrationConflict"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Commerce]
+      operationId: listCommerceCustomers
+      summary: List the merchant's customers
+      description: Newest first.
+      security:
+        - merchantKey: []
+      parameters:
+        - $ref: "#/components/parameters/ExternalIDFilter"
+        - $ref: "#/components/parameters/CommerceStatusFilter"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of customers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CommerceCustomer"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/customers/{id}:
+    parameters:
+      - $ref: "#/components/parameters/CommerceCustomerID"
+    get:
+      tags: [Commerce]
+      operationId: getCommerceCustomer
+      summary: Get a customer
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: The customer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceCustomer"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/customers/{id}/disable:
+    parameters:
+      - $ref: "#/components/parameters/CommerceCustomerID"
+    post:
+      tags: [Commerce]
+      operationId: disableCommerceCustomer
+      summary: Disable a customer
+      description: Disabling a disabled customer succeeds and changes nothing.
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: Disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceCustomer"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/customers/{id}/enable:
+    parameters:
+      - $ref: "#/components/parameters/CommerceCustomerID"
+    post:
+      tags: [Commerce]
+      operationId: enableCommerceCustomer
+      summary: Enable a customer
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: Enabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceCustomer"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/agents:
+    post:
+      tags: [Commerce]
+      operationId: registerCommerceAgent
+      summary: Register an AI agent, or resolve one already registered
+      description: |
+        An agent the merchant runs - a shopping assistant, say. It holds no
+        credential; the merchant names it in later requests.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [external_id, name]
+              properties:
+                external_id:
+                  $ref: "#/components/schemas/ExternalID"
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+      responses:
+        "201":
+          description: Registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceAgent"
+        "200":
+          description: "Already registered with these details: the same agent."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceAgent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/RegistrationConflict"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Commerce]
+      operationId: listCommerceAgents
+      summary: List the merchant's agents
+      description: Newest first.
+      security:
+        - merchantKey: []
+      parameters:
+        - $ref: "#/components/parameters/ExternalIDFilter"
+        - $ref: "#/components/parameters/CommerceStatusFilter"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of agents.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CommerceAgent"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/agents/{id}:
+    parameters:
+      - $ref: "#/components/parameters/CommerceAgentID"
+    get:
+      tags: [Commerce]
+      operationId: getCommerceAgent
+      summary: Get an agent
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: The agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceAgent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/agents/{id}/disable:
+    parameters:
+      - $ref: "#/components/parameters/CommerceAgentID"
+    post:
+      tags: [Commerce]
+      operationId: disableCommerceAgent
+      summary: Disable an agent
+      description: Disabling a disabled agent succeeds and changes nothing.
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: Disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceAgent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/agents/{id}/enable:
+    parameters:
+      - $ref: "#/components/parameters/CommerceAgentID"
+    post:
+      tags: [Commerce]
+      operationId: enableCommerceAgent
+      summary: Enable an agent
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: Enabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceAgent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/funding-methods:
+    post:
+      tags: [Commerce]
+      operationId: registerFundingMethod
+      summary: Register a funding-method binding, or resolve one already registered
+      description: |
+        Binds one of the merchant's active customers to a payment method the
+        merchant saved with its PSP, identified by the merchant's own
+        reference for it, the PSP's (`pm_...`), or both. Never card details
+        or PSP secret keys: undocumented fields are refused. Repeating it -
+        by either reference - returns the same binding; repeating it with
+        another customer, provider or display details, or adding or changing
+        a reference, is `409 registration_conflict`, as are references that
+        name two different bindings.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [customer_id, provider, display]
+              description: At least one of merchant_funding_method_id and provider_method_reference.
+              properties:
+                customer_id:
+                  type: string
+                  description: Enquoir's customer ID (`cus_...`), from POST /v1/commerce/customers.
+                provider:
+                  type: string
+                  description: The PSP, e.g. `stripe`. Lower-cased.
+                merchant_funding_method_id:
+                  $ref: "#/components/schemas/FundingReference"
+                provider_method_reference:
+                  $ref: "#/components/schemas/ProviderReference"
+                display:
+                  type: object
+                  additionalProperties: false
+                  required: [brand]
+                  properties:
+                    brand:
+                      type: string
+                      description: e.g. `visa`, `paypal`. Letters, `_` and `-` only.
+                    last_four:
+                      type: string
+                      pattern: "^[0-9]{4}$"
+                      description: For cards and accounts; omit for wallets.
+      responses:
+        "201":
+          description: "Registered."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FundingMethod"
+        "200":
+          description: "Already registered with these details: the same binding."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FundingMethod"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/RegistrationConflict"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "422":
+          $ref: "#/components/responses/CustomerNotBindable"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/funding-methods/{id}:
+    parameters:
+      - $ref: "#/components/parameters/FundingMethodID"
+    get:
+      tags: [Commerce]
+      operationId: getFundingMethod
+      summary: Get a funding-method binding
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "The binding."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FundingMethod"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/funding-methods/{id}/disable:
+    parameters:
+      - $ref: "#/components/parameters/FundingMethodID"
+    post:
+      tags: [Commerce]
+      operationId: disableFundingMethod
+      summary: Disable a funding-method binding
+      description: When the customer removes the payment method, say. Disabling a disabled binding succeeds and changes nothing.
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "Disabled."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FundingMethod"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/funding-methods/{id}/enable:
+    parameters:
+      - $ref: "#/components/parameters/FundingMethodID"
+    post:
+      tags: [Commerce]
+      operationId: enableFundingMethod
+      summary: Enable a funding-method binding
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "Enabled."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FundingMethod"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/customers/{id}/funding-methods:
+    parameters:
+      - $ref: "#/components/parameters/CommerceCustomerID"
+    get:
+      tags: [Commerce]
+      operationId: listCustomerFundingMethods
+      summary: List a customer's funding-method bindings
+      description: Newest first. Another merchant's customer is `404`.
+      security:
+        - merchantKey: []
+      parameters:
+        - $ref: "#/components/parameters/CommerceStatusFilter"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of bindings.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/FundingMethod"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/mandate-requests:
+    post:
+      tags: [Commerce]
+      operationId: requestMandate
+      summary: Ask a customer for a mandate, or resolve a request already made
+      description: |
+        Freezes the terms and emails the customer a one-time consent link
+        (1 hour). The response never contains the link. Repeating the request
+        (same `external_id`, same terms) returns it without another email;
+        different terms are `409 registration_conflict`.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [external_id, customer_id, agent_id, funding_method_id, approval_mode, scope, expires_at]
+              properties:
+                external_id:
+                  $ref: "#/components/schemas/ExternalID"
+                customer_id:
+                  type: string
+                agent_id:
+                  type: string
+                funding_method_id:
+                  type: string
+                  description: One of this customer's funding methods.
+                approval_mode:
+                  $ref: "#/components/schemas/ApprovalMode"
+                scope:
+                  type: object
+                  required: [currency, max_transaction_minor, max_cumulative_minor]
+                  properties:
+                    currency:
+                      type: string
+                      enum: [USD, EUR, GBP]
+                    max_transaction_minor:
+                      type: integer
+                      minimum: 1
+                      description: The most one purchase may cost, in minor units (cents).
+                    max_cumulative_minor:
+                      type: integer
+                      minimum: 1
+                      description: The most all purchases together may cost; at least max_transaction_minor.
+                    max_transactions:
+                      type: integer
+                      minimum: 0
+                      maximum: 100000
+                      description: The most purchases; 0 or omitted for no limit.
+                    allowed_categories:
+                      type: array
+                      maxItems: 50
+                      items:
+                        type: string
+                      description: Product categories allowed; empty or omitted for any.
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: In the future, at most 90 days ahead. Kept to the second.
+      responses:
+        "201":
+          description: "Requested; the consent email is on its way."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MandateRequest"
+        "200":
+          description: "Already requested with these terms: the same request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MandateRequest"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/RegistrationConflict"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "422":
+          $ref: "#/components/responses/MandatePartyUnusable"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/mandate-requests/{id}:
+    parameters:
+      - $ref: "#/components/parameters/MandateRequestID"
+    get:
+      tags: [Commerce]
+      operationId: getMandateRequest
+      summary: Get a mandate request and the customer's decision
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "The request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MandateRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/mandates:
+    get:
+      tags: [Commerce]
+      operationId: listMandates
+      summary: List the merchant's mandates
+      description: Newest first. What to show a customer who asks what they have allowed.
+      security:
+        - merchantKey: []
+      parameters:
+        - name: customer_id
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/MandateStatus"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of mandates.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Mandate"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/mandates/{id}:
+    parameters:
+      - $ref: "#/components/parameters/MandateID"
+    get:
+      tags: [Commerce]
+      operationId: getMandate
+      summary: Get a mandate
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "The mandate."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mandate"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/mandates/{id}/revoke:
+    parameters:
+      - $ref: "#/components/parameters/MandateID"
+    post:
+      tags: [Commerce]
+      operationId: revokeMandate
+      summary: Ask to revoke a mandate, for the customer
+      description: |
+        The mandate reads `revocation_pending` and grants nothing from now.
+        Enquoir emails the customer a one-time link (1 hour) to confirm;
+        only their confirmation revokes it. Unconfirmed, the request lapses
+        at `revocation_expires_at` and the mandate is active again. Asking
+        while one is pending, or after revocation, changes and sends nothing.
+      security:
+        - merchantKey: []
+      responses:
+        "202":
+          description: "Asked: see `status` (`revocation_pending`, or `revoked` if it already was)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mandate"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/view:
+    post:
+      tags: [Consent]
+      operationId: viewConsent
+      summary: Read the terms a consent link is for
+      description: Does not spend the link.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: The `token` from the consent link.
+      responses:
+        "200":
+          description: "The terms to show the customer."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentView"
+        "400":
+          description: "The link is unknown, spent or expired, or its request was decided or has expired (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/approve:
+    post:
+      tags: [Consent]
+      operationId: approveConsent
+      summary: Approve the terms, as the customer
+      description: |
+        Creates the mandate and the consent record, and spends the link.
+        `terms_hash` must be the hash of the terms the page showed.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, terms_hash]
+              properties:
+                token:
+                  type: string
+                terms_hash:
+                  type: string
+                  description: The `terms.terms_hash` from POST /v1/consent/view.
+      responses:
+        "200":
+          description: "Approved: the mandate."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentOutcome"
+        "409":
+          description: "terms_hash is not this request's (`terms_mismatch`). The link is not spent."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "400":
+          description: "The link is unknown, spent or expired, or its request was decided or has expired (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/reject:
+    post:
+      tags: [Consent]
+      operationId: rejectConsent
+      summary: Reject the terms, as the customer
+      description: Records the rejection and spends the link. No mandate is created.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: The `token` from the consent link.
+      responses:
+        "200":
+          description: "Rejected."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentOutcome"
+        "400":
+          description: "The link is unknown, spent or expired, or its request was decided or has expired (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/revocation/view:
+    post:
+      tags: [Consent]
+      operationId: viewRevocation
+      summary: Read the mandate a revocation link is for
+      description: Does not spend the link.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: The `token` from the revocation link.
+      responses:
+        "200":
+          description: The mandate, `revocation_pending`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mandate"
+        "400":
+          description: "The link is unknown, spent or expired, or no revocation is pending (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/revocation/confirm:
+    post:
+      tags: [Consent]
+      operationId: confirmRevocation
+      summary: Confirm the revocation, as the customer
+      description: Revokes the mandate for good and spends the link.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: The `token` from the revocation link.
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mandate"
+        "400":
+          description: "The link is unknown, spent or expired, or no revocation is pending (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/checkouts:
+    get:
+      tags: [Commerce]
+      operationId: listCheckouts
+      summary: List the merchant's checkouts
+      description: Newest first.
+      security:
+        - merchantKey: []
+      parameters:
+        - name: mandate_id
+          in: query
+          schema:
+            type: string
+        - name: customer_id
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: The effective status (see Checkout).
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: "One page of checkouts."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Checkout"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [Commerce]
+      operationId: submitCheckout
+      summary: Submit a checkout for evaluation against a mandate
+      description: |
+        From the merchant's server, priced by it: never prices an agent
+        asserts. The body is decoded strictly: an undocumented field is a 400
+        naming it. The decision is recorded and returned (201); repeating the
+        same checkout (`external_id`) returns it (200); a changed one under
+        the same `external_id` is `409 registration_conflict`. A mandate that
+        is not this merchant's is `422 mandate_unknown`; every other failure
+        is a recorded `denied` checkout with its reasons.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [external_id, mandate_id, customer_id, agent_id, funding_method_id, checkout]
+              properties:
+                external_id:
+                  $ref: "#/components/schemas/ExternalID"
+                mandate_id:
+                  type: string
+                customer_id:
+                  type: string
+                agent_id:
+                  type: string
+                funding_method_id:
+                  type: string
+                checkout:
+                  $ref: "#/components/schemas/CheckoutLines"
+      responses:
+        "201":
+          description: "Evaluated: see `status` and `decision`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "200":
+          description: "Already submitted: the same checkout."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/RegistrationConflict"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "422":
+          description: "The mandate is not this merchant's (`mandate_unknown`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/checkouts/{id}:
+    parameters:
+      - $ref: "#/components/parameters/CheckoutID"
+    get:
+      tags: [Commerce]
+      operationId: getCheckout
+      summary: Get a checkout and its decision
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "The checkout."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/checkouts/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/CheckoutID"
+    post:
+      tags: [Commerce]
+      operationId: cancelCheckout
+      summary: Cancel an authorized checkout, or one awaiting the customer
+      description: |
+        Releases what it counted against the mandate. Cancelling a cancelled
+        checkout succeeds and changes nothing; anything else is `409
+        checkout_not_cancelable`.
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "Cancelled."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "409":
+          description: "Not authorized or awaiting approval (`checkout_not_cancelable`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/checkout/view:
+    post:
+      tags: [Consent]
+      operationId: viewCheckoutApproval
+      summary: Read the checkout an approval link is for
+      description: Does not spend the link.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: The `token` from the approval link.
+      responses:
+        "200":
+          description: "The checkout to show the customer."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "400":
+          description: "The link is unknown, spent or expired, or the checkout is no longer awaiting approval (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/checkout/approve:
+    post:
+      tags: [Consent]
+      operationId: approveCheckout
+      summary: Approve the checkout, as the customer
+      description: |
+        `checkout_hash` must be the one the page showed. The mandate's limits
+        are checked again: a checkout that no longer fits comes back `denied`.
+        Spends the link.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, checkout_hash]
+              properties:
+                token:
+                  type: string
+                checkout_hash:
+                  type: string
+      responses:
+        "200":
+          description: "Decided: `authorized`, or `denied` on the recheck."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "409":
+          description: "Not the checkout awaiting approval (`checkout_mismatch`). The link is not spent."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "400":
+          description: "The link is unknown, spent or expired, or the checkout is no longer awaiting approval (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/consent/checkout/reject:
+    post:
+      tags: [Consent]
+      operationId: rejectCheckout
+      summary: Reject the checkout, as the customer
+      description: Spends the link.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: The `token` from the approval link.
+      responses:
+        "200":
+          description: "Rejected."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "400":
+          description: "The link is unknown, spent or expired, or the checkout is no longer awaiting approval (`token_invalid`); or the body is not JSON."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/checkouts/{id}/grant:
+    parameters:
+      - $ref: "#/components/parameters/CheckoutID"
+    post:
+      tags: [Commerce]
+      operationId: issueGrant
+      summary: Issue (or reissue) the checkout's grant
+      description: |
+        The first grant of a checkout the customer approved, or a replacement
+        for a lost one. The earlier secret stops working; the expiry stays the
+        authorization's. The secret is in `authorization.grant`, only in this
+        response.
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "Issued."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "409":
+          description: "Already redeemed (`grant_redeemed`), or no active authorization: not authorized, expired, cancelled or revoked (`grant_not_issuable`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/grants/redeem:
+    post:
+      tags: [Commerce]
+      operationId: redeemGrant
+      summary: Redeem a grant before charging
+      description: |
+        Checks the grant is this merchant's, unredeemed, unrevoked, unexpired,
+        for this checkout and version, and its mandate still active; then
+        creates the one execution: charge `amount_minor` of `currency` to
+        `funding_method`. Repeating it returns that execution (200), even after
+        the 15 minutes: never a second. The body is decoded strictly.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [grant, external_checkout_id, checkout_hash]
+              properties:
+                grant:
+                  type: string
+                  description: The `enq_gr_...` secret.
+                external_checkout_id:
+                  type: string
+                checkout_hash:
+                  type: string
+                  description: The `checkout_hash` of the checkout being charged.
+      responses:
+        "201":
+          description: "Redeemed: the execution."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Execution"
+        "200":
+          description: "Already redeemed: the same execution."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Execution"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: "The grant is for another checkout or version (`redemption_mismatch`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "422":
+          description: "Not this merchant's grant, made up or replaced (`grant_invalid`); expired (`grant_expired`); revoked (`grant_revoked`); or the mandate is paused, revoked or expired (`mandate_not_active`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/executions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Commerce]
+      operationId: getExecution
+      summary: Get an execution, with its history
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "The execution and every report on it, in order."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/executions:
+    get:
+      tags: [Commerce]
+      operationId: listExecutions
+      summary: List the merchant's executions
+      description: Newest first.
+      security:
+        - merchantKey: []
+      parameters:
+        - name: status
+          in: query
+          description: "`unknown` is the reconciliation queue."
+          schema:
+            type: string
+            enum: [pending, succeeded, failed, unknown]
+        - name: mandate_id
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: "One page of executions."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Execution"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/executions/{id}/outcome:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Commerce]
+      operationId: reportExecutionOutcome
+      summary: Report a payment's outcome
+      description: |
+        Your own report after charging, or - with `provider_event_id` - a PSP
+        webhook you verified. The outcome is your word; Enquoir checks it
+        against the execution. A direct report can't resolve `unknown`: use
+        `.../reconcile`.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [outcome, provider, amount_minor, currency]
+              properties:
+                outcome:
+                  type: string
+                  enum: [succeeded, failed, unknown]
+                provider:
+                  type: string
+                provider_payment_reference:
+                  type: string
+                  description: The PSP's payment ID. Required for succeeded.
+                provider_event_id:
+                  type: string
+                  description: A verified PSP webhook's event ID. Makes this a webhook report.
+                amount_minor:
+                  type: integer
+                currency:
+                  type: string
+                failure_reason:
+                  type: string
+                  maxLength: 200
+                  description: e.g. the PSP's decline code. Never card data.
+      responses:
+        "200":
+          description: "Recorded: see `result` - applied, duplicate (nothing changed) or ignored (older than what is recorded)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionReportResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: "Contradicts a finished payment (`outcome_conflict`), an unknown outcome needs reconciling (`reconciliation_required`), or the webhook event ID reported something else (`event_conflict`). Recorded for investigation."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "422":
+          description: "Not the execution's amount, currency, provider or payment reference (`report_mismatch`). Recorded for investigation."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/executions/{id}/reconcile:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Commerce]
+      operationId: reconcileExecution
+      summary: Report what a lookup at the PSP found
+      description: |
+        After looking the payment up at your PSP: resolves an `unknown`
+        outcome. A finished payment can't be contradicted.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [outcome, provider, amount_minor, currency]
+              properties:
+                outcome:
+                  type: string
+                  enum: [succeeded, failed, unknown]
+                provider:
+                  type: string
+                provider_payment_reference:
+                  type: string
+                  description: The PSP's payment ID. Required for succeeded.
+                amount_minor:
+                  type: integer
+                currency:
+                  type: string
+                failure_reason:
+                  type: string
+                  maxLength: 200
+                  description: e.g. the PSP's decline code. Never card data.
+      responses:
+        "200":
+          description: "Recorded: see `result` - applied, duplicate (nothing changed) or ignored (older than what is recorded)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionReportResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: "Contradicts a finished payment (`outcome_conflict`), an unknown outcome needs reconciling (`reconciliation_required`), or the webhook event ID reported something else (`event_conflict`). Recorded for investigation."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "422":
+          description: "Not the execution's amount, currency, provider or payment reference (`report_mismatch`). Recorded for investigation."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}/checkouts:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    get:
+      tags: [Merchant integrations]
+      operationId: listIntegrationCheckouts
+      summary: A merchant's checkouts, for the dashboard
+      description: Read-only; any member.
+      security:
+        - session: []
+      parameters:
+        - name: mandate_id
+          in: query
+          schema:
+            type: string
+        - name: customer_id
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: The effective status (see Checkout).
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: "One page of checkouts."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Checkout"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}/mandates:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    get:
+      tags: [Merchant integrations]
+      operationId: listIntegrationMandates
+      summary: A merchant's mandates and their usage, for the dashboard
+      description: Read-only; any member.
+      security:
+        - session: []
+      parameters:
+        - name: customer_id
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/MandateStatus"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: "One page of mandates."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Mandate"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/merchant-integrations/{id}/executions:
+    parameters:
+      - $ref: "#/components/parameters/IntegrationID"
+    get:
+      tags: [Merchant integrations]
+      operationId: listIntegrationExecutions
+      summary: A merchant's executions, for the dashboard
+      description: Read-only; any member.
+      security:
+        - session: []
+      parameters:
+        - name: status
+          in: query
+          description: "`unknown` is the reconciliation queue."
+          schema:
+            type: string
+            enum: [pending, succeeded, failed, unknown]
+        - name: mandate_id
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: "One page of executions."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Execution"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1515,6 +3449,13 @@ components:
       type: http
       scheme: bearer
       description: An agent's API key, shown once at creation or rotation.
+    merchantKey:
+      type: http
+      scheme: bearer
+      description: |
+        A merchant integration key (`enq_mk_...`), shown once when the
+        integration is created or its key rotated. Only accepted on
+        `/v1/commerce`.
 
   headers:
     SetSessionCookie:
@@ -1558,6 +3499,59 @@ components:
       description: The `next_cursor` of the previous page.
       schema:
         type: string
+    IntegrationID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    CommerceCustomerID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    CommerceAgentID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    FundingMethodID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    MandateRequestID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    MandateID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    CheckoutID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    ExternalIDFilter:
+      name: external_id
+      in: query
+      description: Only the record with this external ID.
+      schema:
+        type: string
+    CommerceStatusFilter:
+      name: status
+      in: query
+      schema:
+        $ref: "#/components/schemas/CommerceStatus"
     AgentID:
       name: id
       in: path
@@ -1597,7 +3591,8 @@ components:
         it from an origin not in CORS_ALLOWED_ORIGINS (`forbidden_origin`),
         on log-in, the account belongs to no organisation (`no_organisation`),
         or the action needs a verified email address (`email_unverified`:
-        creating or rotating agent keys, inviting, registering payees).
+        creating or rotating agent keys, inviting, registering payees,
+        creating, enabling or re-keying merchant integrations).
       content:
         application/problem+json:
           schema:
@@ -1617,6 +3612,33 @@ components:
         Retry-After:
           schema:
             type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    CustomerNotBindable:
+      description: |
+        The customer is not one this merchant registered
+        (`customer_unknown`), or is disabled (`customer_disabled`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    MandatePartyUnusable:
+      description: |
+        Something the request names is not this merchant's, or is disabled:
+        `customer_unknown`, `customer_disabled`, `agent_unknown`,
+        `agent_disabled`, `funding_method_unknown` (also: not this
+        customer's), `funding_method_disabled`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    RegistrationConflict:
+      description: |
+        The merchant already registered this external ID with different
+        details (`registration_conflict`). Repeating a registration is safe;
+        changing one is not done by repeating it.
       content:
         application/problem+json:
           schema:
@@ -1682,6 +3704,28 @@ components:
             - already_member
             - rate_limited
             - account_locked
+            - registration_conflict
+            - customer_unknown
+            - customer_disabled
+            - agent_unknown
+            - agent_disabled
+            - funding_method_unknown
+            - funding_method_disabled
+            - terms_mismatch
+            - mandate_unknown
+            - checkout_mismatch
+            - checkout_not_cancelable
+            - grant_invalid
+            - grant_expired
+            - grant_revoked
+            - grant_redeemed
+            - grant_not_issuable
+            - redemption_mismatch
+            - mandate_not_active
+            - report_mismatch
+            - outcome_conflict
+            - reconciliation_required
+            - event_conflict
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.
@@ -2261,6 +4305,624 @@ components:
               type: string
               format: date-time
 
+    CommerceStatus:
+      type: string
+      description: Whether a merchant integration, customer or agent may take part in commerce.
+      enum: [active, disabled]
+
+    ExternalID:
+      type: string
+      minLength: 1
+      maxLength: 255
+      description: |
+        The merchant's own reference, unique per merchant and compared
+        exactly. Trimmed; no spaces or control characters inside.
+
+    MerchantIntegration:
+      type: object
+      required: [id, name, status, created_at, disabled_at, key]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          $ref: "#/components/schemas/CommerceStatus"
+        created_at:
+          type: string
+          format: date-time
+        disabled_at:
+          type: [string, "null"]
+          format: date-time
+        key:
+          description: The active key, without its secret; null once revoked.
+          oneOf:
+            - type: object
+              required: [id, prefix, created_at, last_used_at]
+              properties:
+                id:
+                  type: string
+                prefix:
+                  type: string
+                  description: The first 12 characters of the key, to recognise it by.
+                created_at:
+                  type: string
+                  format: date-time
+                last_used_at:
+                  type: [string, "null"]
+                  format: date-time
+            - type: "null"
+
+    IssuedMerchantIntegration:
+      type: object
+      required: [integration, key]
+      properties:
+        integration:
+          $ref: "#/components/schemas/MerchantIntegration"
+        key:
+          type: object
+          required: [id, prefix, secret, created_at]
+          properties:
+            id:
+              type: string
+            prefix:
+              type: string
+            secret:
+              type: string
+              description: The integration key. Shown only in this response; Enquoir stores only its hash.
+            created_at:
+              type: string
+              format: date-time
+
+    FundingReference:
+      type: string
+      minLength: 1
+      maxLength: 255
+      description: |
+        The merchant's own ID for the saved payment method (its `mfm_...`),
+        unique per merchant. Not the PSP token, and never a card number: a
+        value with 12 or more digits in a row is refused.
+
+    ProviderReference:
+      type: string
+      minLength: 1
+      maxLength: 255
+      description: |
+        The PSP's ID for the saved payment method: Stripe's `pm_...`, Adyen's
+        `storedPaymentMethodId`. Unique per merchant and provider. It charges
+        nothing without your PSP secret key, which Enquoir never takes. A
+        card number - 13 to 19 digits with a valid Luhn checksum - is refused.
+
+    FundingMethod:
+      type: object
+      required: [id, customer_id, merchant_funding_method_id, provider_method_reference, provider, display, status, created_at, disabled_at]
+      properties:
+        id:
+          type: string
+          description: Enquoir's binding ID (`fmb_...`). Mandates name it.
+        customer_id:
+          type: string
+        merchant_funding_method_id:
+          type: [string, "null"]
+        provider_method_reference:
+          type: [string, "null"]
+        provider:
+          type: string
+        display:
+          type: object
+          required: [brand, last_four]
+          properties:
+            brand:
+              type: string
+            last_four:
+              type: [string, "null"]
+              pattern: "^[0-9]{4}$"
+        status:
+          $ref: "#/components/schemas/CommerceStatus"
+        created_at:
+          type: string
+          format: date-time
+        disabled_at:
+          type: [string, "null"]
+          format: date-time
+
+    ApprovalMode:
+      type: string
+      enum: [autonomous, per_transaction]
+      description: Purchases within the scope go ahead on their own, or each needs the customer's approval.
+
+    MandateStatus:
+      type: string
+      enum: [active, suspended, revocation_pending, expired, revoked]
+      description: |
+        Only `active` grants anything. `suspended` while the customer, agent,
+        funding method or integration is disabled; `revocation_pending` while
+        a revocation awaits the customer's confirmation (at most an hour);
+        `expired` after `expires_at`; `revoked` once the customer confirmed.
+
+    MandateTerms:
+      type: object
+      description: Exactly what the customer is asked to approve, frozen with the request.
+      required: [merchant, customer_id, agent, funding_method, approval_mode, scope, expires_at, terms_hash]
+      properties:
+        merchant:
+          $ref: "#/components/schemas/NamedRef"
+        customer_id:
+          type: string
+        agent:
+          $ref: "#/components/schemas/NamedRef"
+        funding_method:
+          type: object
+          required: [id, brand, last_four]
+          properties:
+            id:
+              type: string
+            brand:
+              type: string
+            last_four:
+              type: [string, "null"]
+        approval_mode:
+          $ref: "#/components/schemas/ApprovalMode"
+        scope:
+          type: object
+          required: [currency, max_transaction_minor, max_cumulative_minor, max_transactions, allowed_categories]
+          properties:
+            currency:
+              type: string
+            max_transaction_minor:
+              type: integer
+            max_cumulative_minor:
+              type: integer
+            max_transactions:
+              type: [integer, "null"]
+              description: null for no limit.
+            allowed_categories:
+              type: array
+              items:
+                type: string
+              description: Empty for any.
+        expires_at:
+          type: string
+          format: date-time
+        terms_hash:
+          type: string
+          description: "`sha256:` and the SHA-256 of the canonical snapshot of these terms."
+
+    NamedRef:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+
+    MandateRequest:
+      type: object
+      required: [id, external_id, status, terms, created_at, expires_at, decided_at, mandate_id]
+      properties:
+        id:
+          type: string
+        external_id:
+          $ref: "#/components/schemas/ExternalID"
+        status:
+          type: string
+          enum: [pending, approved, rejected, expired]
+        terms:
+          $ref: "#/components/schemas/MandateTerms"
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: When the request, and its consent link, stop working (1 hour).
+        decided_at:
+          type: [string, "null"]
+          format: date-time
+        mandate_id:
+          type: [string, "null"]
+          description: Once approved.
+
+    Mandate:
+      type: object
+      required: [id, request_id, consent_record_id, status, terms, approved_at, revoked_at, revocation_expires_at, usage]
+      properties:
+        id:
+          type: string
+        request_id:
+          type: string
+        consent_record_id:
+          type: string
+          description: The customer's recorded consent.
+        status:
+          $ref: "#/components/schemas/MandateStatus"
+        terms:
+          $ref: "#/components/schemas/MandateTerms"
+        approved_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: [string, "null"]
+          format: date-time
+        revocation_expires_at:
+          type: [string, "null"]
+          format: date-time
+          description: While `revocation_pending`, when the request lapses unconfirmed.
+        usage:
+          description: What counts against it - on get and list; null elsewhere.
+          oneOf:
+            - type: object
+              required: [currency, purchases, purchases_left, spent_minor, paid_minor, held_minor, remaining_minor]
+              properties:
+                currency:
+                  type: string
+                purchases:
+                  type: integer
+                purchases_left:
+                  type: [integer, "null"]
+                  description: null without a purchase limit.
+                spent_minor:
+                  type: integer
+                  description: Paid plus held.
+                paid_minor:
+                  type: integer
+                held_minor:
+                  type: integer
+                  description: Authorized or redeemed, not yet settled (pending or unknown).
+                remaining_minor:
+                  type: integer
+            - type: "null"
+
+    CheckoutLines:
+      type: object
+      additionalProperties: false
+      required: [currency, items, shipping_minor, tax_minor, fees_minor, total_minor]
+      description: |
+        In minor units. `total_minor` must equal the items (quantity times
+        unit price) plus shipping, tax and fees, and be positive.
+      properties:
+        currency:
+          type: string
+          enum: [USD, EUR, GBP]
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [product_id, name, category, quantity, unit_price_minor]
+            properties:
+              product_id:
+                type: string
+              name:
+                type: string
+              category:
+                type: string
+                description: Checked against the mandate's allowed categories.
+              quantity:
+                type: integer
+                minimum: 1
+                maximum: 10000
+              unit_price_minor:
+                type: integer
+                minimum: 0
+        shipping_minor:
+          type: integer
+          minimum: 0
+        tax_minor:
+          type: integer
+          minimum: 0
+        fees_minor:
+          type: integer
+          minimum: 0
+        total_minor:
+          type: integer
+          minimum: 1
+
+    Checkout:
+      type: object
+      required: [id, external_id, mandate_id, status, decision, checkout, checkout_hash, created_at, decided_at, approval_expires_at, canceled_at, authorization]
+      properties:
+        id:
+          type: string
+        external_id:
+          type: string
+        mandate_id:
+          type: string
+        status:
+          type: string
+          enum: [authorized, awaiting_customer_approval, denied, rejected, canceled, expired, redeemed, revoked, paid, payment_failed]
+          description: |
+            `expired`: awaited the customer past `approval_expires_at`, or its
+            grant went unredeemed past `authorization.expires_at`. `redeemed`:
+            its grant was redeemed (payment pending or unknown). `paid` and
+            `payment_failed`: the reported outcome. `revoked`: its mandate was
+            revoked before.
+        decision:
+          type: object
+          required: [allowed, reasons]
+          properties:
+            allowed:
+              type: boolean
+              description: True only when `authorized`.
+            reasons:
+              type: array
+              description: Every reason a `denied` checkout falls outside its mandate.
+              items:
+                type: object
+                required: [code, detail]
+                properties:
+                  code:
+                    type: string
+                    enum: [mandate_not_active, customer_mismatch, agent_mismatch, funding_method_mismatch, currency_mismatch,
+                      over_transaction_limit, category_not_allowed, over_transaction_count, over_budget]
+                  detail:
+                    type: string
+        checkout:
+          type: object
+          required: [customer_id, agent_id, funding_method_id, currency, items, shipping_minor, tax_minor, fees_minor, total_minor]
+          properties:
+            customer_id:
+              type: string
+            agent_id:
+              type: string
+            funding_method_id:
+              type: string
+            currency:
+              type: string
+            items:
+              type: array
+              items:
+                type: object
+                required: [product_id, name, category, quantity, unit_price_minor]
+                properties:
+                  product_id:
+                    type: string
+                  name:
+                    type: string
+                  category:
+                    type: string
+                  quantity:
+                    type: integer
+                  unit_price_minor:
+                    type: integer
+            shipping_minor:
+              type: integer
+            tax_minor:
+              type: integer
+            fees_minor:
+              type: integer
+            total_minor:
+              type: integer
+        checkout_hash:
+          type: string
+          description: "`sha256:` and the SHA-256 of the canonical snapshot of this checkout."
+        created_at:
+          type: string
+          format: date-time
+        decided_at:
+          type: [string, "null"]
+          format: date-time
+        approval_expires_at:
+          type: [string, "null"]
+          format: date-time
+        canceled_at:
+          type: [string, "null"]
+          format: date-time
+        authorization:
+          description: Once authorized.
+          oneOf:
+            - $ref: "#/components/schemas/Authorization"
+            - type: "null"
+
+    Authorization:
+      type: object
+      required: [id, status, grant, grant_issued_at, created_at, expires_at, redeemed_at, revoked_at, execution_id]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [active, redeemed, expired, revoked]
+        grant:
+          type: [string, "null"]
+          description: The grant's secret - only in the response that issued it.
+        grant_issued_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: 15 minutes after the checkout was authorized.
+        redeemed_at:
+          type: [string, "null"]
+          format: date-time
+        revoked_at:
+          type: [string, "null"]
+          format: date-time
+        execution_id:
+          type: [string, "null"]
+
+    Execution:
+      type: object
+      description: The one payment a redeemed grant permits.
+      required: [id, authorization_id, checkout_id, external_checkout_id, checkout_hash, mandate_id, amount_minor, currency, funding_method, status,
+        provider_payment_reference, failure_reason, idempotency_key, report_deadline, created_at, updated_at, finished_at]
+      properties:
+        id:
+          type: string
+        authorization_id:
+          type: string
+        checkout_id:
+          type: string
+        external_checkout_id:
+          type: string
+        checkout_hash:
+          type: string
+        mandate_id:
+          type: string
+        amount_minor:
+          type: integer
+        currency:
+          type: string
+        funding_method:
+          type: object
+          required: [id, provider, merchant_funding_method_id, provider_method_reference, brand, last_four]
+          properties:
+            id:
+              type: string
+            provider:
+              type: string
+            merchant_funding_method_id:
+              type: [string, "null"]
+            provider_method_reference:
+              type: [string, "null"]
+            brand:
+              type: string
+            last_four:
+              type: [string, "null"]
+        status:
+          type: string
+          enum: [pending, succeeded, failed, unknown]
+          description: The outcome is the merchant's word, checked against the execution.
+        provider_payment_reference:
+          type: [string, "null"]
+        failure_reason:
+          type: [string, "null"]
+        idempotency_key:
+          type: string
+          description: Send it as your PSP request's idempotency key.
+        report_deadline:
+          type: string
+          format: date-time
+          description: Still pending then, it is presumed unknown.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+
+    ExecutionReportResult:
+      allOf:
+        - $ref: "#/components/schemas/Execution"
+        - type: object
+          required: [result]
+          properties:
+            result:
+              type: string
+              enum: [applied, duplicate, ignored]
+
+    ExecutionDetail:
+      allOf:
+        - $ref: "#/components/schemas/Execution"
+        - type: object
+          required: [history]
+          properties:
+            history:
+              type: array
+              items:
+                type: object
+                required: [sequence, kind, source, outcome, status_after, provider_payment_reference, provider_event_id, amount_minor, currency, detail, at]
+                properties:
+                  sequence:
+                    type: integer
+                  kind:
+                    type: string
+                    enum: [redeemed, reported, duplicate, ignored, refused, swept]
+                  source:
+                    type: [string, "null"]
+                    description: direct, webhook, reconciliation or sweep.
+                  outcome:
+                    type: [string, "null"]
+                  status_after:
+                    type: string
+                  provider_payment_reference:
+                    type: [string, "null"]
+                  provider_event_id:
+                    type: [string, "null"]
+                  amount_minor:
+                    type: [integer, "null"]
+                  currency:
+                    type: [string, "null"]
+                  detail:
+                    type: [string, "null"]
+                    description: Why a report was refused, or the reported failure reason.
+                  at:
+                    type: string
+                    format: date-time
+
+    ConsentView:
+      type: object
+      required: [request_id, expires_at, terms]
+      properties:
+        request_id:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        terms:
+          $ref: "#/components/schemas/MandateTerms"
+
+    ConsentOutcome:
+      type: object
+      required: [request, mandate]
+      properties:
+        request:
+          $ref: "#/components/schemas/MandateRequest"
+        mandate:
+          description: The mandate created, on approval; null on rejection.
+          oneOf:
+            - $ref: "#/components/schemas/Mandate"
+            - type: "null"
+
+    CommerceCustomer:
+      type: object
+      required: [id, external_id, email, status, created_at, disabled_at]
+      properties:
+        id:
+          type: string
+        external_id:
+          $ref: "#/components/schemas/ExternalID"
+        email:
+          type: string
+          description: Lower-cased. Where consent links will go.
+        status:
+          $ref: "#/components/schemas/CommerceStatus"
+        created_at:
+          type: string
+          format: date-time
+        disabled_at:
+          type: [string, "null"]
+          format: date-time
+
+    CommerceAgent:
+      type: object
+      required: [id, external_id, name, status, created_at, disabled_at]
+      properties:
+        id:
+          type: string
+        external_id:
+          $ref: "#/components/schemas/ExternalID"
+        name:
+          type: string
+        status:
+          $ref: "#/components/schemas/CommerceStatus"
+        created_at:
+          type: string
+          format: date-time
+        disabled_at:
+          type: [string, "null"]
+          format: date-time
+
     AuditEvent:
       type: object
       required: [id, action, actor, target, details, ip, at]
@@ -2270,14 +4932,16 @@ components:
         action:
           type: string
         actor:
-          description: Who did it - a member, or an agent acting with its key.
+          description: |
+            Who did it - a member, an agent acting with its key, or a merchant
+            integration acting with its key.
           oneOf:
             - type: object
               required: [type, id, email, name]
               properties:
                 type:
                   type: string
-                  enum: [user, agent]
+                  enum: [user, agent, merchant_integration]
                 id:
                   type: string
                 email:
@@ -2285,7 +4949,7 @@ components:
                   description: For a user.
                 name:
                   type: [string, "null"]
-                  description: For an agent.
+                  description: For an agent or a merchant integration.
             - type: "null"
         target:
           description: What it was done to.
@@ -2295,7 +4959,7 @@ components:
               properties:
                 type:
                   type: string
-                  enum: [user, agent, invitation, payee]
+                  enum: [user, agent, invitation, payee, merchant_integration, commerce_customer, commerce_agent, commerce_funding_method, commerce_mandate_request, commerce_mandate, commerce_checkout, commerce_authorization, commerce_execution]
                 id:
                   type: string
             - type: "null"
@@ -2365,9 +5029,10 @@ components:
 
         | | owner | admin | operator | viewer |
         |---|---|---|---|---|
-        | View payments, attempts, replay, analytics, payees, agents, members | ✓ | ✓ | ✓ | ✓ |
+        | View payments, attempts, replay, analytics, payees, agents, members, merchant integrations | ✓ | ✓ | ✓ | ✓ |
         | Create, rotate, revoke agents; register payees | ✓ | ✓ | ✓ | |
         | Invite and remove members, change roles up to admin; audit log | ✓ | ✓ | | |
+        | Create, disable, enable merchant integrations; issue and revoke their keys | ✓ | ✓ | | |
         | Manage admins and owners | ✓ | | | |
 
         Nobody grants a role above their own; only an owner changes a member

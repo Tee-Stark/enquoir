@@ -918,6 +918,17 @@ Deferred to the deployment phase, as agreed: whether the reverse proxy
 overwrites or appends the header named by `CLIENT_IP_HEADER` (decides
 whether per-IP limits can be spoofed).
 
+### Sender domain verified (2026-11-07)
+
+`enquoir.etimi.me` is verified in Resend; Enquoir now sends from
+`Enquoir <no-reply@enquoir.etimi.me>`, so email reaches any address, not
+just Resend's test inboxes (the limitation noted above no longer
+applies). Checked live: a send from that address was accepted. `make
+e2e` still sends only to Resend's test inboxes, by choice, so automated
+runs never email real people. AGENTS.md now records the GitHub
+branch-and-pull-request workflow (replacing "local repository only"),
+the sender, and corrects two Airwallex facts the sandbox disproved.
+
 ## Deployment handoff (2026-11-08)
 
 `docs/deployment.md` is the handoff for deploying on any platform. Writing
@@ -941,3 +952,615 @@ and a sign-up, start the worker, and exit 0 on `SIGTERM`.
 
 Still open, by agreement: which proxy header `CLIENT_IP_HEADER` names,
 decided per platform (section 9 of the handoff has the test to run).
+
+## Commerce Phase 1: merchant integration and identity - done (2026-11-11)
+
+Branch `feat/commerce-identity`, from `main` after PR #11 merged. The
+first of the eight phases in the "Merchant-Delegated Commerce"
+architecture document (v0.1). Tag `commerce-phase-1`.
+
+### Found first: PR #10 never reached `main`
+
+PR #10 (sender `no-reply@enquoir.etimi.me`, AGENTS.md's GitHub workflow
+and email facts, two corrected Airwallex facts) was merged into
+`feat/auth` *after* `feat/auth` itself had merged as PR #9, so `main`
+never got it: it still said "Local repository only. Do not add a remote
+or push" and sent from `onboarding@resend.dev`. Cherry-picked onto this
+branch first (`ec1dfa1`), its one conflict in this file resolved by
+keeping both sections. It reaches `main` with this branch.
+
+### What exists
+
+- **AGENTS.md** describes the two bounded contexts, commerce's safety
+  rules (no card data; three authorities kept apart; the merchant comes
+  from the credential; the merchant backend is the only machine caller;
+  treasury and commerce keys never interchangeable; outcomes are the
+  merchant's word), this phase's scope, and `commerce-phase-N` tags.
+- **`internal/commerce`**: the commerce domain - `MerchantID`,
+  `CustomerID`, `AgentID` (not treasury's `domain.AgentID`),
+  `ExternalID` (1-255 characters, trimmed, no spaces or control
+  characters, compared exactly), `Status` (active, disabled), and the
+  `Merchant`, `Customer` and `Agent` entities. The architecture guard
+  now also checks that it imports only the standard library and
+  `internal/domain`, that `commerceapp` imports no adapter, and that
+  treasury never imports commerce (each mutation-checked).
+- **`domain.PermManageIntegrations`**: owners and admins.
+- **`internal/commerce/commerceapp`**: create, list, get, disable and
+  enable integrations; rotate and revoke the one key each holds;
+  `AuthenticateMerchant`; register-or-resolve, list (filter by external
+  ID or status, cursor-paged, newest first), get, disable and enable for
+  customers and agents. `commercetest` holds the in-memory fakes.
+- **`internal/app`** exports what commerce shares rather than commerce
+  reaching into it: `Audit.Record`, `Cache.Lookup/Remember/Invalidate`,
+  a merchant actor on `Actor` and `AuditEvent`, and the commerce audit
+  action names (so the one audit log can filter by them).
+- **Postgres** (migration 0015): `merchant_integrations`,
+  `merchant_integration_keys`, `commerce_customers`, `commerce_agents`,
+  and the audit log's merchant actor columns.
+- **HTTP**: `/v1/merchant-integrations` (session) and `/v1/commerce`
+  (integration key only), in `api/openapi.yaml` (now 0.5.0) with a new
+  `merchantKey` security scheme; `409 registration_conflict`.
+- **`make e2e-commerce`** (`scripts/e2e-commerce.sh`): 10 steps, no
+  sandbox needed.
+
+### Design choices
+
+- **Integration keys** are `enq_mk_` + 256 random bits, stored as
+  SHA-256, shown once, like agent keys. `AuthenticateMerchant` refuses
+  any secret without the `enq_mk_` prefix before a lookup, so a treasury
+  key never even reaches the merchant store; treasury's `requireAgent`
+  refuses a merchant key because it is in no agent table.
+- **Disable vs revoke.** Disabling an integration stops its key but
+  keeps it, so enabling restores access; revoking the key leaves the
+  integration with no key until one is rotated in. Disabling and
+  revoking need no verified email (cutting access off is always
+  allowed); creating, enabling and rotating do (they grant access).
+- **Cache.** A merchant key is cached up to 60 s by hash, owned by
+  `merchant:<id>`; disable, rotate and revoke commit first, then bump
+  that owner. A race test (the store calls back mid-change) failed when
+  the order was swapped.
+- **Register-or-resolve.** A repeat with the same details returns the
+  same record (`200`; `201` the first time). A repeat with a different
+  email or name is `409 registration_conflict`: neither silently
+  ignored nor silently applied. Changing a customer's email (where
+  consent links will go) deserves its own, deliberate operation;
+  none exists yet.
+- **Scoping.** Every customer and agent read and write is scoped by
+  merchant and organisation. Two storefronts of one organisation are
+  separate namespaces. Every commerce row carries `(merchant_id,
+  org_id)` under a composite foreign key to the integration, so the two
+  can never disagree; external IDs are `UNIQUE (merchant_id,
+  external_id)`; one active key per integration.
+- **Concurrency.** Registering is one `INSERT ... ON CONFLICT DO
+  NOTHING RETURNING`, then a read on conflict: 12 concurrent
+  registrations of one external ID make one customer, and all 12 get it.
+  Key rotations lock the integration row: 8 concurrent rotations leave
+  exactly one working key.
+- **Personal data.** A customer's email is stored (consent links need
+  it) and returned to its merchant, but not written to the audit log;
+  the event carries the external ID.
+- **Not built from the design document's `MerchantIntegration`:**
+  `allowed_origins`. Commerce is server-to-server for now (the merchant
+  backend is the only caller), so there is no browser origin to allow.
+
+### Verified
+
+- `make test` offline and `make test-integration` at every commit.
+- Mutation checks, each caught: the cache cleared before the change;
+  the prefix refusal removed; disable without invalidating; the
+  registration conflict check removed; each architecture rule broken.
+  One was **not** caught at first: dropping the merchant condition from
+  the Postgres status update let a sibling storefront disable another's
+  customer while the use case still answered "not found" (it re-reads
+  through the caller's scope). The integration test now checks the
+  record itself is untouched, and catches it.
+- Live, against the Compose stack (Postgres, Temporal, Redis, Resend):
+  `make e2e-commerce`, all 10 steps, on this branch's API (on :8091;
+  the running `make api` and two `make worker`s, from older code, were
+  left alone - one of them sent the verification email). Redis held the
+  merchant keys by hash (`enq:pc:mik:*`) and the integration's owner
+  version was bumped by disable, rotate and revoke.
+
+### Not verified / open
+
+- **No dashboard view of a merchant's customers and agents**; only the
+  merchant's key can list them. Easy to add when the frontend needs it.
+- **No way to change a customer's email or an agent's name** (409 on a
+  differing repeat).
+- **No per-key rate limit** on merchant keys, as on agent keys.
+- Commerce requests are not recorded as attempts; the audit log covers
+  registrations and status changes only.
+- `make e2e` (treasury) and `make chaos` were not re-run: treasury code
+  is untouched apart from the audit actor columns, which
+  `make test-integration` covers.
+
+### Next: commerce phase 2
+
+Funding-method bindings: the merchant registers an opaque reference to a
+customer's saved PSP payment method; Enquoir stores its own binding ID
+and display details (brand, last four), never the PSP token.
+
+## Commerce Phase 2: funding-method bindings - done (2026-11-11)
+
+Branch `feat/commerce-funding-methods`, stacked on
+`feat/commerce-identity` (PR #12, still open). Tag `commerce-phase-2`.
+
+### What exists
+
+- **`commerce.FundingMethod`**: the merchant's reference for a saved
+  payment method (`merchant_funding_method_id`, unique per merchant),
+  its PSP's name (`provider`), display details (`brand`, optional
+  `last_four`), status. Enquoir's ID is `fmb_...`.
+- **Use cases**: register-or-resolve, get, list one customer's bindings
+  (status filter, paged, newest first), disable, enable.
+- **Postgres** (migration 0016): `commerce_funding_methods`.
+- **HTTP**: `POST /v1/commerce/funding-methods`, `GET`/`disable`/`enable`
+  on `/v1/commerce/funding-methods/{id}`, and
+  `GET /v1/commerce/customers/{id}/funding-methods`; OpenAPI 0.6.0.
+- **Audit**: `commerce.funding_method.registered|disabled|enabled`.
+- `make e2e-commerce` grows a binding step and isolation checks.
+
+### Design choices
+
+- **Card data is refused, three ways.** (1) The request body is decoded
+  strictly, `display` included: any undocumented field (`card_number`,
+  `cvv`, `provider_method_reference`) is `400 validation_failed` naming
+  the field. Silently dropping it would hide a merchant sending card
+  data. (2) Any value with 12 or more digits in a row, spaces and dashes
+  ignored, is refused (references and provider names); brands may hold
+  no digits; `last_four` is exactly four digits. (3) Postgres enforces
+  `last_four ~ '^[0-9]{4}$'` too. No error message repeats a value.
+- **The design document's optional `provider_method_reference`** (the
+  PSP's own ID) is not accepted. The document prefers that Enquoir not
+  need it, and a `pm_...` is a chargeable token at the PSP; adding it
+  later is a deliberate decision, not a default.
+- **Only an active customer of the calling merchant can be bound.**
+  Another merchant's customer (sibling storefront included) is `422
+  customer_unknown`, the same as a made-up ID; a disabled one is `422
+  customer_disabled`. Postgres backs this with a composite foreign key
+  `(customer_id, merchant_id, org_id)`, so no code path can bind across
+  merchants.
+- **One reference, one payment method.** A repeat with another customer,
+  provider or display details is `409 registration_conflict`.
+- **Disabling a customer leaves their bindings as they are.** Nothing
+  spends against a binding yet; phase 3's mandates will check customer,
+  binding and integration status together when authority is used.
+
+### Verified
+
+- `make test` and `make test-integration` at every commit.
+- Mutation checks, each caught: no customer-ownership check; no
+  disabled-customer check; no conflict check; listing without the
+  ownership check; the Postgres status update without the merchant
+  condition; dropping `DisallowUnknownFields` (a `card_number` field was
+  then silently dropped and the binding stored); the digit run not
+  ignoring dashes; the PAN length check disabled. The schema test proves
+  Postgres alone refuses a cross-merchant binding and a 16-digit last
+  four.
+- Live: `make e2e-commerce` twice in a row on this branch's API (:8091),
+  all steps. Afterwards no stored binding, audit event or API log line
+  held the test card number `4111...`.
+
+### Not verified / open
+
+- A binding's provider is free text; nothing checks it is a PSP the
+  merchant really uses.
+- No dashboard view of bindings.
+
+### Next: commerce phase 3
+
+Consent and mandates: the merchant or agent requests a mandate; the
+customer approves, inspects and revokes it through Enquoir's own consent
+flow (an emailed one-time link), never on the merchant's word.
+
+## Commerce Phase 3: consent and mandates - done (2026-11-11)
+
+Branch `feat/commerce-mandates`, stacked on `feat/commerce-funding-methods`
+(PR #13, itself on #12). Tag `commerce-phase-3`.
+
+### Decisions taken with the user
+
+- **Consent by email only.** Enquoir emails the customer's registered
+  address a one-time link (1 hour) to its consent page; the merchant
+  never receives it. *Later UX improvement, as agreed:* a consent URL the
+  merchant redirects to, completed with a code Enquoir emails the
+  customer, to keep the customer in the checkout.
+- **Mandates are managed by the merchant**, for the customer: the
+  customer does not come back to Enquoir to inspect or revoke.
+- **1-hour link; mandates at most 90 days; one named agent per mandate.**
+- **Deviation, for the user to confirm:** the user suggested a
+  revocation be finalised by the customer through an emailed
+  confirmation link. Built instead: revocation takes effect at once and
+  the customer is emailed that it happened. A revocation pending
+  confirmation would leave the agent's authority live meanwhile, and
+  revoking only ever removes authority, so nothing is gained by waiting.
+
+### What exists
+
+- **Domain** (`internal/commerce/mandate.go`): `MandateTerms` (parties
+  with the names and card display the customer sees, approval mode,
+  `MandateScope`, expiry), frozen as a canonical JSON snapshot
+  (`mandate-terms/v1`) with `Hash()` = `sha256:<hex>` binding every term;
+  `MandateRequest` (pending, approved, rejected; expired after an hour),
+  `Mandate` (effective status: revoked, else expired, else suspended
+  while integration, customer, agent or card is disabled, else active),
+  `ConsentRecord`.
+- **Use cases**: `RequestMandate`, `GetMandateRequest`, `ViewConsent`,
+  `DecideConsent`, `ListMandates`, `GetMandate`, `RevokeMandate`.
+- **Email**: `mandate_consent` (every term, before the click, and "the
+  merchant can't approve for you") and `mandate_revoked` templates; token
+  purpose `mandate_consent`, page `APP_BASE_URL/consent`.
+- **Postgres** (migration 0017): requests, consent records, mandates.
+- **HTTP**: merchant key - `POST /v1/commerce/mandate-requests`,
+  `GET .../{id}`, `GET /v1/commerce/mandates`, `GET .../{id}`,
+  `POST .../{id}/revoke`; public - `POST /v1/consent/view|approve|reject`.
+  OpenAPI 0.7.0. `docs/frontend.md` describes the consent page.
+
+### Design choices
+
+- **Consent binds to what was shown.** Approval must send the
+  `terms_hash` the page displayed; anything else is `409
+  terms_mismatch` and the link stays unspent.
+- **One transaction per decision**: the link (and any other for that
+  request) is spent, the request decided, the consent record written and,
+  on approval, the mandate created. Eight concurrent approvals with one
+  link make one mandate and one record (unit and Postgres).
+- **The database guards the evidence.** Snapshots are stored as exact
+  text (JSONB would reorder keys); a `CHECK` makes each stored hash the
+  snapshot's SHA-256, so altered terms can't be saved under the old hash;
+  consent records are one per request and a trigger refuses any update
+  or delete; composite foreign keys make a request's card its own
+  customer's, and everything its merchant's.
+- **Terms that expire before the link can't be approved** (a mandate
+  born expired); the page can't show them either.
+- **Approval does not re-check the parties' status.** If the card is
+  disabled between request and approval, the mandate is created and reads
+  `suspended` until it is enabled.
+- **A request that fails to queue its email returns 500**; repeating it
+  returns the stored request without an email. There is no resend: a
+  merchant whose customer missed the link makes a new request (new
+  `external_id`).
+- The consent routes take the token in the body, never the URL.
+
+### Verified
+
+- `make test` and `make test-integration` at every commit.
+- Mutation checks caught: no terms-hash check; a card of another
+  customer accepted; no request-conflict check; revoke notifying on every
+  call; terms expiring inside the link's hour accepted (a test added for
+  it after the first mutation run missed it); the Postgres store deciding
+  without spending the link and revoking without the merchant scope (two
+  tests added after both slipped through: through the use case the token
+  always matched, and the "other merchant" was in another organisation).
+  A first mutation that did not compile was discarded, not counted.
+- Live, `make e2e-commerce`, all steps, on this branch's API and worker:
+  the consent email went through Resend to a test inbox, the link from it
+  approved a mandate (with the page's user agent recorded), a second
+  request was rejected, the mandate read `suspended` while its card was
+  disabled, and revoking emailed the customer. No link or token in the
+  email outbox.
+- **Found while verifying:** five stale workers (from 7 November) were
+  still polling the task queue, two of them compiled `go run` children
+  left behind when their parents were killed. One took the first run's
+  consent email and failed it ("unknown template"). With the user's
+  agreement all were stopped; one worker built from this branch is left
+  running (`/tmp/enquoir-worker-commerce`, log alongside). Deployments
+  must replace every worker on release, or old ones will fail new
+  emails.
+
+### Not verified / open
+
+- No resend of a consent link; no mandate view on the dashboard.
+- No rate limit on the public consent routes (tokens are 256-bit, so
+  guessing is not the risk; volume is).
+- Mandates are not yet used: no checkout is evaluated against one
+  (phase 4), and no budget is reserved (phase 5).
+- The merchant URL plus emailed code consent flow (later UX improvement).
+
+### Changes after review (2026-11-12)
+
+- **`docs/demo-brief.md` is no longer tracked** (`7bd9ce9`); it was
+  committed by mistake in `6d3b063`. The local copy stays.
+- **Bindings by the PSP's own ID** (`c24ca91`, at the user's request):
+  `provider_method_reference` (Stripe's `pm_...`, Adyen's
+  `storedPaymentMethodId`), instead of or as well as the merchant's own
+  reference, so a merchant needn't mint one. Either resolves the binding;
+  each is unique per merchant (the PSP's per provider); at least one is
+  required (migration 0018). A repeat may name either reference; adding
+  or changing one is a 409, as are references of two different bindings.
+  AGENTS.md's no-card-data rule now says a PSP reference is accepted: it
+  charges nothing without the merchant's PSP secret key. Adyen's IDs are
+  16-digit numbers, so the 12-digit guard can't apply to it; instead a
+  whole 13-19-digit run with a valid Luhn checksum is refused. Card
+  numbers always pass Luhn; about one random 16-digit token in ten does
+  too, and such a token would be refused (the merchant can bind it by its
+  own reference instead). The phase 2 test that expected the field to be
+  refused encoded the old rule; replaced by an undocumented
+  `psp_secret_key` field.
+- **Revocation waits for the customer** (the user's call, reversing the
+  deviation recorded above). `POST .../revoke` answers 202: the mandate
+  reads `revocation_pending` and grants nothing; Enquoir emails the
+  customer a one-time link (1 hour) to `APP_BASE_URL/consent/revoke`;
+  `POST /v1/consent/revocation/view|confirm` serve that page, and
+  confirming revokes the mandate and spends the link in one transaction.
+  Unconfirmed, the request lapses and the mandate is active again
+  (migration 0019). A mutation the use-case tests missed - the store
+  revoking without a pending revocation - is now caught by a store test.
+- Verified: `make test`, `make test-integration`, and `make e2e-commerce`
+  live (a binding by `pm_...`; ask, email, confirm, revoked).
+
+## Commerce Phase 4: checkout evaluation - done (2026-11-12)
+
+Branch `feat/commerce-checkouts`, stacked on `feat/commerce-mandates`
+(PR #14). Tag `commerce-phase-4`.
+
+### What exists
+
+- **Domain** (`internal/commerce/checkout.go`): `CheckoutSnapshot` - the
+  merchant server's priced purchase under a mandate (customer, agent,
+  card, currency, items with product, name, category, quantity and unit
+  price, shipping, tax, fees, total; integer minor units, each at most 10
+  billion major units). The total must equal the items plus shipping, tax
+  and fees, and be positive. A canonical snapshot (`checkout/v1`, items
+  in the merchant's order) and its `sha256:` hash bind every field.
+  `EvaluateCheckout` returns every failing reason: `mandate_not_active`,
+  `customer_mismatch`, `agent_mismatch`, `funding_method_mismatch`,
+  `currency_mismatch`, `over_transaction_limit`, `category_not_allowed`,
+  `over_transaction_count`, `over_budget`.
+- **Use cases**: `SubmitCheckout`, `GetCheckout`, `CancelCheckout`,
+  `ViewCheckoutApproval`, `DecideCheckoutApproval`.
+- **Email**: `checkout_approval` (items, total, card), link purpose
+  `checkout_approval`, page `APP_BASE_URL/consent/checkout`.
+- **Postgres** (migration 0020): `commerce_checkouts`.
+- **HTTP**: merchant key - `POST /v1/commerce/checkouts`, `GET .../{id}`,
+  `POST .../{id}/cancel`; public - `POST /v1/consent/checkout/view|
+  approve|reject`. OpenAPI 0.8.0.
+
+### Design choices
+
+- **Statuses**: `authorized`, `denied` (with every reason), or
+  `awaiting_customer_approval` under a per-transaction mandate - then
+  `authorized` (or `denied` on the recheck) when the customer approves,
+  `rejected`, or `expired` after the hour. The merchant may `cancel` an
+  authorized or awaiting checkout.
+- **One decision rule**, in the domain; the stores call it through a
+  callback while holding the mandate's lock, for a submission and a
+  customer's approval alike.
+- **Budget**: authorized checkouts count at once against the mandate's
+  total and purchase count (the design document's "reservation"); a
+  cancelled one stops counting. An awaiting checkout reserves nothing;
+  limits are checked again when the customer approves. Decisions take a
+  row lock on the mandate (`SELECT ... FOR UPDATE`): 12 concurrent
+  checkouts of 50 under a 200 budget authorize exactly 4; with the lock
+  removed, 11 (550 spent), on every run.
+- **The merchant's mandate, or nothing.** A checkout naming a mandate that
+  isn't the merchant's is `422 mandate_unknown` and is not stored; every
+  other failure is a recorded `denied` checkout, so the merchant (and
+  later the dashboard) can see why. Customer, agent and card mismatches
+  are denial reasons, not errors.
+- **Strict body**: a checkout with any undocumented field - card data, a
+  price an agent asserts - is a 400 naming the field.
+- **One external ID per merchant**; a changed checkout under it is a 409.
+- **What counts is not yet tied to payment.** An authorized checkout
+  counts until cancelled even if never charged. Phase 5's grants will
+  give it an expiry, and phases 6 and 7 settle it against the payment's
+  outcome (the design document's consumed / released reservation
+  states).
+
+### Verified
+
+- `make test` and `make test-integration` at every commit.
+- Mutation checks caught: usage ignored (the budget never fills); the
+  customer's approval not rechecked; the approval hash unchecked; no
+  conflict check; per-transaction ignored; count and budget each off by
+  one; strict decoding off (an `agent_price` field accepted); the row
+  lock removed (above). One slipped through at first - prices left out
+  of the hash - because the test changed prices together with something
+  else that is hashed; a prices-only case was added, then a second fix
+  when the first replacement case also moved shipping.
+- Live, `make e2e-commerce` on this branch's API and worker: authorized
+  at once; denied with every reason; a third purchase over budget;
+  cancelling released it; an agent-asserted price refused; a
+  per-transaction checkout approved from the link Resend delivered.
+  Twice, my own expected amounts in the script were wrong, not the
+  server: each time Enquoir's arithmetic was checked by hand and the
+  script corrected.
+
+### Not verified / open
+
+- No list of checkouts (per mandate or customer), and no mandate usage
+  (spent, purchases left) in the API yet: both wanted for the dashboard.
+  **Scheduled for commerce phase 6** (the user's decision, 2026-11-12).
+- No grant is issued for an authorized checkout (phase 5), and nothing
+  expires an authorized checkout that is never charged. Agreed with the
+  user: phase 5's grants give it an expiry, and phases 6 and 7 settle it
+  against what was actually paid.
+
+## Commerce Phase 5: authorization grants - done (2026-11-12)
+
+Branch `feat/commerce-grants`, stacked on `feat/commerce-checkouts`
+(PR #15). Tag `commerce-phase-5`.
+
+### What exists
+
+- **Domain** (`internal/commerce/grant.go`): `Authorization` - Enquoir's
+  permission for one authorized checkout to be charged once, binding its
+  amount, currency, card, external ID and checkout hash, redeemable for 15
+  minutes from the decision (`active`, `redeemed`, `expired`, `revoked`);
+  `CheckRedemption` (redeemed, revoked, expired, then the same checkout
+  and version); `Execution` - the one payment a redemption permits
+  (amount, currency, the funding method to charge), `pending` until phase
+  6 reports its outcome. Checkouts gain `redeemed` and `revoked`, and an
+  authorized checkout whose grant expires unredeemed reads `expired`.
+- **Use cases**: `SubmitCheckout` and `DecideCheckoutApproval` create the
+  authorization with the decision; `IssueGrant`, `RedeemGrant`,
+  `GetExecution`.
+- **Postgres** (migration 0021): `commerce_authorizations`,
+  `commerce_executions`.
+- **HTTP**: `POST /v1/commerce/checkouts/{id}/grant`,
+  `POST /v1/commerce/grants/redeem`, `GET /v1/commerce/executions/{id}`;
+  checkouts carry their `authorization`. OpenAPI 0.9.0.
+
+### Design choices
+
+- **The grant** is `enq_gr_` + 256 random bits, kept only as a SHA-256.
+  Its secret appears once: in the submit response of an autonomous
+  checkout, or from `POST .../grant`. A per-transaction checkout's
+  authorization is created at the customer's approval with no grant (the
+  consent page must never hand one out); the merchant has it issued.
+  Reissuing replaces the secret, never the 15 minutes.
+- **The redemption names the checkout** (external ID and hash), so a
+  grant can't be spent on another checkout or a changed one. A repeat -
+  even after the 15 minutes - returns the same execution (200): it is a
+  lookup, not a second charge; a repeat naming another checkout is a 409.
+- **The mandate must be active at redemption** (not paused, pending
+  revocation, revoked or expired); the grant stays redeemable if the
+  mandate becomes active again within the window.
+- **Budget**: redeemed checkouts count for good; authorized ones until
+  their grant expires unredeemed. Cancelling (only before redemption)
+  revokes the grant; confirming a mandate's revocation revokes its
+  unredeemed grants and marks those checkouts `revoked`, in the same
+  transaction.
+- **One lock order**: every write touching a mandate's checkouts or
+  grants - deciding, cancelling, issuing, redeeming, confirming a
+  revocation - locks the mandate row first. Redemption finds the grant,
+  locks the mandate, then re-reads the authorization: a concurrent winner
+  has committed and is returned. `UNIQUE (authorization_id)` on
+  executions is the backstop.
+- Checkouts authorized before this phase got an authorization (no grant)
+  that expired 15 minutes after their decision, as one issued then would
+  have; they stop counting.
+- Enquoir records what it allowed; a grant is not a guarantee the payment
+  succeeds at the PSP (the spec says so).
+
+### Verified
+
+- `make test` and `make test-integration`, with one exception below.
+- **`cfa0ac8` does not build on its own.** It changed the store contract
+  without the Postgres store and the HTTP test fixture, and was committed
+  although `make test` failed (`;` instead of `&&` in the command). The
+  next commit, `2455fde`, fixes it; history is not rewritten. Commits
+  since check `make test`'s exit status before committing.
+- Mutation checks caught: redemption not checking the checkout; not
+  checking the mandate's status; a repeat naming another checkout
+  accepted; an expired grant still counting. Not caught, by design: the
+  `enq_gr_` prefix check (a non-grant is never found anyway; the check
+  only skips a lookup). **The mandate lock in redemption** was first not
+  caught: with a cold pool, dialling connections spaced the redemptions
+  out. The test now opens the pool's connections first and releases 40
+  redemptions at once; without the lock, losers then get unique-key
+  errors (2 runs in 3) - never a second execution, thanks to the unique
+  index; with it, all get the one execution.
+- Live, `make e2e-commerce`: the grant with the authorization, never
+  shown again; a redemption naming another checkout refused; one
+  execution with the card's PSP reference; repeats return it; a redeemed
+  checkout can't be cancelled or re-granted; a per-transaction checkout's
+  grant issued to the merchant after the customer approved, then
+  redeemed; another organisation can't redeem or read. No grant secret in
+  the database, the audit log or the API log. The script itself printed
+  one grant in full in its own output; it now cuts grants to a prefix.
+
+### Not verified / open
+
+- Nothing reports the payment's outcome yet (phase 6); an execution stays
+  `pending`, and a redeemed checkout counts for good.
+- Checkout listing and mandate usage: phase 6, as agreed.
+
+## Commerce Phases 6 and 7: execution tracking, reconciliation and resilience - done (2026-11-12)
+
+Built together, at the user's request, on `feat/commerce-executions`,
+stacked on `feat/commerce-grants` (PR #16). Tags `commerce-phase-6` and
+`commerce-phase-7` are on the same final commit: the phases' work is
+interleaved (one report path carries both).
+
+### What exists
+
+- **Domain** (`internal/commerce/execution.go`): executions are `pending`,
+  then `succeeded`, `failed` or `unknown`. `ExecutionReport` (source
+  `direct`, `webhook`, `reconciliation`, or Enquoir's `sweep`), validated
+  - a success needs the PSP's payment reference; no card data in
+  references or the failure reason. `Execution.Apply`: the report must
+  match (amount, currency, provider, and the payment reference once
+  known); pending takes any outcome; unknown is resolved only by a
+  reconciliation or a webhook; a finished payment can't be contradicted;
+  a late `unknown` after the end is ignored; a repeat is a duplicate.
+  Each execution has a 30-minute report deadline and an
+  `idempotency_key` (`enquoir-<execution id>`) for the merchant's PSP
+  request. Checkouts gain `paid` (stays spent) and `payment_failed`
+  (released); usage gains the paid part.
+- **Use cases**: `ReportExecutionOutcome`, `SweepExecutions`,
+  `ListExecutions`, `ListCheckouts`, `GetExecution` (with history),
+  `MerchantForDashboard`; `GetMandate`/`ListMandates` carry usage.
+- **Temporal**: `CommerceSweepWorkflow` sweeps every minute, continues as
+  new every 60 sweeps; every worker starts it under one ID and attaches to
+  the running one.
+- **Postgres** (migration 0022): execution outcome columns, the
+  append-only `commerce_execution_events` (a trigger refuses changes),
+  `commerce_webhook_events` (per merchant, provider and event ID).
+- **HTTP**: `POST /v1/commerce/executions/{id}/outcome` (with
+  `provider_event_id`: a webhook) and `.../reconcile`; `GET
+  /v1/commerce/executions` (`status=unknown` is the reconciliation
+  queue); `GET .../executions/{id}` with history; `GET
+  /v1/commerce/checkouts`; dashboard `/v1/merchant-integrations/{id}/
+  checkouts|mandates|executions`, any member, read-only. OpenAPI 0.10.0.
+
+### Design choices
+
+- **Outcomes are the merchant's word.** Enquoir checks them against the
+  execution but cannot verify them with the PSP; the spec says so, and
+  the frontend guide asks for "reported by the merchant".
+- **Unknown is not failed.** It keeps its amount held. A `direct` report
+  can't resolve it (`409 reconciliation_required`); the merchant looks the
+  payment up and reports with `.../reconcile`, or forwards the PSP's
+  webhook. Its source is recorded.
+- **Every report is history.** Applied, duplicate, ignored and refused
+  reports are all appended; a refused one is committed before its error
+  is returned, so contradictions stay for investigation (and audited as
+  `commerce.execution.report_refused`).
+- **Webhook deduplication** by `(merchant, provider, event_id)` with a
+  fingerprint of the report and the execution: a redelivery is
+  `duplicate`; the same ID with other content, or for another execution,
+  is `409 event_conflict`.
+- **Crashes**: the sweep moves executions pending past their deadline to
+  `unknown` - a merchant that died mid-charge never reports, and its
+  payment may have gone through. The idempotency key makes the merchant's
+  retried charge safe at the PSP. Enquoir never retries a charge itself
+  (it never charges).
+- **Locks**: a report locks the mandate (the one lock order), then the
+  execution row; the sweep locks only execution rows, so they can't
+  deadlock, and a report racing the sweep sees `unknown`.
+- **Usage**: spent = paid + held (authorized with an unexpired grant, or
+  redeemed with the payment pending or unknown); `remaining` and
+  `purchases_left` follow from the mandate's scope.
+- Not built: refunds and partial captures (the design keeps refunds as
+  separate events; out of scope), a failed payment's retry (the merchant
+  submits a new checkout under a new external ID).
+
+### Verified
+
+- `make test` and `make test-integration` at every commit (each commit's
+  exit status checked before committing).
+- Mutation checks caught: a direct report resolving unknown; a late
+  unknown overriding a finished outcome; the payment reference allowed to
+  change; the provider unchecked; the report store without its locks (12
+  concurrent redeliveries of one webhook: unique-key errors and lost
+  duplicates, never two applications, thanks to the event table's key);
+  refused reports not recorded.
+- Live, `make e2e-commerce`, all steps: idempotency key; succeeded; a
+  redelivered webhook a duplicate; a contradiction and another amount
+  refused and in the history; the checkout paid; a timeout reported
+  unknown, refused as a direct resolution, listed for reconciliation,
+  held in usage, reconciled as failed and released; usage on the mandate;
+  the dashboard list; another organisation can't report or read.
+- **Live, the Temporal sweep**: started with the worker, it swept 31
+  executions earlier e2e runs had left pending past their deadline. The
+  worker was killed with `SIGKILL` mid-run for 75 seconds and restarted:
+  the same workflow run (same run ID) resumed and kept sweeping; exactly
+  one sweep workflow exists.
+
+### Not verified / open
+
+- A real PSP: reports are exercised with made-up `pi_...` references.
+- The sweep's one-minute cadence means `unknown` can lag the deadline by
+  up to a minute (plus a worker outage).
+- Phase 8 (SDK and demo) remains.

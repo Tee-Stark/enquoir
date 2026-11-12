@@ -1,0 +1,12 @@
+{{define "subject"}}Approve a purchase at {{.P.merchant}}: {{.P.total}}{{end}}
+{{define "action"}}Review the purchase{{end}}
+{{define "content"}}Approve this purchase?
+
+{{.P.agent}} chose a purchase for you at {{.P.merchant}}, to be paid with {{.P.payment_method}}:
+
+{{.P.items}}
+
+Total: {{.P.total}}
+
+Nothing is charged unless you approve this exact purchase. The link works once and expires in 1 hour.{{end}}
+{{define "why"}}You received this because you asked to approve each purchase {{.P.agent}} makes for you at {{.P.merchant}}. If you didn't expect it, ignore this email: nothing happens unless you approve.{{end}}

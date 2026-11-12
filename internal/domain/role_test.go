@@ -16,8 +16,8 @@ func TestParseRole(t *testing.T) {
 }
 
 // The permission table, as agreed: everyone reads; operators and up
-// write (agents, keys, payees); admins and up manage members; only
-// owners manage admins and ownership.
+// write (agents, keys, payees); admins and up manage members and
+// merchant integrations; only owners manage admins and ownership.
 func TestRole_Can(t *testing.T) {
 	table := []struct {
 		p                              Permission
@@ -28,6 +28,7 @@ func TestRole_Can(t *testing.T) {
 		{PermManageMembers, true, true, false, false},
 		{PermViewAuditLog, true, true, false, false},
 		{PermManageAdmins, true, false, false, false},
+		{PermManageIntegrations, true, true, false, false},
 	}
 	for _, row := range table {
 		for role, want := range map[Role]bool{Owner: row.owner, Admin: row.admin, Operator: row.operator, Viewer: row.viewer} {

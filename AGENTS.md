@@ -25,6 +25,20 @@ Enquoir ships as **Enquoir Cloud** (hosted, multi-tenant; the priority) and
 later as a self-hosted edition. Cloud consumers sign up, create agents, give
 each agent an API key, and watch every payment those agents attempt.
 
+Enquoir has two bounded contexts over shared infrastructure (organisations,
+members, authentication, audit, event history, Temporal):
+
+- **Treasury** (built): organisation-funded payments. An organisation's agent
+  states an intent and Enquoir itself pays through Airwallex.
+- **Merchant-delegated commerce** (in progress, part of the hackathon
+  submission): customer-funded purchases. A merchant's AI shopping agent
+  proposes a checkout; Enquoir decides whether the customer's mandate allows
+  that exact checkout and issues a one-time grant; the merchant charges
+  through its own PSP and reports the outcome. Enquoir never holds customer
+  funds, card data or PSP secrets. The design is the "Merchant-Delegated
+  Commerce" architecture document (v0.1); its roadmap has eight phases,
+  tagged `commerce-phase-N`.
+
 ## Stack (decided; ask before changing)
 
 - Go, current stable release
@@ -55,6 +69,9 @@ outside the standard library.
     cmd/worker/       Temporal worker
     internal/domain/  Intent, Money, IntentKey, state machine, policy types
     internal/app/     Use cases and ports (IntentRepository, EventLog, Rail, Clock)
+    internal/commerce/  Commerce domain: merchants, customers, mandates...
+                        (standard library and internal/domain only)
+    internal/commerce/commerceapp/  Commerce use cases and ports
     internal/workflow/  Temporal workflows and activities
     internal/adapters/airwallex/  Rail implementation over REST
     internal/adapters/postgres/   Repositories, embedded migrations
@@ -98,6 +115,32 @@ outside the standard library.
   and every documented route exists; a test enforces both, and handler
   tests validate responses against the spec. Update the spec with the route.
 
+Commerce adds these:
+
+- **No card data, ever.** Enquoir stores its own opaque funding-method
+  binding IDs. A merchant may also give the PSP's own ID for the saved
+  method (Stripe's `pm_...`, Adyen's `storedPaymentMethodId`): a
+  reference that cannot charge anything without the merchant's PSP secret
+  key. No PAN, CVV, bank credentials or PSP secret keys enter Enquoir,
+  its logs or its events.
+- **Three authorities stay separate.** A merchant integration key proves
+  which merchant is calling; an agent is an identity the merchant names; only
+  the customer grants spending authority, through Enquoir's own consent flow.
+  No merchant or agent credential is ever accepted as customer consent.
+- **The merchant comes from the credential.** Every commerce resource
+  belongs to one merchant integration (and its organisation); the merchant is
+  taken from the integration key, never from a request body. Another
+  merchant's record is "not found". External IDs are unique per merchant.
+- **The merchant backend is the only machine caller** for now. Agents have
+  no credentials of their own; checkouts come from the merchant's server,
+  never from prices an agent asserts.
+- **Treasury and commerce keys are not interchangeable.** An agent key
+  (`enq_sk_`) is refused on commerce routes and a merchant key (`enq_mk_`)
+  on treasury routes.
+- **Commerce outcomes are the merchant's word.** Enquoir checks a reported
+  outcome against its grant (amount, currency, references) but cannot
+  verify it with the PSP; documentation must say so.
+
 ## Test-driven development
 
 Work in red, green, refactor cycles, one behaviour at a time:
@@ -119,13 +162,28 @@ Further rules:
 
 ## Git
 
-- Local repository only. Do not add a remote or push.
+- The remote is GitHub, `Tee-Stark/enquoir` (`origin`). Work on a feature
+  branch from an up-to-date `main`, push the branch, and open a pull request
+  into `main` with a short bullet-point description. Never push to `main`
+  directly; `main` changes only by merging a reviewed pull request.
 - Commit after each green cycle. One behaviour per commit, tests and code
   together, with a conventional message such as `feat(domain): derive intent key`.
 - Every commit must pass `make test`. Never commit .env.
-- Do not amend, rebase or force anything. History is a record of the work.
-- At the end of a phase, update docs/progress.md, commit, and tag the commit
-  `phase-N`.
+- Do not amend, rebase or force-push anything. History is a record of the work.
+- At the end of a phase, update docs/progress.md, commit, tag the commit
+  `phase-N` (commerce phases: `commerce-phase-N`, so the two never clash),
+  and open the phase's pull request.
+
+## Email facts
+
+- Enquoir sends through Resend from `Enquoir <no-reply@enquoir.etimi.me>`
+  (`EMAIL_FROM`). The domain `enquoir.etimi.me` is verified in Resend, so
+  email reaches any address; the frontend, and every emailed link, live at
+  `APP_BASE_URL` (`https://enquoir.etimi.me`).
+- `RESEND_API_KEY` is a secret: from the environment only, never printed,
+  logged or committed.
+- Automated tests send only to Resend's test inboxes
+  (`delivered+label@resend.dev`), never to real people.
 
 ## Airwallex facts to build on
 
@@ -140,8 +198,11 @@ each one you depend on, and record differences in docs/rail-notes.md.
   to 50 characters.
 - Create a transfer with POST /transfers/create, sending transfer_currency and
   transfer_amount. transfer_method is LOCAL or SWIFT. Use the US, USD, LOCAL
-  corridor, since LOCAL payouts have no fee.
-- Call POST /beneficiaries/schema before building a beneficiary payload.
+  corridor. (The guide says LOCAL payouts have no fee; the sandbox charged
+  one - see docs/rail-notes.md.)
+- Read the beneficiary form schema before building a beneficiary payload.
+  (The guide says POST /beneficiaries/schema; the live endpoint is
+  POST /beneficiary_form_schemas/generate - see docs/rail-notes.md.)
 - Fund the sandbox: list or create a Global Account, then
   POST /simulation/deposit/create.
 - Move a transfer through states with
@@ -150,13 +211,177 @@ each one you depend on, and record differences in docs/rail-notes.md.
   FAILED. Read failure_type and failure_reason.
 - Limits: 20 requests per second overall, 10 per endpoint, 10 concurrent.
 
-## Phase 5: authentication hardening (current)
+## Commerce Phase 7: reconciliation and resilience (current, with 6)
+
+Done when unknown outcomes, retries, duplicate webhooks and crashes are
+handled.
+
+- Unknown is not failed: an `unknown` execution keeps its amount counted,
+  and only a definitive report (a reconciliation, or a verified webhook)
+  resolves it. The merchant lists executions to reconcile, looks the
+  payment up at its PSP, and reports what it found.
+- Duplicate webhooks: a webhook report carries the PSP's event ID, unique
+  per merchant and provider; a repeat changes nothing, and the same ID
+  reporting something else is a conflict.
+- Out of order: a report older than the execution's state (an `unknown`
+  after it ended) is recorded and ignored; a report contradicting a
+  finished payment is refused and recorded for investigation.
+- Crashes: an execution left `pending` past its report deadline (30
+  minutes) is moved to `unknown` by a durable Temporal sweep. Each
+  execution gives the merchant an idempotency key for its PSP request, so
+  a retried charge can't charge twice.
+
+## Commerce Phase 6: execution tracking (current, with 7)
+
+Done when the merchant can report verified PSP outcomes.
+
+- The merchant reports a redeemed execution's PSP outcome (succeeded,
+  failed, unknown) with the PSP's payment reference. Enquoir checks it
+  against the execution: amount, currency, provider, and the same
+  payment reference once known. Outcomes are the merchant's word; the
+  documentation says so.
+- Every report is recorded in the execution's append-only history.
+- Settlement: a succeeded payment's amount stays spent; a failed one is
+  released; pending or unknown stays counted.
+- Checkouts can be listed (per mandate, customer, status) and mandates
+  show their usage (spent, held, purchases left): on the merchant API,
+  and read-only on the dashboard per merchant integration.
+
+## Commerce Phase 5: authorization grants (done)
+
+Done when one-time grants can be issued, redeemed and replay-protected.
+
+- Every authorized checkout gets one authorization, valid 15 minutes from
+  the moment it was authorized. Its grant is an opaque secret
+  (`enq_gr_`), stored only as a hash and shown once: in the response that
+  authorizes an autonomous checkout, or when the merchant (re)issues it,
+  which replaces any unredeemed secret without extending the expiry.
+  Per-transaction checkouts get theirs that way after the customer
+  approves; the customer never sees one.
+- The merchant redeems the grant before charging, naming the checkout's
+  external ID and hash. Redemption is atomic and checks: the merchant's
+  authorization, the grant, not expired, not revoked, the same checkout,
+  and the mandate still active. It creates one execution record (the
+  payment to be made, with the funding method to charge); a repeat with
+  the same grant returns the same execution and never a second.
+- An unredeemed grant that expires stops counting against the mandate.
+  Cancelling the checkout revokes its grant; a redeemed one can't be
+  cancelled. Confirming a mandate's revocation revokes its unredeemed
+  grants.
+- Audit events for redemption and reissue. Reporting the payment's
+  outcome is phase 6.
+
+## Commerce Phase 4: checkout evaluation (done)
+
+Done when Enquoir can evaluate a purchase against a mandate.
+
+- The merchant's backend (never the agent) submits a checkout under a
+  mandate: its external ID, the customer, agent and funding method,
+  currency, items (product, name, category, quantity, unit price),
+  shipping, tax, fees and total, in integer minor units. The total must
+  add up. The snapshot is frozen with a hash; one external ID per
+  merchant, a differing repeat is a conflict.
+- Evaluation against the mandate returns every failing reason: mandate
+  not active (revoked, expired, suspended, revocation pending), another
+  customer, agent or funding method, another currency, over the
+  per-purchase maximum, a category not allowed, over the purchase count,
+  over the total budget.
+- Autonomous mandate: authorized at once. Per-transaction: awaiting the
+  customer, who approves that exact checkout (by its hash) or rejects it
+  from an emailed one-time link (1 hour); limits are checked again when
+  they approve.
+- Authorized checkouts count against the mandate's budget and purchase
+  count at once, decided under a lock on the mandate, so concurrent
+  checkouts can't overspend it. The merchant may cancel an authorized or
+  awaiting checkout, which releases it. Grants, redemption and their
+  expiry are phase 5.
+- Audit events for every decision.
+
+## Commerce Phase 3: consent and mandates (done)
+
+Done when a customer can approve a mandate, and the merchant can inspect
+and revoke it.
+
+- A mandate request (merchant key, register-or-resolve by the merchant's
+  external ID) names one active customer, one active agent and one active
+  funding-method binding of that customer, an approval mode (autonomous
+  or per transaction), a scope (one currency of USD, EUR or GBP; a
+  maximum per transaction and in total; optionally a maximum count and
+  allowed categories) and an expiry at most 90 days ahead. Its terms are
+  frozen as a canonical snapshot with a hash.
+- Consent by email only: Enquoir emails the customer's registered address
+  a one-time link, valid 1 hour, to its consent page (at `APP_BASE_URL`).
+  The page reads the terms by token, then approves or rejects; that
+  spends the link. The merchant never sees the token, and nothing a
+  merchant sends can approve. A merchant consent URL with an emailed code
+  is a later UX improvement.
+- Approval creates the mandate and an immutable consent record (the exact
+  terms and their hash, method, time, IP and user agent) in one
+  transaction. A request is not a mandate; they are separate resources.
+- Mandates are managed by the merchant on the customer's behalf: list,
+  get, revoke. A revocation the merchant asks for pauses the mandate at
+  once and waits for the customer to confirm it from an emailed one-time
+  link (1 hour); unconfirmed, it lapses and the mandate works again. A mandate reads as
+  suspended while its integration, customer, agent or binding is
+  disabled, and expired after its expiry.
+- No checkouts, reservations or grants yet (phases 4 and 5). Audit events
+  for every request, decision and revocation.
+
+## Commerce Phase 2: funding-method bindings (done)
+
+Done when a merchant can register opaque references to its customers'
+saved payment methods.
+
+- A binding identifies one saved payment method of one of its customers
+  by the merchant's own ID for it, or the PSP's ID for it (`pm_...`), or
+  both - each unique per merchant (the PSP's per provider) - with the
+  PSP's name, and display details for consent screens: a brand and, where
+  applicable, the last four digits. Enquoir returns its own binding ID.
+  It never receives a card number, CVV, bank credentials or PSP secret
+  keys.
+- Register or resolve (a differing repeat is a conflict), get, list a
+  customer's bindings, disable and enable; merchant key only. Only an
+  active customer of the same merchant can be bound.
+- Card data is refused, not ignored: a funding-method request with any
+  field Enquoir does not know is rejected, and a value holding 12 or more
+  digits in a row (spaces and dashes ignored: a card number's shape) is
+  invalid.
+- Registering a binding grants no spending authority: that is the
+  customer's mandate (phase 3).
+- Audit events for binding registration and status changes.
+
+## Commerce Phase 1: merchant integration and identity (done)
+
+Done when a merchant can securely connect, and register its agents and
+customers.
+
+- Merchant integrations, managed from the dashboard: create, list, get,
+  disable, enable. An organisation may have several (one per storefront).
+  Managing them needs admin or above with a verified email; any member may
+  read them.
+- One integration key each (`enq_mk_`), shown once; rotate and revoke. A
+  disabled integration's key stops working at once, cache included.
+- Merchant routes under `/v1/commerce`, integration key only: register or
+  resolve customers (by the merchant's external ID, with a contact email for
+  later consent links) and agents (by external ID, with a name); list, get,
+  disable and enable them. Repeating a registration returns the same record.
+- Audit events for integration, key, customer and agent changes.
+- PoC currencies, when money arrives in later phases: USD, EUR and GBP.
+
+Commerce phases 2 to 8 (funding-method bindings, consent and mandates,
+checkout evaluation, grants, execution reporting, reconciliation, SDK and
+demo) come after, one at a time. Phase 6 also lists checkouts (per
+mandate and customer) and shows each mandate's usage (spent, purchases
+left), for the dashboard. The spending-policy engine and escalation
+to humans follow commerce and are wired in alongside commerce mandates.
+
+## Phase 5: authentication hardening (done)
 
 - Organisation members with roles: owner, admin, operator (read and write),
   viewer (read only). One person may belong to several organisations; a
   session is bound to one. Nobody grants a role above their own; an
   organisation always keeps an owner; a role change or removal signs the
-  member out everywhere.
+  member out of that organisation at once.
 - Invitations by email; accepting adds the membership (or creates the
   account). Only verified accounts may create agents, invite, or register
   payees, so only an organisation's own agents can create its intents.
@@ -185,9 +410,11 @@ each one you depend on, and record differences in docs/rail-notes.md.
 ## Out of scope until told otherwise
 
 Webhooks, currency conversion, compensation, the full policy engine and
-escalation to humans (next phase), any UI, the MCP proxy, cards, connected
-accounts, per-organisation Airwallex credentials, two-factor authentication,
-and the self-hosted edition. Leave clear seams where they will attach.
+escalation to humans (after commerce), any UI, the MCP proxy, cards,
+connected accounts, per-organisation Airwallex credentials, two-factor
+authentication, agent credentials for commerce, a real PSP integration
+before commerce asks for one, and the self-hosted edition. Leave clear seams
+where they will attach.
 
 ## How to work
 

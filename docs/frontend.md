@@ -7,9 +7,9 @@ obvious.
 
 ## Where it runs
 
-- The frontend is served at `APP_BASE_URL` (planned:
-  `https://enquoir.etimi.me`). Every link in Enquoir's emails points
-  there.
+- The frontend is served at `APP_BASE_URL` (`https://enquoir.etimi.me`).
+  Every link in Enquoir's emails points there; emails come from
+  `no-reply@enquoir.etimi.me`.
 - The API is a separate origin. List the frontend's origin in the API's
   `CORS_ALLOWED_ORIGINS`; a state-changing request a browser sends from
   any other origin is refused (`403 forbidden_origin`).
@@ -69,9 +69,10 @@ The API enforces all of it either way (`403 forbidden`).
 
 | | owner | admin | operator | viewer |
 |---|---|---|---|---|
-| Payments, attempts, replay, analytics, payees, agents, members | ✓ | ✓ | ✓ | ✓ |
+| Payments, attempts, replay, analytics, payees, agents, members, merchant integrations | ✓ | ✓ | ✓ | ✓ |
 | Create, rotate, revoke agents; register payees | ✓ | ✓ | ✓ | |
 | Invite and remove members, change roles; audit log | ✓ | ✓ | | |
+| Create, disable, enable merchant integrations; issue and revoke their keys | ✓ | ✓ | | |
 | Make or change admins and owners | ✓ | | | |
 
 - In the role picker for invitations and role changes, offer only roles
@@ -84,9 +85,83 @@ The API enforces all of it either way (`403 forbidden`).
 ## Unverified accounts
 
 Until `user.email_verified` is true, a person can look around but can't
-create or rotate agent keys, invite anyone, or register payees
-(`403 email_unverified`). Show a banner with "resend the link"
+create or rotate agent keys, invite anyone, register payees, or create,
+enable or re-key merchant integrations (`403 email_unverified`). Show a banner with "resend the link"
 (`POST /v1/auth/verify-email/resend`; limited to 1 a minute, 5 a day).
+
+## Merchant integrations (commerce)
+
+A settings page for connecting merchants (`/v1/merchant-integrations`):
+one integration per storefront, each with one key.
+
+- Creating one, or rotating its key, returns the secret (`key.secret`)
+  once. Show it with a copy button and a clear "you won't see this
+  again"; afterwards only `key.prefix` is available.
+- Statuses are `active` and `disabled`. Disabling stops the key at once;
+  enabling lets it work again. Revoking the key (`DELETE .../key`)
+  leaves an integration with `key: null` until a key is rotated in.
+- Owners and admins manage integrations; operators and viewers only see
+  them. Hide the buttons for them.
+- Customers and agents are registered by the merchant's backend with its
+  key, not from the dashboard; the dashboard has no view of them yet.
+- Each integration's commerce activity is readable by any member:
+  `GET /v1/merchant-integrations/{id}/checkouts` (filter by mandate,
+  customer, status), `/mandates` (with `usage`: spent, paid, held,
+  remaining, purchases left - amounts in minor units of `usage.currency`)
+  and `/executions` (`status=unknown` are payments awaiting the
+  merchant's reconciliation: worth a warning badge). Outcomes are the
+  merchant's word: label them "reported by the merchant".
+  The audit log shows their registration with an actor of type
+  `merchant_integration`.
+
+## The consent page (commerce)
+
+Merchants' customers reach Enquoir only through this page, at
+`APP_BASE_URL/consent?token=...`: the link Enquoir emails a customer when
+a merchant asks for a mandate (permission for the merchant's AI agent to
+buy for them). The customer has no Enquoir account; the token is the only
+credential. Never put it anywhere but the request body.
+
+1. On load, `POST /v1/consent/view` with `{"token": ...}`. Show every
+   term in `terms`: the merchant and agent names, the payment method
+   (`brand`, `last_four`), approval mode (`autonomous`: buys without
+   asking; `per_transaction`: asks each time), the scope (amounts are
+   minor units of `currency`; `max_transactions` null means no limit;
+   empty `allowed_categories` means any) and `expires_at`. Viewing does
+   not spend the link.
+2. Approve: `POST /v1/consent/approve` with `{"token", "terms_hash"}`,
+   where `terms_hash` is the one from step 1 - consent binds to exactly
+   what was shown. Reject: `POST /v1/consent/reject` with `{"token"}`.
+   Either spends the link; show a plain "done" page.
+3. Errors: `400 token_invalid` - the link is spent, expired (1 hour), or
+   the request was decided or expired: say so, and that the merchant can
+   send a new request. `409 terms_mismatch` - reload and show the terms
+   again.
+
+The page's origin must be in the API's `CORS_ALLOWED_ORIGINS` (the
+approve and reject calls are state-changing). After deciding, there is
+nothing more for the customer to do at Enquoir: the merchant shows their
+mandates, and asks to revoke them.
+
+A revocation needs the customer's confirmation. The merchant asks; the
+mandate pauses (`revocation_pending`) and Enquoir emails the customer a
+link to `APP_BASE_URL/consent/revoke?token=...`. That page reads the
+mandate with `POST /v1/consent/revocation/view` (`{"token"}`), shows what
+is being revoked, and confirms with `POST /v1/consent/revocation/confirm`.
+Same errors as above; unconfirmed, the request lapses after an hour.
+
+### Approving one purchase
+
+Under a per-transaction mandate, each checkout's link goes to
+`APP_BASE_URL/consent/checkout?token=...`. Read it with
+`POST /v1/consent/checkout/view` (`{"token"}`): show the merchant's items
+(`checkout.items`, amounts in minor units of `checkout.currency`),
+shipping, tax, fees and `total_minor`. Approve with
+`POST /v1/consent/checkout/approve` (`{"token", "checkout_hash"}`, the
+hash from the view) or reject with `POST /v1/consent/checkout/reject`.
+An approval can come back `denied` if the mandate no longer allows it
+(spent meanwhile, or paused): show `decision.reasons[].detail`.
+`409 checkout_mismatch`: reload and show it again.
 
 ## Limits
 

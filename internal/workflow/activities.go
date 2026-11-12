@@ -14,6 +14,7 @@ import (
 
 	"enquoir/internal/app"
 	"enquoir/internal/chaos"
+	"enquoir/internal/commerce/commerceapp"
 	"enquoir/internal/domain"
 )
 
@@ -44,6 +45,9 @@ type Activities struct {
 
 	EmailDelivery *app.DeliverEmail
 	EmailGiveUp   *app.GiveUpEmail
+
+	// ExecutionSweep presumes overdue commerce executions unknown.
+	ExecutionSweep *commerceapp.SweepExecutions
 }
 
 // TransferRef names a transfer and the intent it pays.

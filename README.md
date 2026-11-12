@@ -140,8 +140,10 @@ change, session listing and revocation, and an audit log are built in.
 Log-in, sign-up, resends and resets are rate limited, and 10 failed
 log-ins lock an account for an hour.
 
-Email goes through Resend (`EMAIL_PROVIDER=resend`, `RESEND_API_KEY`,
-`EMAIL_FROM`) or to a file (`EMAIL_PROVIDER=file`, `MAIL_FILE`).
+Email goes through Resend from `Enquoir <no-reply@enquoir.etimi.me>`
+(`EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, `EMAIL_FROM`; the domain is
+verified, so any address receives it) or to a file
+(`EMAIL_PROVIDER=file`, `MAIL_FILE`).
 `make emails` writes previews of every template to `email-previews/`.
 Redis (`REDIS_URL`, started by `make up`) holds rate-limit counters and a
 short cache of sessions and keys; without it everything still works.
@@ -164,6 +166,94 @@ If the rail stops answering mid-payment, the intent waits in `UNKNOWN`
 minutes, rather than failing - it settles by itself once the rail is
 back. The one thing that stops a run is the rail holding two transfers
 for one request ID: a double payment, left for a person to investigate.
+
+### Merchant-delegated commerce (in progress)
+
+The second bounded context: a merchant's AI shopping agent proposes
+purchases funded by the merchant's customers, and Enquoir decides
+whether the customer's authority allows each one. The merchant charges
+through its own payment provider; Enquoir never holds customer funds,
+card data or PSP secrets. Phases 1 to 7 of 8 are built: merchant
+integration and identity, funding-method bindings, consent and mandates,
+checkout evaluation, one-time authorization grants, execution tracking,
+and reconciliation.
+
+An owner or admin connects a merchant from the dashboard and gets its
+integration key (`enq_mk_...`, shown once). The merchant's backend uses
+it on `/v1/commerce` to register its customers (with the email consent
+links will later go to) and its agents, by its own external IDs:
+
+```sh
+curl -b cookies -X POST localhost:8090/v1/merchant-integrations -d '{"name":"Acme Electronics"}'
+# {"integration":{...},"key":{"secret":"enq_mk_...", ...}}   <- shown once; store it
+
+curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce/customers \
+  -d '{"external_id":"cust_42","email":"ada@example.com"}'     # 201, then 200 on a repeat
+curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce/agents \
+  -d '{"external_id":"shopping-assistant","name":"Acme Shopping Assistant"}'
+```
+
+The merchant then binds a customer's saved payment method by its own
+reference for it, the PSP's ID for it (`pm_...`), or both; Enquoir keeps
+those, the PSP's name and display details, and returns its own binding
+ID. Card data is refused - an
+undocumented field, or anything shaped like a card number, is a 400:
+
+```sh
+curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce/funding-methods \
+  -d '{"customer_id":"cus_...","provider":"stripe","merchant_funding_method_id":"mfm_123",
+       "display":{"brand":"visa","last_four":"4242"}}'      # {"id":"fmb_...", ...}
+```
+
+Spending authority comes only from the customer. The merchant requests a
+mandate - one agent, one card, a scope and an expiry of at most 90 days
+- and Enquoir emails the customer a one-time link (1 hour) to its consent
+page; the merchant never sees the link and cannot approve. Once approved,
+the merchant lists and shows the customer's mandates, and asks to revoke
+them: the mandate pauses at once and the customer confirms by email.
+
+```sh
+curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce/mandate-requests \
+  -d '{"external_id":"mreq_1","customer_id":"cus_...","agent_id":"cagt_...","funding_method_id":"fmb_...",
+       "approval_mode":"autonomous","scope":{"currency":"USD","max_transaction_minor":150000,
+       "max_cumulative_minor":300000},"expires_at":"2026-12-11T09:00:00Z"}'
+```
+
+The merchant's server then submits each checkout the agent proposes,
+priced by the merchant: Enquoir checks it against the mandate - status,
+customer, agent, card, currency, per-purchase and total limits, count,
+categories - under a lock on the mandate, and answers `authorized`,
+`denied` with every reason, or, under a per-transaction mandate,
+`awaiting_customer_approval` while the customer approves that exact
+checkout from an emailed link.
+
+An authorized checkout comes with a one-time grant (`enq_gr_...`, valid
+15 minutes). Before charging, the merchant redeems it, naming the
+checkout's external ID and hash; Enquoir checks it and creates the one
+execution - what to charge, with which saved method. Repeating the
+redemption returns the same execution, never a second.
+
+```sh
+curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce/grants/redeem \
+  -d '{"grant":"enq_gr_...","external_checkout_id":"checkout_987","checkout_hash":"sha256:..."}'
+```
+
+The merchant charges with the execution's `idempotency_key`, then reports
+the outcome - `succeeded`, `failed`, or `unknown` if its PSP call timed
+out - directly, or by forwarding a verified PSP webhook (a redelivery
+changes nothing). Outcomes are the merchant's word, checked against the
+execution. A success stays spent against the mandate, a failure is
+released, and unknown stays held until a reconciliation resolves it. A
+durable Temporal sweep presumes unknown any execution left unreported for
+30 minutes - a crashed merchant - so it is reconciled, never retried
+blind. Every report is in the execution's history; checkouts, executions
+and mandate usage are listed for the merchant and the dashboard.
+
+The merchant always comes from the key, never from the request; another
+merchant's records (another storefront's too) are not found. An agent
+key and a merchant key are never accepted in each other's place.
+Disabling an integration, or rotating or revoking its key, ends access
+at once. `make e2e-commerce` runs the whole flow (no sandbox needed).
 
 ## The end-to-end test
 
@@ -228,6 +318,11 @@ internal/domain    Intent, Money, IntentKey, the state machine, hash-chained eve
                     imports nothing outside the standard library
 internal/app       use cases (SubmitIntent, GetIntent) and the ports they depend on
                     (IntentRepository, EventLog, Rail, Simulator, Clock, PaymentStarter)
+internal/commerce  the commerce domain (merchants, customers, agents; mandates
+                    to come) - standard library and internal/domain only
+internal/commerce/commerceapp  commerce use cases and ports, over the
+                    shared infrastructure in internal/app; treasury never
+                    imports commerce
 internal/workflow  the Temporal workflow and its activities - deterministic
                     orchestration only; every I/O call is an activity
 internal/chaos     the one deliberate exception to the architecture: a kill

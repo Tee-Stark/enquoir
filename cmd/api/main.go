@@ -16,6 +16,7 @@ import (
 	// zone database of its own.
 	_ "time/tzdata"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 	"go.temporal.io/sdk/client"
@@ -26,6 +27,7 @@ import (
 	"enquoir/internal/adapters/postgres"
 	"enquoir/internal/adapters/redisstore"
 	"enquoir/internal/app"
+	"enquoir/internal/commerce/commerceapp"
 	enquoirworkflow "enquoir/internal/workflow"
 )
 
@@ -171,6 +173,13 @@ func main() {
 		Summary:           &app.GetSummary{Analytics: analytics, Clock: sysClock},
 		TimeSeries:        &app.GetTimeSeries{Analytics: analytics, Clock: sysClock},
 		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
+
+		Commerce:   commerceUseCases(pool, ids, secrets, sysClock, cache, audit),
+		Funding:    fundingUseCases(pool, ids, sysClock, audit),
+		Mandates:   mandateUseCases(pool, tokens, emails, ids, sysClock, audit),
+		Checkouts:  checkoutUseCases(pool, tokens, emails, ids, secrets, sysClock, audit),
+		Grants:     grantUseCases(pool, ids, secrets, sysClock, audit),
+		Executions: executionUseCases(pool, sysClock, audit),
 	}
 
 	srv := httpapi.NewServer(httpAddr, httpapi.NewRouter(handler))
@@ -253,5 +262,96 @@ func everyMinute(report func(error)) func(error) {
 		if due {
 			report(err)
 		}
+	}
+}
+
+// commerceUseCases wires merchant-delegated commerce: the dashboard's
+// merchant integrations and the merchant's /v1/commerce routes.
+func commerceUseCases(pool *pgxpool.Pool, ids app.IDGenerator, secrets app.SecretGenerator, clock app.Clock, cache *app.Cache, audit *app.Audit) httpapi.CommerceUseCases {
+	integrations := postgres.NewMerchantIntegrationStore(pool)
+	customers := postgres.NewCommerceCustomerStore(pool)
+	agents := postgres.NewCommerceAgentStore(pool)
+	return httpapi.CommerceUseCases{
+		CreateIntegration:    &commerceapp.CreateIntegration{Integrations: integrations, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
+		ListIntegrations:     &commerceapp.ListIntegrations{Integrations: integrations},
+		GetIntegration:       &commerceapp.GetIntegration{Integrations: integrations},
+		SetIntegrationStatus: &commerceapp.SetIntegrationStatus{Integrations: integrations, Clock: clock, Cache: cache, Audit: audit},
+		RotateIntegrationKey: &commerceapp.RotateIntegrationKey{Integrations: integrations, IDs: ids, Secrets: secrets, Clock: clock, Cache: cache, Audit: audit},
+		RevokeIntegrationKey: &commerceapp.RevokeIntegrationKey{Integrations: integrations, Clock: clock, Cache: cache, Audit: audit},
+		AuthenticateMerchant: &commerceapp.AuthenticateMerchant{Integrations: integrations, Clock: clock, Cache: cache},
+
+		RegisterCustomer:  &commerceapp.RegisterCustomer{Customers: customers, IDs: ids, Clock: clock, Audit: audit},
+		ListCustomers:     &commerceapp.ListCustomers{Customers: customers},
+		GetCustomer:       &commerceapp.GetCustomer{Customers: customers},
+		SetCustomerStatus: &commerceapp.SetCustomerStatus{Customers: customers, Clock: clock, Audit: audit},
+
+		RegisterAgent:  &commerceapp.RegisterAgent{Agents: agents, IDs: ids, Clock: clock, Audit: audit},
+		ListAgents:     &commerceapp.ListAgents{Agents: agents},
+		GetAgent:       &commerceapp.GetAgent{Agents: agents},
+		SetAgentStatus: &commerceapp.SetAgentStatus{Agents: agents, Clock: clock, Audit: audit},
+	}
+}
+
+// fundingUseCases wires funding-method bindings on /v1/commerce.
+func fundingUseCases(pool *pgxpool.Pool, ids app.IDGenerator, clock app.Clock, audit *app.Audit) httpapi.FundingUseCases {
+	methods, customers := postgres.NewCommerceFundingMethodStore(pool), postgres.NewCommerceCustomerStore(pool)
+	return httpapi.FundingUseCases{
+		Register: &commerceapp.RegisterFundingMethod{Methods: methods, Customers: customers, IDs: ids, Clock: clock, Audit: audit},
+		Get:      &commerceapp.GetFundingMethod{Methods: methods},
+		List:     &commerceapp.ListFundingMethods{Methods: methods, Customers: customers},
+		Status:   &commerceapp.SetFundingMethodStatus{Methods: methods, Clock: clock, Audit: audit},
+	}
+}
+
+// mandateUseCases wires mandate requests and mandates on /v1/commerce,
+// and the customer's consent page routes.
+func mandateUseCases(pool *pgxpool.Pool, tokens app.TokenStore, emails *app.Emails, ids app.IDGenerator, clock app.Clock, audit *app.Audit) httpapi.MandateUseCases {
+	store := postgres.NewCommerceMandateStore(pool)
+	customers, agents, methods := postgres.NewCommerceCustomerStore(pool), postgres.NewCommerceAgentStore(pool), postgres.NewCommerceFundingMethodStore(pool)
+	return httpapi.MandateUseCases{
+		Request:    &commerceapp.RequestMandate{Mandates: store, Customers: customers, Agents: agents, Methods: methods, Emails: emails, IDs: ids, Clock: clock, Audit: audit},
+		GetRequest: &commerceapp.GetMandateRequest{Mandates: store, Clock: clock},
+		View:       &commerceapp.ViewConsent{Tokens: tokens, Mandates: store, Clock: clock},
+		Decide:     &commerceapp.DecideConsent{Tokens: tokens, Mandates: store, IDs: ids, Clock: clock, Audit: audit},
+		List:       &commerceapp.ListMandates{Mandates: store, Usage: postgres.NewCommerceCheckoutStore(pool), Clock: clock},
+		Get:        &commerceapp.GetMandate{Mandates: store, Usage: postgres.NewCommerceCheckoutStore(pool), Clock: clock},
+		Revoke:     &commerceapp.RequestMandateRevocation{Mandates: store, Customers: customers, Emails: emails, Clock: clock, Audit: audit},
+		ViewRevoke: &commerceapp.ViewRevocation{Tokens: tokens, Mandates: store, Clock: clock},
+		Confirm:    &commerceapp.ConfirmRevocation{Tokens: tokens, Mandates: store, Clock: clock, Audit: audit},
+	}
+}
+
+// checkoutUseCases wires checkout evaluation on /v1/commerce and the
+// customer's checkout approval page.
+func checkoutUseCases(pool *pgxpool.Pool, tokens app.TokenStore, emails *app.Emails, ids app.IDGenerator, secrets app.SecretGenerator, clock app.Clock, audit *app.Audit) httpapi.CheckoutUseCases {
+	store := postgres.NewCommerceCheckoutStore(pool)
+	return httpapi.CheckoutUseCases{
+		Submit: &commerceapp.SubmitCheckout{Checkouts: store, Customers: postgres.NewCommerceCustomerStore(pool), Emails: emails, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
+		Get:    &commerceapp.GetCheckout{Checkouts: store, Clock: clock},
+		Cancel: &commerceapp.CancelCheckout{Checkouts: store, Clock: clock, Audit: audit},
+		View:   &commerceapp.ViewCheckoutApproval{Tokens: tokens, Checkouts: store, Clock: clock},
+		Decide: &commerceapp.DecideCheckoutApproval{Tokens: tokens, Checkouts: store, IDs: ids, Clock: clock, Audit: audit},
+	}
+}
+
+// grantUseCases wires issuing and redeeming grants on /v1/commerce.
+func grantUseCases(pool *pgxpool.Pool, ids app.IDGenerator, secrets app.SecretGenerator, clock app.Clock, audit *app.Audit) httpapi.GrantUseCases {
+	store := postgres.NewCommerceCheckoutStore(pool)
+	return httpapi.GrantUseCases{
+		Issue:  &commerceapp.IssueGrant{Checkouts: store, Secrets: secrets, Clock: clock, Audit: audit},
+		Redeem: &commerceapp.RedeemGrant{Checkouts: store, IDs: ids, Clock: clock, Audit: audit},
+		Get:    &commerceapp.GetExecution{Checkouts: store},
+	}
+}
+
+// executionUseCases wires outcome reporting, reconciliation, and the
+// checkout and execution lists (merchant API and dashboard).
+func executionUseCases(pool *pgxpool.Pool, clock app.Clock, audit *app.Audit) httpapi.ExecutionUseCases {
+	store := postgres.NewCommerceCheckoutStore(pool)
+	return httpapi.ExecutionUseCases{
+		Report:        &commerceapp.ReportExecutionOutcome{Checkouts: store, Clock: clock, Audit: audit},
+		List:          &commerceapp.ListExecutions{Checkouts: store},
+		ListCheckouts: &commerceapp.ListCheckouts{Checkouts: store, Clock: clock},
+		Dashboard:     &commerceapp.MerchantForDashboard{Integrations: postgres.NewMerchantIntegrationStore(pool)},
 	}
 }

@@ -98,3 +98,23 @@ func (c *Cache) InvalidateAgent(ctx context.Context, agent domain.AgentID) {
 		c.Store.InvalidateOwner(ctx, agentOwner(agent))
 	}
 }
+
+// Lookup, Remember and Invalidate let another bounded context
+// (commerce) cache its own principals, under its own key and owner
+// namespaces, with the same TTL and the same ordering rule: commit the
+// change that ends access, then Invalidate.
+func (c *Cache) Lookup(ctx context.Context, key string, into any) bool {
+	return c.on() && c.Store.Get(ctx, key, into)
+}
+
+func (c *Cache) Remember(ctx context.Context, key, owner string, value any) {
+	if c.on() {
+		c.Store.Put(ctx, key, owner, value, PrincipalCacheTTL)
+	}
+}
+
+func (c *Cache) Invalidate(ctx context.Context, owner string) {
+	if c.on() {
+		c.Store.InvalidateOwner(ctx, owner)
+	}
+}
