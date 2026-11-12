@@ -54,7 +54,8 @@ fail() {
 	exit 1
 }
 show() { printf '   $ %s\n' "$*"; }
-got() { printf '   -> %s %s\n' "$STATUS" "$BODY"; }
+# got prints the last response, with any grant secret cut to its prefix.
+got() { printf '   -> %s %s\n' "$STATUS" "$(sed -E 's/(enq_gr_[A-Za-z0-9_-]{5})[A-Za-z0-9_-]+/\1…/g' <<<"$BODY")"; }
 expect_status() {
 	[ "$STATUS" = "$1" ] || fail "expected HTTP $1, got $STATUS"
 	pass "HTTP $1"
@@ -299,6 +300,10 @@ with_key "$KEY_A" POST "/v1/commerce/checkouts/$CHK_1/cancel" ""
 expect_status 200
 with_key "$KEY_A" POST /v1/commerce/checkouts "$(checkout chk_4 "$AUTO" USD 149500 electronics)"
 check '[ "$(json .status)" = authorized ]' "cancelling released it"
+CHK_4=$(json .id)
+CHK_4_HASH=$(json .checkout_hash)
+GRANT_4=$(json .authorization.grant)
+check '[[ "$GRANT_4" == enq_gr_* ]] && [ "$(json .authorization.status)" = active ]' "the authorization comes with its one-time grant"
 with_key "$KEY_A" POST /v1/commerce/checkouts "$(checkout chk_5 "$AUTO" USD 1000 electronics | sed 's/"quantity":1,/"quantity":1,"agent_price":1,/')"
 expect_status 400
 check '[ "$(json .field)" = agent_price ]' "a price the agent asserts is refused"
@@ -319,6 +324,41 @@ req POST /v1/consent/checkout/approve "{\"token\":\"$CHK_TOKEN\",\"checkout_hash
 got
 expect_status 200
 check '[ "$(json .status)" = authorized ]' "approved by the customer: authorized"
+
+step "5e. Grants: redeemed once before charging, never twice"
+redeem_body() { echo "{\"grant\":\"$1\",\"external_checkout_id\":\"$2\",\"checkout_hash\":\"$3\"}"; }
+with_key "$KEY_A" GET "/v1/commerce/checkouts/$CHK_4" ""
+check '! grep -qF "$GRANT_4" <<<"$BODY" && [ "$(json .authorization.grant)" = null ]' "the grant is never shown again"
+with_key "$KEY_A" POST /v1/commerce/grants/redeem "$(redeem_body "$GRANT_4" chk_9 "$CHK_4_HASH")"
+expect_status 409
+check '[ "$(json .code)" = redemption_mismatch ]' "a grant redeems only its own checkout"
+show "curl -s -H 'Authorization: Bearer $(redact "$KEY_A")' -X POST $API/v1/commerce/grants/redeem -d '{\"grant\":\"$(redact "$GRANT_4")\",\"external_checkout_id\":\"chk_4\",\"checkout_hash\":\"$CHK_4_HASH\"}'"
+with_key "$KEY_A" POST /v1/commerce/grants/redeem "$(redeem_body "$GRANT_4" chk_4 "$CHK_4_HASH")"
+got
+expect_status 201
+EXECUTION=$(json .id)
+check '[ "$(json .amount_minor)" = 150000 ] && [ "$(json .funding_method.id)" = "$SHOPPER_CARD" ] && [ "$(json .funding_method.provider_method_reference)" = pm_1ShopperCard ]' "the execution says what to charge, and with which saved method"
+for _ in 1 2 3; do
+	with_key "$KEY_A" POST /v1/commerce/grants/redeem "$(redeem_body "$GRANT_4" chk_4 "$CHK_4_HASH")"
+	[ "$STATUS" = 200 ] && [ "$(json .id)" = "$EXECUTION" ] || fail "a repeated redemption made something new"
+done
+pass "repeated redemptions return the same execution"
+with_key "$KEY_A" POST "/v1/commerce/checkouts/$CHK_4/cancel" ""
+expect_status 409
+with_key "$KEY_A" POST "/v1/commerce/checkouts/$CHK_4/grant" ""
+check '[ "$STATUS" = 409 ] && [ "$(json .code)" = grant_redeemed ]' "a redeemed checkout can't be cancelled or re-granted"
+with_key "$KEY_A" POST /v1/commerce/grants/redeem "$(redeem_body enq_gr_made_up chk_4 "$CHK_4_HASH")"
+check '[ "$STATUS" = 422 ] && [ "$(json .code)" = grant_invalid ]' "a made-up grant is invalid"
+# The customer approved chk_6: the merchant has its grant issued, then redeems it.
+with_key "$KEY_A" POST /v1/commerce/checkouts "$(checkout chk_6 "$PER" USD 100000 electronics)"
+CHK_6=$(json .id)
+check '[ "$(json .authorization.grant)" = null ]' "the customer's approval issued no grant"
+with_key "$KEY_A" POST "/v1/commerce/checkouts/$CHK_6/grant" ""
+expect_status 200
+GRANT_6=$(json .authorization.grant)
+with_key "$KEY_A" POST /v1/commerce/grants/redeem "$(redeem_body "$GRANT_6" chk_6 "$CHK_HASH")"
+expect_status 201
+pass "issued to the merchant after approval, then redeemed"
 
 step "6. Only a merchant key opens commerce, and it opens nothing else"
 req POST /v1/agents '{"name":"treasury bot"}' -b "$JAR_A"
@@ -359,6 +399,10 @@ with_key "$KEY_B" GET "/v1/commerce/mandate-requests/$REQUEST" ""
 expect_status 404
 with_key "$KEY_B" GET "/v1/commerce/checkouts/$CHK_1" ""
 expect_status 404
+with_key "$KEY_B" GET "/v1/commerce/executions/$EXECUTION" ""
+expect_status 404
+with_key "$KEY_B" POST /v1/commerce/grants/redeem "$(redeem_body "$GRANT_6" chk_6 "$CHK_HASH")"
+expect_status 422
 with_key "$KEY_B" POST /v1/commerce/checkouts "$(checkout chk_steal "$AUTO" USD 1000 electronics)"
 expect_status 422
 with_key "$KEY_B" GET "/v1/commerce/customers/$CUSTOMER/funding-methods" ""
@@ -407,7 +451,8 @@ for action in merchant_integration.created merchant_integration.disabled merchan
 	merchant_integration.key_rotated merchant_integration.key_revoked commerce.agent.registered \
 	commerce.funding_method.registered commerce.mandate.requested commerce.mandate.approved \
 	commerce.mandate.rejected commerce.mandate.revoked commerce.checkout.authorized commerce.checkout.denied \
-	commerce.checkout.awaiting_approval commerce.checkout.approved commerce.checkout.canceled; do
+	commerce.checkout.awaiting_approval commerce.checkout.approved commerce.checkout.canceled \
+	commerce.authorization.grant_issued commerce.authorization.redeemed; do
 	check "grep -qF '\"$action\"' <<<\"\$BODY\"" "recorded: $action"
 done
 
