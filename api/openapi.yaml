@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Enquoir API
-  version: 0.8.0
+  version: 0.9.0
   summary: The safe control and observability layer for agentic finance.
   description: |
     Enquoir sits between an AI agent and a payment rail. The agent states an
@@ -122,7 +122,20 @@ tags:
       per-transaction one, when the customer is emailed a link (1 hour) to
       approve that exact checkout; limits are checked again then. Authorized
       checkouts count against the mandate's budget and purchase count at
-      once; cancelling one releases it. Grants to charge against come next.
+      once; cancelling one releases it.
+
+      **Grants.** An authorized checkout has an `authorization`, redeemable
+      for 15 minutes from the decision, and a one-time grant (`enq_gr_...`)
+      - its secret shown once: in the submit response for an autonomous
+      checkout, or from `POST .../grant`, which (re)issues it, replacing any
+      earlier secret without extending the 15 minutes. Before charging, the
+      merchant redeems it (`POST /v1/commerce/grants/redeem`) naming the
+      checkout's external ID and hash; that creates the one execution - the
+      payment to make, and the funding method to charge - and repeating it
+      returns the same execution. An unredeemed grant that expires stops
+      counting against the mandate; cancelling the checkout or confirming
+      the mandate's revocation revokes it. Enquoir records what it allowed;
+      a grant is not a guarantee the payment will succeed at the PSP.
   - name: Consent
     description: |
       The customer's consent page, at `APP_BASE_URL/consent?token=...`, the
@@ -983,7 +996,9 @@ paths:
         commerce.mandate.revocation_requested, commerce.mandate.revoked,
         commerce.checkout.authorized, commerce.checkout.denied,
         commerce.checkout.awaiting_approval, commerce.checkout.approved,
-        commerce.checkout.rejected, commerce.checkout.canceled. Payments have
+        commerce.checkout.rejected, commerce.checkout.canceled,
+        commerce.authorization.grant_issued, commerce.authorization.redeemed.
+        Payments have
         their own history (GET /v1/payments/{key}).
       security:
         - session: []
@@ -2463,6 +2478,131 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/commerce/checkouts/{id}/grant:
+    parameters:
+      - $ref: "#/components/parameters/CheckoutID"
+    post:
+      tags: [Commerce]
+      operationId: issueGrant
+      summary: Issue (or reissue) the checkout's grant
+      description: |
+        The first grant of a checkout the customer approved, or a replacement
+        for a lost one. The earlier secret stops working; the expiry stays the
+        authorization's. The secret is in `authorization.grant`, only in this
+        response.
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "Issued."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "409":
+          description: "Already redeemed (`grant_redeemed`), or no active authorization: not authorized, expired, cancelled or revoked (`grant_not_issuable`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/grants/redeem:
+    post:
+      tags: [Commerce]
+      operationId: redeemGrant
+      summary: Redeem a grant before charging
+      description: |
+        Checks the grant is this merchant's, unredeemed, unrevoked, unexpired,
+        for this checkout and version, and its mandate still active; then
+        creates the one execution: charge `amount_minor` of `currency` to
+        `funding_method`. Repeating it returns that execution (200), even after
+        the 15 minutes: never a second. The body is decoded strictly.
+      security:
+        - merchantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [grant, external_checkout_id, checkout_hash]
+              properties:
+                grant:
+                  type: string
+                  description: The `enq_gr_...` secret.
+                external_checkout_id:
+                  type: string
+                checkout_hash:
+                  type: string
+                  description: The `checkout_hash` of the checkout being charged.
+      responses:
+        "201":
+          description: "Redeemed: the execution."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Execution"
+        "200":
+          description: "Already redeemed: the same execution."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Execution"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: "The grant is for another checkout or version (`redemption_mismatch`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "422":
+          description: "Not this merchant's grant, made up or replaced (`grant_invalid`); expired (`grant_expired`); revoked (`grant_revoked`); or the mandate is paused, revoked or expired (`mandate_not_active`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce/executions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Commerce]
+      operationId: getExecution
+      summary: Get an execution
+      security:
+        - merchantKey: []
+      responses:
+        "200":
+          description: "The execution."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Execution"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/payments:
     get:
       tags: [History]
@@ -3174,6 +3314,13 @@ components:
             - mandate_unknown
             - checkout_mismatch
             - checkout_not_cancelable
+            - grant_invalid
+            - grant_expired
+            - grant_revoked
+            - grant_redeemed
+            - grant_not_issuable
+            - redemption_mismatch
+            - mandate_not_active
         field:
           type: string
           description: For `validation_failed`, the request field at fault, when known.
@@ -4047,7 +4194,7 @@ components:
 
     Checkout:
       type: object
-      required: [id, external_id, mandate_id, status, decision, checkout, checkout_hash, created_at, decided_at, approval_expires_at, canceled_at]
+      required: [id, external_id, mandate_id, status, decision, checkout, checkout_hash, created_at, decided_at, approval_expires_at, canceled_at, authorization]
       properties:
         id:
           type: string
@@ -4057,8 +4204,11 @@ components:
           type: string
         status:
           type: string
-          enum: [authorized, awaiting_customer_approval, denied, rejected, canceled, expired]
-          description: "`expired`: awaited the customer past `approval_expires_at`."
+          enum: [authorized, awaiting_customer_approval, denied, rejected, canceled, expired, redeemed, revoked]
+          description: |
+            `expired`: awaited the customer past `approval_expires_at`, or its
+            grant went unredeemed past `authorization.expires_at`. `redeemed`:
+            its grant was redeemed. `revoked`: its mandate was revoked before.
         decision:
           type: object
           required: [allowed, reasons]
@@ -4129,6 +4279,87 @@ components:
           format: date-time
         canceled_at:
           type: [string, "null"]
+          format: date-time
+        authorization:
+          description: Once authorized.
+          oneOf:
+            - $ref: "#/components/schemas/Authorization"
+            - type: "null"
+
+    Authorization:
+      type: object
+      required: [id, status, grant, grant_issued_at, created_at, expires_at, redeemed_at, revoked_at, execution_id]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [active, redeemed, expired, revoked]
+        grant:
+          type: [string, "null"]
+          description: The grant's secret - only in the response that issued it.
+        grant_issued_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: 15 minutes after the checkout was authorized.
+        redeemed_at:
+          type: [string, "null"]
+          format: date-time
+        revoked_at:
+          type: [string, "null"]
+          format: date-time
+        execution_id:
+          type: [string, "null"]
+
+    Execution:
+      type: object
+      description: The one payment a redeemed grant permits.
+      required: [id, authorization_id, checkout_id, external_checkout_id, checkout_hash, mandate_id, amount_minor, currency, funding_method, status, created_at]
+      properties:
+        id:
+          type: string
+        authorization_id:
+          type: string
+        checkout_id:
+          type: string
+        external_checkout_id:
+          type: string
+        checkout_hash:
+          type: string
+        mandate_id:
+          type: string
+        amount_minor:
+          type: integer
+        currency:
+          type: string
+        funding_method:
+          type: object
+          required: [id, provider, merchant_funding_method_id, provider_method_reference, brand, last_four]
+          properties:
+            id:
+              type: string
+            provider:
+              type: string
+            merchant_funding_method_id:
+              type: [string, "null"]
+            provider_method_reference:
+              type: [string, "null"]
+            brand:
+              type: string
+            last_four:
+              type: [string, "null"]
+        status:
+          type: string
+          enum: [pending]
+          description: Reporting the payment's outcome comes next.
+        created_at:
+          type: string
           format: date-time
 
     ConsentView:
@@ -4230,7 +4461,7 @@ components:
               properties:
                 type:
                   type: string
-                  enum: [user, agent, invitation, payee, merchant_integration, commerce_customer, commerce_agent, commerce_funding_method, commerce_mandate_request, commerce_mandate, commerce_checkout]
+                  enum: [user, agent, invitation, payee, merchant_integration, commerce_customer, commerce_agent, commerce_funding_method, commerce_mandate_request, commerce_mandate, commerce_checkout, commerce_authorization]
                 id:
                   type: string
             - type: "null"

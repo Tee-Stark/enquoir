@@ -49,17 +49,18 @@ type decisionDTO struct {
 }
 
 type checkoutDTO struct {
-	ID                string           `json:"id"`
-	ExternalID        string           `json:"external_id"`
-	MandateID         string           `json:"mandate_id"`
-	Status            string           `json:"status"`
-	Decision          decisionDTO      `json:"decision"`
-	Checkout          checkoutLinesDTO `json:"checkout"`
-	Hash              string           `json:"checkout_hash"`
-	CreatedAt         time.Time        `json:"created_at"`
-	DecidedAt         *time.Time       `json:"decided_at"`
-	ApprovalExpiresAt *time.Time       `json:"approval_expires_at"`
-	CanceledAt        *time.Time       `json:"canceled_at"`
+	ID                string            `json:"id"`
+	ExternalID        string            `json:"external_id"`
+	MandateID         string            `json:"mandate_id"`
+	Status            string            `json:"status"`
+	Decision          decisionDTO       `json:"decision"`
+	Checkout          checkoutLinesDTO  `json:"checkout"`
+	Hash              string            `json:"checkout_hash"`
+	CreatedAt         time.Time         `json:"created_at"`
+	DecidedAt         *time.Time        `json:"decided_at"`
+	ApprovalExpiresAt *time.Time        `json:"approval_expires_at"`
+	CanceledAt        *time.Time        `json:"canceled_at"`
+	Authorization     *authorizationDTO `json:"authorization"`
 }
 
 func newCheckoutDTO(v commerceapp.CheckoutView) checkoutDTO {
@@ -79,9 +80,10 @@ func newCheckoutDTO(v commerceapp.CheckoutView) checkoutDTO {
 			Currency: string(s.Currency), Items: items, ShippingMinor: s.ShippingMinor, TaxMinor: s.TaxMinor, FeesMinor: s.FeesMinor, TotalMinor: s.TotalMinor},
 		Hash: s.Hash(), CreatedAt: v.CreatedAt.UTC(), DecidedAt: utcPtr(v.DecidedAt), CanceledAt: utcPtr(v.CanceledAt),
 	}
-	if v.Status == commerce.CheckoutAwaitingApproval || v.Status == commerce.CheckoutExpired {
+	if v.ApprovalExpiresAt != nil && (v.Status == commerce.CheckoutAwaitingApproval || (v.Status == commerce.CheckoutExpired && v.Authorization == nil)) {
 		d.ApprovalExpiresAt = utcPtr(v.ApprovalExpiresAt)
 	}
+	d.Authorization = newAuthorizationDTO(v.Authorization, v.AuthorizationStatus, v.Grant)
 	return d
 }
 

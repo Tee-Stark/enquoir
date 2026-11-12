@@ -99,11 +99,17 @@ type CheckoutCommand struct {
 type CheckoutView struct {
 	commerce.Checkout
 	Grant string
+	// AuthorizationStatus is the authorization's status now, if any.
+	AuthorizationStatus commerce.AuthorizationStatus
 }
 
 func checkoutView(c commerce.Checkout, now time.Time) CheckoutView {
-	c.Status = c.StatusAt(now)
-	return CheckoutView{Checkout: c}
+	v := CheckoutView{Checkout: c}
+	v.Status = c.StatusAt(now)
+	if c.Authorization != nil {
+		v.AuthorizationStatus = c.Authorization.StatusAt(now)
+	}
+	return v
 }
 
 const grantPrefix = "enq_gr"

@@ -178,6 +178,7 @@ func main() {
 		Funding:   fundingUseCases(pool, ids, sysClock, audit),
 		Mandates:  mandateUseCases(pool, tokens, emails, ids, sysClock, audit),
 		Checkouts: checkoutUseCases(pool, tokens, emails, ids, secrets, sysClock, audit),
+		Grants:    grantUseCases(pool, ids, secrets, sysClock, audit),
 	}
 
 	srv := httpapi.NewServer(httpAddr, httpapi.NewRouter(handler))
@@ -329,5 +330,15 @@ func checkoutUseCases(pool *pgxpool.Pool, tokens app.TokenStore, emails *app.Ema
 		Cancel: &commerceapp.CancelCheckout{Checkouts: store, Clock: clock, Audit: audit},
 		View:   &commerceapp.ViewCheckoutApproval{Tokens: tokens, Checkouts: store, Clock: clock},
 		Decide: &commerceapp.DecideCheckoutApproval{Tokens: tokens, Checkouts: store, IDs: ids, Clock: clock, Audit: audit},
+	}
+}
+
+// grantUseCases wires issuing and redeeming grants on /v1/commerce.
+func grantUseCases(pool *pgxpool.Pool, ids app.IDGenerator, secrets app.SecretGenerator, clock app.Clock, audit *app.Audit) httpapi.GrantUseCases {
+	store := postgres.NewCommerceCheckoutStore(pool)
+	return httpapi.GrantUseCases{
+		Issue:  &commerceapp.IssueGrant{Checkouts: store, Secrets: secrets, Clock: clock, Audit: audit},
+		Redeem: &commerceapp.RedeemGrant{Checkouts: store, IDs: ids, Clock: clock, Audit: audit},
+		Get:    &commerceapp.GetExecution{Checkouts: store},
 	}
 }

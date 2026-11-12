@@ -49,6 +49,13 @@ const (
 	codeMandateUnknown       = "mandate_unknown"
 	codeCheckoutMismatch     = "checkout_mismatch"
 	codeNotCancelable        = "checkout_not_cancelable"
+	codeGrantInvalid         = "grant_invalid"
+	codeGrantExpired         = "grant_expired"
+	codeGrantRevoked         = "grant_revoked"
+	codeGrantRedeemed        = "grant_redeemed"
+	codeGrantNotIssuable     = "grant_not_issuable"
+	codeRedemptionMismatch   = "redemption_mismatch"
+	codeMandateNotActive     = "mandate_not_active"
 )
 
 // problem is an RFC 9457 problem details object, with a code extension.
@@ -127,6 +134,20 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 		writeProblem(w, http.StatusUnprocessableEntity, codeFundingUnknown, err.Error())
 	case errors.Is(err, commerceapp.ErrFundingMethodDisabled):
 		writeProblem(w, http.StatusUnprocessableEntity, codeFundingDisabled, "the funding method is disabled; enable it first")
+	case errors.Is(err, commerceapp.ErrGrantInvalid):
+		writeProblem(w, http.StatusUnprocessableEntity, codeGrantInvalid, err.Error())
+	case errors.Is(err, commerce.ErrGrantExpired):
+		writeProblem(w, http.StatusUnprocessableEntity, codeGrantExpired, err.Error()+"; submit the checkout again under a new external ID")
+	case errors.Is(err, commerce.ErrGrantRevoked):
+		writeProblem(w, http.StatusUnprocessableEntity, codeGrantRevoked, err.Error())
+	case errors.Is(err, commerceapp.ErrMandateNotActive):
+		writeProblem(w, http.StatusUnprocessableEntity, codeMandateNotActive, err.Error())
+	case errors.Is(err, commerce.ErrGrantRedeemed):
+		writeProblem(w, http.StatusConflict, codeGrantRedeemed, err.Error())
+	case errors.Is(err, commerceapp.ErrGrantNotIssuable):
+		writeProblem(w, http.StatusConflict, codeGrantNotIssuable, err.Error())
+	case errors.Is(err, commerce.ErrRedemptionMismatch):
+		writeProblem(w, http.StatusConflict, codeRedemptionMismatch, err.Error())
 	case errors.Is(err, commerceapp.ErrMandateUnknown):
 		writeProblem(w, http.StatusUnprocessableEntity, codeMandateUnknown, err.Error())
 	case errors.Is(err, commerceapp.ErrCheckoutMismatch):

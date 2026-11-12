@@ -68,6 +68,7 @@ type Handler struct {
 	Funding   FundingUseCases
 	Mandates  MandateUseCases
 	Checkouts CheckoutUseCases
+	Grants    GrantUseCases
 }
 
 func NewRouter(h *Handler) chi.Router {
@@ -113,6 +114,9 @@ func NewRouter(h *Handler) chi.Router {
 		r.Post("/checkouts", h.submitCheckout)
 		r.Get("/checkouts/{id}", h.getCheckout)
 		r.Post("/checkouts/{id}/cancel", h.cancelCheckout)
+		r.Post("/checkouts/{id}/grant", h.issueGrant)
+		r.Post("/grants/redeem", h.redeemGrant)
+		r.Get("/executions/{id}", h.getExecution)
 	})
 	// The customer's consent page, with the link Enquoir emailed them:
 	// the token is the only credential, and no merchant ever holds it.
