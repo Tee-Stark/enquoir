@@ -1256,3 +1256,35 @@ Branch `feat/commerce-mandates`, stacked on `feat/commerce-funding-methods`
 - Mandates are not yet used: no checkout is evaluated against one
   (phase 4), and no budget is reserved (phase 5).
 - The merchant URL plus emailed code consent flow (later UX improvement).
+
+### Changes after review (2026-11-12)
+
+- **`docs/demo-brief.md` is no longer tracked** (`7bd9ce9`); it was
+  committed by mistake in `6d3b063`. The local copy stays.
+- **Bindings by the PSP's own ID** (`c24ca91`, at the user's request):
+  `provider_method_reference` (Stripe's `pm_...`, Adyen's
+  `storedPaymentMethodId`), instead of or as well as the merchant's own
+  reference, so a merchant needn't mint one. Either resolves the binding;
+  each is unique per merchant (the PSP's per provider); at least one is
+  required (migration 0018). A repeat may name either reference; adding
+  or changing one is a 409, as are references of two different bindings.
+  AGENTS.md's no-card-data rule now says a PSP reference is accepted: it
+  charges nothing without the merchant's PSP secret key. Adyen's IDs are
+  16-digit numbers, so the 12-digit guard can't apply to it; instead a
+  whole 13-19-digit run with a valid Luhn checksum is refused. Card
+  numbers always pass Luhn; about one random 16-digit token in ten does
+  too, and such a token would be refused (the merchant can bind it by its
+  own reference instead). The phase 2 test that expected the field to be
+  refused encoded the old rule; replaced by an undocumented
+  `psp_secret_key` field.
+- **Revocation waits for the customer** (the user's call, reversing the
+  deviation recorded above). `POST .../revoke` answers 202: the mandate
+  reads `revocation_pending` and grants nothing; Enquoir emails the
+  customer a one-time link (1 hour) to `APP_BASE_URL/consent/revoke`;
+  `POST /v1/consent/revocation/view|confirm` serve that page, and
+  confirming revokes the mandate and spends the link in one transaction.
+  Unconfirmed, the request lapses and the mandate is active again
+  (migration 0019). A mutation the use-case tests missed - the store
+  revoking without a pending revocation - is now caught by a store test.
+- Verified: `make test`, `make test-integration`, and `make e2e-commerce`
+  live (a binding by `pm_...`; ask, email, confirm, revoked).
