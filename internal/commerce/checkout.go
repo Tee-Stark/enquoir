@@ -286,15 +286,20 @@ const (
 	CheckoutRejected         CheckoutStatus = "rejected"
 	CheckoutCanceled         CheckoutStatus = "canceled"
 	CheckoutExpired          CheckoutStatus = "expired"
+	// CheckoutRedeemed: its grant was redeemed; the merchant may charge.
+	CheckoutRedeemed CheckoutStatus = "redeemed"
+	// CheckoutRevoked: authorized, then its mandate was revoked first.
+	CheckoutRevoked CheckoutStatus = "revoked"
 )
 
 // CheckoutApprovalTTL is how long a customer has to approve a checkout
 // under a per-transaction mandate.
 const CheckoutApprovalTTL = time.Hour
 
-// ErrCheckoutNotCancelable means the checkout was not authorized or
-// awaiting approval, so there is nothing to cancel.
-var ErrCheckoutNotCancelable = errors.New("only an authorized checkout, or one awaiting the customer, can be cancelled")
+// ErrCheckoutNotCancelable means the checkout is not authorized (with
+// an unredeemed, unexpired grant) or awaiting approval: nothing to
+// cancel. A redeemed checkout can't be cancelled.
+var ErrCheckoutNotCancelable = errors.New("only an authorized checkout whose grant is unredeemed, or one awaiting the customer, can be cancelled")
 
 // Checkout is a submitted checkout and Enquoir's decision on it.
 type Checkout struct {
@@ -306,13 +311,29 @@ type Checkout struct {
 	DecidedAt         *time.Time
 	ApprovalExpiresAt *time.Time
 	CanceledAt        *time.Time
+	// Authorization is set once the checkout is authorized.
+	Authorization *Authorization
 }
 
-// StatusAt is the status at now: awaiting approval past its expiry is
-// expired.
+// StatusAt is the status at now: awaiting approval past its expiry, or
+// authorized with its grant unredeemed past its expiry, is expired.
 func (c Checkout) StatusAt(now time.Time) CheckoutStatus {
 	if c.Status == CheckoutAwaitingApproval && c.ApprovalExpiresAt != nil && !now.Before(*c.ApprovalExpiresAt) {
 		return CheckoutExpired
 	}
+	if c.Status == CheckoutAuthorized && c.Authorization != nil && !now.Before(c.Authorization.ExpiresAt) {
+		return CheckoutExpired
+	}
 	return c.Status
+}
+
+// CountsAt reports whether the checkout counts against its mandate at
+// now: once redeemed, for good; while authorized, until its grant
+// expires.
+func (c Checkout) CountsAt(now time.Time) bool {
+	switch c.StatusAt(now) {
+	case CheckoutRedeemed, CheckoutAuthorized:
+		return true
+	}
+	return false
 }
