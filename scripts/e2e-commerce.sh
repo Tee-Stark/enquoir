@@ -251,6 +251,75 @@ got
 expect_status 200
 check '[ "$(json .status)" = revoked ]' "revoked once the customer confirmed"
 
+step "5d. Checkouts: evaluated against the mandate, decided under its lock"
+# fresh_token EMAIL PATH OLD: the newest PATH link emailed to EMAIL, once it differs from OLD.
+fresh_token() {
+	local t=""
+	for _ in $(seq 1 "$WAIT_SECONDS"); do
+		t=$(token_for "$1" "$2") || true
+		[ -n "$t" ] && [ "$t" != "$3" ] && { echo "$t"; return; }
+		sleep 1
+	done
+	return 1
+}
+approved_mandate() { # EXTERNAL_ID MODE: leaves the mandate's ID in $NEW_MANDATE
+	local last
+	last=$(token_for "$SHOPPER" /consent) || true
+	with_key "$KEY_A" POST /v1/commerce/mandate-requests "$(mandate_request "$1" | sed "s/\"autonomous\"/\"$2\"/")"
+	expect_status 201
+	local hash token
+	hash=$(json .terms.terms_hash)
+	token=$(fresh_token "$SHOPPER" /consent "$last") || fail "no consent email for $1"
+	req POST /v1/consent/approve "{\"token\":\"$token\",\"terms_hash\":\"$hash\"}"
+	expect_status 200
+	NEW_MANDATE=$(json .mandate.id)
+}
+checkout() { # EXTERNAL_ID MANDATE CURRENCY UNIT_PRICE CATEGORY
+	echo "{\"external_id\":\"$1\",\"mandate_id\":\"$2\",\"customer_id\":\"$SHOPPER_ID\",\"agent_id\":\"$AGENT\",\"funding_method_id\":\"$SHOPPER_CARD\",\"checkout\":{\"currency\":\"$3\",\"items\":[{\"product_id\":\"laptop_001\",\"name\":\"Lenovo ThinkPad\",\"category\":\"$5\",\"quantity\":1,\"unit_price_minor\":$4}],\"shipping_minor\":500,\"tax_minor\":0,\"fees_minor\":0,\"total_minor\":$(($4 + 500))}}"
+}
+approved_mandate mreq_auto autonomous
+AUTO=$NEW_MANDATE
+show "curl -s -H 'Authorization: Bearer $(redact "$KEY_A")' -X POST $API/v1/commerce/checkouts -d '$(checkout chk_1 "$AUTO" USD 130000 electronics)'"
+with_key "$KEY_A" POST /v1/commerce/checkouts "$(checkout chk_1 "$AUTO" USD 130000 electronics)"
+got
+expect_status 201
+CHK_1=$(json .id)
+check '[ "$(json .status)" = authorized ] && [ "$(json .decision.allowed)" = true ]' "within the mandate: authorized at once"
+with_key "$KEY_A" POST /v1/commerce/checkouts "$(checkout chk_1 "$AUTO" USD 130000 electronics)"
+expect_status 200
+with_key "$KEY_A" POST /v1/commerce/checkouts "$(checkout chk_2 "$AUTO" EUR 160000 books)"
+got
+expect_status 201
+check '[ "$(json "[.decision.reasons[].code] | join(\",\")")" = "currency_mismatch,over_transaction_limit,category_not_allowed" ]' "outside it: denied, with every reason"
+with_key "$KEY_A" POST /v1/commerce/checkouts "$(checkout chk_3 "$AUTO" USD 149500 electronics)"
+check '[ "$(json .status)" = authorized ]' "a second purchase: 2,805 of the 3,000 now authorized"
+with_key "$KEY_A" POST /v1/commerce/checkouts "$(checkout chk_3b "$AUTO" USD 149500 electronics)"
+check '[ "$(json .status)" = denied ] && [ "$(json ".decision.reasons[0].code")" = over_budget ]' "authorized checkouts count: the third is over budget"
+with_key "$KEY_A" POST "/v1/commerce/checkouts/$CHK_1/cancel" ""
+expect_status 200
+with_key "$KEY_A" POST /v1/commerce/checkouts "$(checkout chk_4 "$AUTO" USD 149500 electronics)"
+check '[ "$(json .status)" = authorized ]' "cancelling released it"
+with_key "$KEY_A" POST /v1/commerce/checkouts "$(checkout chk_5 "$AUTO" USD 1000 electronics | sed 's/"quantity":1,/"quantity":1,"agent_price":1,/')"
+expect_status 400
+check '[ "$(json .field)" = agent_price ]' "a price the agent asserts is refused"
+
+approved_mandate mreq_per per_transaction
+PER=$NEW_MANDATE
+LAST=$(token_for "$SHOPPER" /consent/checkout) || true
+with_key "$KEY_A" POST /v1/commerce/checkouts "$(checkout chk_6 "$PER" USD 100000 electronics)"
+got
+expect_status 201
+check '[ "$(json .status)" = awaiting_customer_approval ] && [ "$(json .decision.allowed)" = false ]' "per transaction: awaits the customer"
+CHK_HASH=$(json .checkout_hash)
+CHK_TOKEN=$(fresh_token "$SHOPPER" /consent/checkout "$LAST") || fail "no checkout approval email reached the customer"
+pass "the approval link reached the customer's inbox"
+req POST /v1/consent/checkout/view "{\"token\":\"$CHK_TOKEN\"}"
+check '[ "$(json .checkout_hash)" = "$CHK_HASH" ]' "the page shows that exact checkout"
+req POST /v1/consent/checkout/approve "{\"token\":\"$CHK_TOKEN\",\"checkout_hash\":\"$CHK_HASH\"}"
+got
+expect_status 200
+check '[ "$(json .status)" = authorized ]' "approved by the customer: authorized"
+
 step "6. Only a merchant key opens commerce, and it opens nothing else"
 req POST /v1/agents '{"name":"treasury bot"}' -b "$JAR_A"
 expect_status 201
@@ -288,6 +357,10 @@ with_key "$KEY_B" GET "/v1/commerce/mandates/$MANDATE" ""
 expect_status 404
 with_key "$KEY_B" GET "/v1/commerce/mandate-requests/$REQUEST" ""
 expect_status 404
+with_key "$KEY_B" GET "/v1/commerce/checkouts/$CHK_1" ""
+expect_status 404
+with_key "$KEY_B" POST /v1/commerce/checkouts "$(checkout chk_steal "$AUTO" USD 1000 electronics)"
+expect_status 422
 with_key "$KEY_B" GET "/v1/commerce/customers/$CUSTOMER/funding-methods" ""
 expect_status 404
 with_key "$KEY_B" POST /v1/commerce/funding-methods "{\"customer_id\":\"$CUSTOMER\",\"provider\":\"stripe\",\"merchant_funding_method_id\":\"mfm_steal\",\"display\":{\"brand\":\"visa\"}}"
@@ -333,7 +406,8 @@ req GET "/v1/audit-log" "" -b "$JAR_A"
 for action in merchant_integration.created merchant_integration.disabled merchant_integration.enabled \
 	merchant_integration.key_rotated merchant_integration.key_revoked commerce.agent.registered \
 	commerce.funding_method.registered commerce.mandate.requested commerce.mandate.approved \
-	commerce.mandate.rejected commerce.mandate.revoked; do
+	commerce.mandate.rejected commerce.mandate.revoked commerce.checkout.authorized commerce.checkout.denied \
+	commerce.checkout.awaiting_approval commerce.checkout.approved commerce.checkout.canceled; do
 	check "grep -qF '\"$action\"' <<<\"\$BODY\"" "recorded: $action"
 done
 
