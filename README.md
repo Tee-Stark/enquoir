@@ -173,9 +173,9 @@ The second bounded context: a merchant's AI shopping agent proposes
 purchases funded by the merchant's customers, and Enquoir decides
 whether the customer's authority allows each one. The merchant charges
 through its own payment provider; Enquoir never holds customer funds,
-card data or PSP secrets. Phases 1 to 3 of 8 are built: merchant
-integration and identity, funding-method bindings, and consent and
-mandates.
+card data or PSP secrets. Phases 1 to 4 of 8 are built: merchant
+integration and identity, funding-method bindings, consent and mandates,
+and checkout evaluation.
 
 An owner or admin connects a merchant from the dashboard and gets its
 integration key (`enq_mk_...`, shown once). The merchant's backend uses
@@ -217,6 +217,14 @@ curl -H "Authorization: Bearer $MERCHANT_KEY" -X POST localhost:8090/v1/commerce
        "approval_mode":"autonomous","scope":{"currency":"USD","max_transaction_minor":150000,
        "max_cumulative_minor":300000},"expires_at":"2026-12-11T09:00:00Z"}'
 ```
+
+The merchant's server then submits each checkout the agent proposes,
+priced by the merchant: Enquoir checks it against the mandate - status,
+customer, agent, card, currency, per-purchase and total limits, count,
+categories - under a lock on the mandate, and answers `authorized`,
+`denied` with every reason, or, under a per-transaction mandate,
+`awaiting_customer_approval` while the customer approves that exact
+checkout from an emailed link.
 
 The merchant always comes from the key, never from the request; another
 merchant's records (another storefront's too) are not found. An agent

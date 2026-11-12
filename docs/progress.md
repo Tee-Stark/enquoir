@@ -1288,3 +1288,87 @@ Branch `feat/commerce-mandates`, stacked on `feat/commerce-funding-methods`
   revoking without a pending revocation - is now caught by a store test.
 - Verified: `make test`, `make test-integration`, and `make e2e-commerce`
   live (a binding by `pm_...`; ask, email, confirm, revoked).
+
+## Commerce Phase 4: checkout evaluation - done (2026-11-12)
+
+Branch `feat/commerce-checkouts`, stacked on `feat/commerce-mandates`
+(PR #14). Tag `commerce-phase-4`.
+
+### What exists
+
+- **Domain** (`internal/commerce/checkout.go`): `CheckoutSnapshot` - the
+  merchant server's priced purchase under a mandate (customer, agent,
+  card, currency, items with product, name, category, quantity and unit
+  price, shipping, tax, fees, total; integer minor units, each at most 10
+  billion major units). The total must equal the items plus shipping, tax
+  and fees, and be positive. A canonical snapshot (`checkout/v1`, items
+  in the merchant's order) and its `sha256:` hash bind every field.
+  `EvaluateCheckout` returns every failing reason: `mandate_not_active`,
+  `customer_mismatch`, `agent_mismatch`, `funding_method_mismatch`,
+  `currency_mismatch`, `over_transaction_limit`, `category_not_allowed`,
+  `over_transaction_count`, `over_budget`.
+- **Use cases**: `SubmitCheckout`, `GetCheckout`, `CancelCheckout`,
+  `ViewCheckoutApproval`, `DecideCheckoutApproval`.
+- **Email**: `checkout_approval` (items, total, card), link purpose
+  `checkout_approval`, page `APP_BASE_URL/consent/checkout`.
+- **Postgres** (migration 0020): `commerce_checkouts`.
+- **HTTP**: merchant key - `POST /v1/commerce/checkouts`, `GET .../{id}`,
+  `POST .../{id}/cancel`; public - `POST /v1/consent/checkout/view|
+  approve|reject`. OpenAPI 0.8.0.
+
+### Design choices
+
+- **Statuses**: `authorized`, `denied` (with every reason), or
+  `awaiting_customer_approval` under a per-transaction mandate - then
+  `authorized` (or `denied` on the recheck) when the customer approves,
+  `rejected`, or `expired` after the hour. The merchant may `cancel` an
+  authorized or awaiting checkout.
+- **One decision rule**, in the domain; the stores call it through a
+  callback while holding the mandate's lock, for a submission and a
+  customer's approval alike.
+- **Budget**: authorized checkouts count at once against the mandate's
+  total and purchase count (the design document's "reservation"); a
+  cancelled one stops counting. An awaiting checkout reserves nothing;
+  limits are checked again when the customer approves. Decisions take a
+  row lock on the mandate (`SELECT ... FOR UPDATE`): 12 concurrent
+  checkouts of 50 under a 200 budget authorize exactly 4; with the lock
+  removed, 11 (550 spent), on every run.
+- **The merchant's mandate, or nothing.** A checkout naming a mandate that
+  isn't the merchant's is `422 mandate_unknown` and is not stored; every
+  other failure is a recorded `denied` checkout, so the merchant (and
+  later the dashboard) can see why. Customer, agent and card mismatches
+  are denial reasons, not errors.
+- **Strict body**: a checkout with any undocumented field - card data, a
+  price an agent asserts - is a 400 naming the field.
+- **One external ID per merchant**; a changed checkout under it is a 409.
+- **What counts is not yet tied to payment.** An authorized checkout
+  counts until cancelled even if never charged. Phase 5's grants will
+  give it an expiry, and phases 6 and 7 settle it against the payment's
+  outcome (the design document's consumed / released reservation
+  states).
+
+### Verified
+
+- `make test` and `make test-integration` at every commit.
+- Mutation checks caught: usage ignored (the budget never fills); the
+  customer's approval not rechecked; the approval hash unchecked; no
+  conflict check; per-transaction ignored; count and budget each off by
+  one; strict decoding off (an `agent_price` field accepted); the row
+  lock removed (above). One slipped through at first - prices left out
+  of the hash - because the test changed prices together with something
+  else that is hashed; a prices-only case was added, then a second fix
+  when the first replacement case also moved shipping.
+- Live, `make e2e-commerce` on this branch's API and worker: authorized
+  at once; denied with every reason; a third purchase over budget;
+  cancelling released it; an agent-asserted price refused; a
+  per-transaction checkout approved from the link Resend delivered.
+  Twice, my own expected amounts in the script were wrong, not the
+  server: each time Enquoir's arithmetic was checked by hand and the
+  script corrected.
+
+### Not verified / open
+
+- No list of checkouts (per mandate or customer), and no mandate usage
+  (spent, purchases left) in the API yet: both wanted for the dashboard.
+- No grant is issued for an authorized checkout (phase 5), and nothing
+  expires an authorized checkout that is never charged.

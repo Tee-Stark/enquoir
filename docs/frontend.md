@@ -143,6 +143,19 @@ mandate with `POST /v1/consent/revocation/view` (`{"token"}`), shows what
 is being revoked, and confirms with `POST /v1/consent/revocation/confirm`.
 Same errors as above; unconfirmed, the request lapses after an hour.
 
+### Approving one purchase
+
+Under a per-transaction mandate, each checkout's link goes to
+`APP_BASE_URL/consent/checkout?token=...`. Read it with
+`POST /v1/consent/checkout/view` (`{"token"}`): show the merchant's items
+(`checkout.items`, amounts in minor units of `checkout.currency`),
+shipping, tax, fees and `total_minor`. Approve with
+`POST /v1/consent/checkout/approve` (`{"token", "checkout_hash"}`, the
+hash from the view) or reject with `POST /v1/consent/checkout/reject`.
+An approval can come back `denied` if the mandate no longer allows it
+(spent meanwhile, or paused): show `decision.reasons[].detail`.
+`409 checkout_mismatch`: reload and show it again.
+
 ## Limits
 
 When a limit is hit, the answer is `429`, with `Retry-After` in seconds:
