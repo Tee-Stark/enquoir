@@ -261,6 +261,13 @@ func (s *CommerceMandateStore) ConfirmRevocation(ctx context.Context, tokenHash 
 		if tag.RowsAffected() == 0 {
 			return app.ErrTokenInvalid
 		}
-		return nil
+		// The mandate's unredeemed grants go with it, in this transaction:
+		// the mandate row is already locked by the update above.
+		if _, err := tx.Exec(ctx, `UPDATE commerce_authorizations SET revoked_at = $2
+			WHERE mandate_id = $1 AND redeemed_at IS NULL AND revoked_at IS NULL`, string(id), at); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE commerce_checkouts SET status = 'revoked' WHERE mandate_id = $1 AND status = 'authorized'`, string(id))
+		return err
 	})
 }

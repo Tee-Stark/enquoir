@@ -177,7 +177,7 @@ func main() {
 		Commerce:  commerceUseCases(pool, ids, secrets, sysClock, cache, audit),
 		Funding:   fundingUseCases(pool, ids, sysClock, audit),
 		Mandates:  mandateUseCases(pool, tokens, emails, ids, sysClock, audit),
-		Checkouts: checkoutUseCases(pool, tokens, emails, ids, sysClock, audit),
+		Checkouts: checkoutUseCases(pool, tokens, emails, ids, secrets, sysClock, audit),
 	}
 
 	srv := httpapi.NewServer(httpAddr, httpapi.NewRouter(handler))
@@ -321,13 +321,13 @@ func mandateUseCases(pool *pgxpool.Pool, tokens app.TokenStore, emails *app.Emai
 
 // checkoutUseCases wires checkout evaluation on /v1/commerce and the
 // customer's checkout approval page.
-func checkoutUseCases(pool *pgxpool.Pool, tokens app.TokenStore, emails *app.Emails, ids app.IDGenerator, clock app.Clock, audit *app.Audit) httpapi.CheckoutUseCases {
+func checkoutUseCases(pool *pgxpool.Pool, tokens app.TokenStore, emails *app.Emails, ids app.IDGenerator, secrets app.SecretGenerator, clock app.Clock, audit *app.Audit) httpapi.CheckoutUseCases {
 	store := postgres.NewCommerceCheckoutStore(pool)
 	return httpapi.CheckoutUseCases{
-		Submit: &commerceapp.SubmitCheckout{Checkouts: store, Customers: postgres.NewCommerceCustomerStore(pool), Emails: emails, IDs: ids, Clock: clock, Audit: audit},
+		Submit: &commerceapp.SubmitCheckout{Checkouts: store, Customers: postgres.NewCommerceCustomerStore(pool), Emails: emails, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
 		Get:    &commerceapp.GetCheckout{Checkouts: store, Clock: clock},
 		Cancel: &commerceapp.CancelCheckout{Checkouts: store, Clock: clock, Audit: audit},
 		View:   &commerceapp.ViewCheckoutApproval{Tokens: tokens, Checkouts: store, Clock: clock},
-		Decide: &commerceapp.DecideCheckoutApproval{Tokens: tokens, Checkouts: store, Clock: clock, Audit: audit},
+		Decide: &commerceapp.DecideCheckoutApproval{Tokens: tokens, Checkouts: store, IDs: ids, Clock: clock, Audit: audit},
 	}
 }

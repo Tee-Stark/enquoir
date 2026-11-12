@@ -135,11 +135,11 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	}
 	checkouts := commercetest.NewCheckouts(mandates, tokens)
 	h.Checkouts = CheckoutUseCases{
-		Submit: &commerceapp.SubmitCheckout{Checkouts: checkouts, Customers: customers, Emails: emails, IDs: ids, Clock: clock, Audit: audit},
+		Submit: &commerceapp.SubmitCheckout{Checkouts: checkouts, Customers: customers, Emails: emails, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
 		Get:    &commerceapp.GetCheckout{Checkouts: checkouts, Clock: clock},
 		Cancel: &commerceapp.CancelCheckout{Checkouts: checkouts, Clock: clock, Audit: audit},
 		View:   &commerceapp.ViewCheckoutApproval{Tokens: tokens, Checkouts: checkouts, Clock: clock},
-		Decide: &commerceapp.DecideCheckoutApproval{Tokens: tokens, Checkouts: checkouts, Clock: clock, Audit: audit},
+		Decide: &commerceapp.DecideCheckoutApproval{Tokens: tokens, Checkouts: checkouts, IDs: ids, Clock: clock, Audit: audit},
 	}
 	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments, accounts: accounts, mailer: mailer}
 }

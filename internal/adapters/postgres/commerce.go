@@ -393,6 +393,13 @@ func NewCommerceFundingMethodStore(pool *pgxpool.Pool) *CommerceFundingMethodSto
 const fundingColumns = `id, merchant_id, org_id, customer_id, COALESCE(merchant_funding_method_id, ''),
 	COALESCE(provider_method_reference, ''), provider, display_brand, COALESCE(display_last_four, ''), status, created_at, disabled_at`
 
+// fundingColumnsAs is fundingColumns for the table aliased t.
+func fundingColumnsAs(t string) string {
+	return t + `.id, ` + t + `.merchant_id, ` + t + `.org_id, ` + t + `.customer_id, COALESCE(` + t + `.merchant_funding_method_id, ''),
+	COALESCE(` + t + `.provider_method_reference, ''), ` + t + `.provider, ` + t + `.display_brand, COALESCE(` + t + `.display_last_four, ''), ` +
+		t + `.status, ` + t + `.created_at, ` + t + `.disabled_at`
+}
+
 func scanFundingMethod(row pgx.Row) (commerce.FundingMethod, error) {
 	var f commerce.FundingMethod
 	var id, merchant, org, customer, ref, pref, provider, status string

@@ -33,9 +33,9 @@ func newCheckoutWorld(t *testing.T) *checkoutWorld {
 	store := NewCommerceCheckoutStore(pool)
 	return &checkoutWorld{
 		mandateWorld: w, store: store,
-		submit: &commerceapp.SubmitCheckout{Checkouts: store, Customers: NewCommerceCustomerStore(pool), Emails: w.request.Emails, IDs: ids, Clock: clock, Audit: audit},
+		submit: &commerceapp.SubmitCheckout{Checkouts: store, Customers: NewCommerceCustomerStore(pool), Emails: w.request.Emails, IDs: ids, Secrets: credentials.RandomSecrets{}, Clock: clock, Audit: audit},
 		cancel: &commerceapp.CancelCheckout{Checkouts: store, Clock: clock, Audit: audit},
-		decide: &commerceapp.DecideCheckoutApproval{Tokens: NewTokenStore(pool), Checkouts: store, Clock: clock, Audit: audit},
+		decide: &commerceapp.DecideCheckoutApproval{Tokens: NewTokenStore(pool), Checkouts: store, IDs: ids, Clock: clock, Audit: audit},
 	}
 }
 
