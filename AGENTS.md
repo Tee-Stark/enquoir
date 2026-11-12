@@ -211,7 +211,33 @@ each one you depend on, and record differences in docs/rail-notes.md.
   FAILED. Read failure_type and failure_reason.
 - Limits: 20 requests per second overall, 10 per endpoint, 10 concurrent.
 
-## Commerce Phase 3: consent and mandates (current)
+## Commerce Phase 4: checkout evaluation (current)
+
+Done when Enquoir can evaluate a purchase against a mandate.
+
+- The merchant's backend (never the agent) submits a checkout under a
+  mandate: its external ID, the customer, agent and funding method,
+  currency, items (product, name, category, quantity, unit price),
+  shipping, tax, fees and total, in integer minor units. The total must
+  add up. The snapshot is frozen with a hash; one external ID per
+  merchant, a differing repeat is a conflict.
+- Evaluation against the mandate returns every failing reason: mandate
+  not active (revoked, expired, suspended, revocation pending), another
+  customer, agent or funding method, another currency, over the
+  per-purchase maximum, a category not allowed, over the purchase count,
+  over the total budget.
+- Autonomous mandate: authorized at once. Per-transaction: awaiting the
+  customer, who approves that exact checkout (by its hash) or rejects it
+  from an emailed one-time link (1 hour); limits are checked again when
+  they approve.
+- Authorized checkouts count against the mandate's budget and purchase
+  count at once, decided under a lock on the mandate, so concurrent
+  checkouts can't overspend it. The merchant may cancel an authorized or
+  awaiting checkout, which releases it. Grants, redemption and their
+  expiry are phase 5.
+- Audit events for every decision.
+
+## Commerce Phase 3: consent and mandates (done)
 
 Done when a customer can approve a mandate, and the merchant can inspect
 and revoke it.
