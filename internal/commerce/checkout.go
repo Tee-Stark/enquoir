@@ -214,12 +214,13 @@ type Denial struct {
 	Detail string     `json:"detail"`
 }
 
-// MandateUsage is what a mandate has already authorized: the number of
-// purchases and their total. Authorized checkouts count at once,
-// whether or not they are ever paid; a cancelled one stops counting.
+// MandateUsage is what counts against a mandate: the number of
+// purchases and their total, SpentMinor - paid, and held (authorized or
+// redeemed, not yet settled). PaidMinor is the paid part.
 type MandateUsage struct {
 	Purchases  int
 	SpentMinor int64
+	PaidMinor  int64
 }
 
 // EvaluateCheckout returns every reason c falls outside m, which has
@@ -290,6 +291,10 @@ const (
 	CheckoutRedeemed CheckoutStatus = "redeemed"
 	// CheckoutRevoked: authorized, then its mandate was revoked first.
 	CheckoutRevoked CheckoutStatus = "revoked"
+	// CheckoutPaid: its execution succeeded. Its amount stays spent.
+	CheckoutPaid CheckoutStatus = "paid"
+	// CheckoutPaymentFailed: its execution failed. Its amount is released.
+	CheckoutPaymentFailed CheckoutStatus = "payment_failed"
 )
 
 // CheckoutApprovalTTL is how long a customer has to approve a checkout
@@ -328,11 +333,12 @@ func (c Checkout) StatusAt(now time.Time) CheckoutStatus {
 }
 
 // CountsAt reports whether the checkout counts against its mandate at
-// now: once redeemed, for good; while authorized, until its grant
-// expires.
+// now: while authorized, until its grant expires; once redeemed, while
+// its payment is pending or unknown; once paid, for good. A failed
+// payment is released.
 func (c Checkout) CountsAt(now time.Time) bool {
 	switch c.StatusAt(now) {
-	case CheckoutRedeemed, CheckoutAuthorized:
+	case CheckoutRedeemed, CheckoutAuthorized, CheckoutPaid:
 		return true
 	}
 	return false

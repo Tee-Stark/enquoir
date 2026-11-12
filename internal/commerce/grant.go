@@ -106,36 +106,3 @@ func (a Authorization) CheckRedemption(now time.Time, externalID ExternalID, che
 	}
 	return nil
 }
-
-// ExecutionStatus is where the payment a redemption permits stands.
-// Phase 6 reports its outcome; until then it is pending.
-type ExecutionStatus string
-
-const ExecutionPending ExecutionStatus = "pending"
-
-// Execution is the one payment a redeemed grant permits: what to charge
-// and with which saved payment method. A grant has at most one.
-type Execution struct {
-	ID                 ExecutionID
-	AuthorizationID    AuthorizationID
-	CheckoutID         CheckoutID
-	ExternalCheckoutID ExternalID
-	CheckoutHash       string
-	MandateID          MandateID
-	OrgID              domain.OrgID
-	MerchantID         MerchantID
-	AmountMinor        int64
-	Currency           domain.Currency
-	FundingMethod      FundingMethod
-	Status             ExecutionStatus
-	CreatedAt          time.Time
-}
-
-// NewExecution is the execution redeeming a at now permits, charging f.
-func NewExecution(id ExecutionID, a Authorization, f FundingMethod, now time.Time) Execution {
-	return Execution{
-		ID: id, AuthorizationID: a.ID, CheckoutID: a.CheckoutID, ExternalCheckoutID: a.ExternalCheckoutID, CheckoutHash: a.CheckoutHash,
-		MandateID: a.MandateID, OrgID: a.OrgID, MerchantID: a.MerchantID, AmountMinor: a.AmountMinor, Currency: a.Currency,
-		FundingMethod: f, Status: ExecutionPending, CreatedAt: now,
-	}
-}
