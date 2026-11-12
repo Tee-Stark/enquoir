@@ -50,7 +50,7 @@ func (s *CommerceCheckoutStore) ReportExecution(ctx context.Context, sc commerce
 		if err != nil {
 			return err
 		}
-		if _, err := lockCheckoutsMandate(ctx, tx, sc, commerce.CheckoutID(checkout), at); err != nil {
+		if _, err := lockCheckoutsMandate(ctx, tx, sc, commerce.CheckoutID(checkout)); err != nil {
 			return err
 		}
 		e, err := scanExecution(tx.QueryRow(ctx, executionSelect+` WHERE e.id = $1 FOR UPDATE OF e`, string(id)))
@@ -114,14 +114,29 @@ func (s *CommerceCheckoutStore) ReportExecution(ctx context.Context, sc commerce
 	return out, result, nil
 }
 
+// sweepBatchSize caps one sweep tick's work. Under steady state the
+// overdue cohort per tick (the workflow runs this every minute against
+// a 30-minute deadline) is small; this only matters after a backlog
+// forms (a worker outage, say), bounding one tick's transaction instead
+// of however large the backlog has grown. Uncaught rows wait for the
+// next tick, which the workflow already schedules.
+const sweepBatchSize = 500
+
 // SweepExecutions moves overdue pending executions to unknown. It locks
 // only the executions (no mandate); a report racing it holds the
 // mandate, then waits for the execution's lock, and sees unknown.
 func (s *CommerceCheckoutStore) SweepExecutions(ctx context.Context, at time.Time) ([]commerce.Execution, error) {
 	var out []commerce.Execution
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `UPDATE commerce_executions SET status = 'unknown', updated_at = $1
-			WHERE status = 'pending' AND report_deadline <= $1 RETURNING id`, at)
+		rows, err := tx.Query(ctx, `
+			WITH overdue AS (
+				SELECT id FROM commerce_executions
+				WHERE status = 'pending' AND report_deadline <= $1
+				ORDER BY report_deadline
+				LIMIT $2
+			)
+			UPDATE commerce_executions SET status = 'unknown', updated_at = $1
+			WHERE id IN (SELECT id FROM overdue) RETURNING id`, at, sweepBatchSize)
 		if err != nil {
 			return err
 		}

@@ -127,9 +127,25 @@ func (s *CommerceMandateStore) Decide(ctx context.Context, cmd commerceapp.Conse
 	})
 }
 
-// mandateSelect reads mandates with the statuses of what they name and,
-// as of $1, their effective status (commerce.Mandate.StatusAt, in SQL,
-// so lists can filter on it).
+// mandateRowSelect reads a mandate with the statuses of what it names.
+// GetMandate and MandateForRevocation use this directly: neither needs
+// the mandate's current *effective* status (below), only its stored
+// state and dependency statuses, from which commerceapp derives the
+// same status in Go (commerce.Mandate.StatusAt) - so neither needs a
+// clock threaded in just to compute a value it would then discard.
+const mandateRowSelect = `
+	SELECT m.id, m.request_id, m.consent_record_id, m.terms, m.approved_at, m.revoked_at,
+	       m.revocation_requested_at, m.revocation_expires_at, m.org_id, m.merchant_id,
+	       m.customer_id, mi.status = 'active', c.status = 'active', a.status = 'active', f.status = 'active'
+	FROM commerce_mandates m
+	JOIN merchant_integrations mi ON mi.id = m.merchant_id
+	JOIN commerce_customers c ON c.id = m.customer_id
+	JOIN commerce_agents a ON a.id = m.agent_id
+	JOIN commerce_funding_methods f ON f.id = m.funding_method_id`
+
+// mandateSelect additionally computes each mandate's effective status
+// (commerce.Mandate.StatusAt, in SQL) as of $1, so ListMandates can
+// filter on it without reading every mandate into Go first.
 const mandateSelect = `
 	SELECT * FROM (
 		SELECT m.id, m.request_id, m.consent_record_id, m.terms, m.approved_at, m.revoked_at,
@@ -147,28 +163,48 @@ const mandateSelect = `
 		JOIN commerce_funding_methods f ON f.id = m.funding_method_id
 	) mm`
 
-func scanMandate(row pgx.Row) (commerceapp.MandateRow, string, error) {
+func scanMandateRow(row pgx.Row) (commerceapp.MandateRow, error) {
+	var r commerceapp.MandateRow
+	var id, req, consent, terms, org, merchant, customer string
+	err := row.Scan(&id, &req, &consent, &terms, &r.ApprovedAt, &r.RevokedAt, &r.RevocationRequestedAt, &r.RevocationExpiresAt, &org, &merchant, &customer,
+		&r.Deps.IntegrationActive, &r.Deps.CustomerActive, &r.Deps.AgentActive, &r.Deps.FundingMethodActive)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return commerceapp.MandateRow{}, app.ErrNotFound
+	}
+	if err != nil {
+		return commerceapp.MandateRow{}, err
+	}
+	if r.Terms, err = commerce.ParseMandateTerms([]byte(terms)); err != nil {
+		return commerceapp.MandateRow{}, err
+	}
+	r.ID, r.RequestID, r.ConsentRecordID, r.Revoked = commerce.MandateID(id), commerce.MandateRequestID(req), commerce.ConsentRecordID(consent), r.RevokedAt != nil
+	return r, nil
+}
+
+// scanMandate scans a mandateSelect row: the same columns scanMandateRow
+// reads, plus the effective status ListMandates filtered by - which this
+// discards, same reasoning as mandateRowSelect's doc comment.
+func scanMandate(row pgx.Row) (commerceapp.MandateRow, error) {
 	var r commerceapp.MandateRow
 	var id, req, consent, terms, org, merchant, customer, effective string
 	err := row.Scan(&id, &req, &consent, &terms, &r.ApprovedAt, &r.RevokedAt, &r.RevocationRequestedAt, &r.RevocationExpiresAt, &org, &merchant, &customer,
 		&r.Deps.IntegrationActive, &r.Deps.CustomerActive, &r.Deps.AgentActive, &r.Deps.FundingMethodActive, &effective)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return commerceapp.MandateRow{}, "", app.ErrNotFound
+		return commerceapp.MandateRow{}, app.ErrNotFound
 	}
 	if err != nil {
-		return commerceapp.MandateRow{}, "", err
+		return commerceapp.MandateRow{}, err
 	}
 	if r.Terms, err = commerce.ParseMandateTerms([]byte(terms)); err != nil {
-		return commerceapp.MandateRow{}, "", err
+		return commerceapp.MandateRow{}, err
 	}
 	r.ID, r.RequestID, r.ConsentRecordID, r.Revoked = commerce.MandateID(id), commerce.MandateRequestID(req), commerce.ConsentRecordID(consent), r.RevokedAt != nil
-	return r, effective, nil
+	return r, nil
 }
 
 func (s *CommerceMandateStore) GetMandate(ctx context.Context, sc commerceapp.Scope, id commerce.MandateID) (commerceapp.MandateRow, error) {
-	r, _, err := scanMandate(s.pool.QueryRow(ctx, mandateSelect+` WHERE org_id = $2 AND merchant_id = $3 AND id = $4`,
-		time.Now().UTC(), string(sc.OrgID), string(sc.MerchantID), string(id)))
-	return r, err
+	return scanMandateRow(s.pool.QueryRow(ctx, mandateRowSelect+` WHERE m.org_id = $1 AND m.merchant_id = $2 AND m.id = $3`,
+		string(sc.OrgID), string(sc.MerchantID), string(id)))
 }
 
 func (s *CommerceMandateStore) ListMandates(ctx context.Context, sc commerceapp.Scope, f commerceapp.MandateFilter, now time.Time) ([]commerceapp.MandateRow, string, error) {
@@ -197,7 +233,7 @@ func (s *CommerceMandateStore) ListMandates(ctx context.Context, sc commerceapp.
 	defer rows.Close()
 	var out []commerceapp.MandateRow
 	for rows.Next() {
-		r, _, err := scanMandate(rows)
+		r, err := scanMandate(rows)
 		if err != nil {
 			return nil, "", err
 		}
@@ -233,8 +269,7 @@ func (s *CommerceMandateStore) RequestRevocation(ctx context.Context, sc commerc
 }
 
 func (s *CommerceMandateStore) MandateForRevocation(ctx context.Context, id commerce.MandateID) (commerceapp.MandateRow, error) {
-	r, _, err := scanMandate(s.pool.QueryRow(ctx, mandateSelect+` WHERE id = $2`, time.Now().UTC(), string(id)))
-	return r, err
+	return scanMandateRow(s.pool.QueryRow(ctx, mandateRowSelect+` WHERE m.id = $1`, string(id)))
 }
 
 // ConfirmRevocation revokes the mandate and spends its revocation link

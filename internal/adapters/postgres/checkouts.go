@@ -93,29 +93,49 @@ func effectiveCheckoutStatus(p string) string {
 		WHEN c.status = 'authorized' AND a.expires_at <= ` + p + ` THEN 'expired' ELSE c.status END)`
 }
 
-// lockMandate locks a mandate of scope s for the rest of tx and reads it
-// with the statuses of what it names, and what it has authorized.
-func lockMandate(ctx context.Context, tx pgx.Tx, s commerceapp.Scope, id commerce.MandateID, now time.Time) (commerceapp.MandateRow, commerce.MandateUsage, error) {
+// lockMandateRow locks a mandate of scope s for the rest of tx and reads
+// it, without computing its usage or its effective status - every
+// writer that only needs the lock itself (cancel, grant issue/redeem,
+// execution reporting, via lockCheckoutsMandate) would otherwise pay for
+// mandateSelect's join and CASE expression and then discard both unread.
+func lockMandateRow(ctx context.Context, tx pgx.Tx, s commerceapp.Scope, id commerce.MandateID) (commerceapp.MandateRow, error) {
 	var locked bool
 	err := tx.QueryRow(ctx, `SELECT true FROM commerce_mandates WHERE org_id = $1 AND merchant_id = $2 AND id = $3 FOR UPDATE`,
 		string(s.OrgID), string(s.MerchantID), string(id)).Scan(&locked)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return commerceapp.MandateRow{}, commerce.MandateUsage{}, app.ErrNotFound
+		return commerceapp.MandateRow{}, app.ErrNotFound
 	}
 	if err != nil {
-		return commerceapp.MandateRow{}, commerce.MandateUsage{}, err
+		return commerceapp.MandateRow{}, err
 	}
-	row, _, err := scanMandate(tx.QueryRow(ctx, mandateSelect+` WHERE id = $2`, now, string(id)))
-	if err != nil {
-		return commerceapp.MandateRow{}, commerce.MandateUsage{}, err
-	}
+	return scanMandateRow(tx.QueryRow(ctx, mandateRowSelect+` WHERE m.id = $1`, string(id)))
+}
+
+// mandateUsage computes what counts against a mandate's budget and
+// purchase count: redeemed checkouts, and authorized ones whose grant
+// has not expired (commerce.Checkout.CountsAt). Only checkout submission
+// and approval-decision evaluate a budget/count limit, so only they call
+// this - via lockMandate, which locks the mandate first.
+func mandateUsage(ctx context.Context, tx pgx.Tx, id commerce.MandateID, now time.Time) (commerce.MandateUsage, error) {
 	var u commerce.MandateUsage
-	// What counts: redeemed checkouts, and authorized ones whose grant
-	// has not expired (commerce.Checkout.CountsAt).
-	err = tx.QueryRow(ctx, `SELECT count(*), COALESCE(sum(c.total_minor), 0), COALESCE(sum(c.total_minor) FILTER (WHERE c.status = 'paid'), 0)
+	err := tx.QueryRow(ctx, `SELECT count(*), COALESCE(sum(c.total_minor), 0), COALESCE(sum(c.total_minor) FILTER (WHERE c.status = 'paid'), 0)
 		FROM commerce_checkouts c LEFT JOIN commerce_authorizations a ON a.checkout_id = c.id
 		WHERE c.mandate_id = $1 AND `+countsAgainstMandate, string(id), now).Scan(&u.Purchases, &u.SpentMinor, &u.PaidMinor)
-	return row, u, err
+	return u, err
+}
+
+// lockMandate locks a mandate of scope s for the rest of tx and reads it
+// with the statuses of what it names, and what it has authorized.
+func lockMandate(ctx context.Context, tx pgx.Tx, s commerceapp.Scope, id commerce.MandateID, now time.Time) (commerceapp.MandateRow, commerce.MandateUsage, error) {
+	row, err := lockMandateRow(ctx, tx, s, id)
+	if err != nil {
+		return commerceapp.MandateRow{}, commerce.MandateUsage{}, err
+	}
+	u, err := mandateUsage(ctx, tx, id, now)
+	if err != nil {
+		return commerceapp.MandateRow{}, commerce.MandateUsage{}, err
+	}
+	return row, u, nil
 }
 
 func denialsJSON(d []commerce.Denial) []byte {
@@ -244,7 +264,7 @@ func (s *CommerceCheckoutStore) DecideCheckout(ctx context.Context, tokenHash st
 // lockCheckoutsMandate finds s's checkout id and locks its mandate for
 // the rest of tx: the lock every write to a mandate's checkouts and
 // grants takes first.
-func lockCheckoutsMandate(ctx context.Context, tx pgx.Tx, sc commerceapp.Scope, id commerce.CheckoutID, now time.Time) (commerceapp.MandateRow, error) {
+func lockCheckoutsMandate(ctx context.Context, tx pgx.Tx, sc commerceapp.Scope, id commerce.CheckoutID) (commerceapp.MandateRow, error) {
 	var mandate string
 	err := tx.QueryRow(ctx, `SELECT mandate_id FROM commerce_checkouts WHERE org_id = $1 AND merchant_id = $2 AND id = $3`,
 		string(sc.OrgID), string(sc.MerchantID), string(id)).Scan(&mandate)
@@ -254,15 +274,14 @@ func lockCheckoutsMandate(ctx context.Context, tx pgx.Tx, sc commerceapp.Scope, 
 	if err != nil {
 		return commerceapp.MandateRow{}, err
 	}
-	row, _, err := lockMandate(ctx, tx, sc, commerce.MandateID(mandate), now)
-	return row, err
+	return lockMandateRow(ctx, tx, sc, commerce.MandateID(mandate))
 }
 
 func (s *CommerceCheckoutStore) CancelCheckout(ctx context.Context, sc commerceapp.Scope, id commerce.CheckoutID, at time.Time) (commerce.Checkout, bool, error) {
 	var out commerce.Checkout
 	changed := false
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := lockCheckoutsMandate(ctx, tx, sc, id, at); err != nil {
+		if _, err := lockCheckoutsMandate(ctx, tx, sc, id); err != nil {
 			return err
 		}
 		c, err := scanCheckout(tx.QueryRow(ctx, checkoutSelect+` WHERE c.id = $1`, string(id)))
@@ -296,7 +315,7 @@ func (s *CommerceCheckoutStore) CancelCheckout(ctx context.Context, sc commercea
 func (s *CommerceCheckoutStore) IssueGrant(ctx context.Context, sc commerceapp.Scope, id commerce.CheckoutID, grantHash string, at time.Time) (commerce.Checkout, error) {
 	var out commerce.Checkout
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := lockCheckoutsMandate(ctx, tx, sc, id, at); err != nil {
+		if _, err := lockCheckoutsMandate(ctx, tx, sc, id); err != nil {
 			return err
 		}
 		c, err := scanCheckout(tx.QueryRow(ctx, checkoutSelect+` WHERE c.id = $1`, string(id)))
@@ -368,7 +387,7 @@ func (s *CommerceCheckoutStore) RedeemGrant(ctx context.Context, sc commerceapp.
 		if err != nil {
 			return err
 		}
-		m, err := lockCheckoutsMandate(ctx, tx, sc, commerce.CheckoutID(checkout), at)
+		m, err := lockCheckoutsMandate(ctx, tx, sc, commerce.CheckoutID(checkout))
 		if err != nil {
 			return err
 		}
