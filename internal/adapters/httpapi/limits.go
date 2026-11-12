@@ -63,6 +63,22 @@ func (h *Handler) limitIP(rule app.Rule) func(http.Handler) http.Handler {
 	}
 }
 
+// limitMerchant applies rule per authenticated merchant integration,
+// before the handler runs. It must sit after requireMerchant in the
+// chain, which populates the principal this reads - unlike limitIP, an
+// IP is easy for a misbehaving integration to rotate, but its key is not.
+func (h *Handler) limitMerchant(rule app.Rule) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := h.Throttle.Check(r.Context(), rule, string(merchantFrom(r.Context()).MerchantID)); err != nil {
+				writeAppError(w, err, "")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // clientIP is the client's address: from header when one is configured
 // (behind a trusted proxy - its first entry), otherwise the connection.
 // Trusting a header without a proxy would let anyone pick their IP.
