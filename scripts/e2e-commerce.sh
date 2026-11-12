@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# End-to-end test of merchant-delegated commerce, phase 1 (merchant
-# integration and identity), through the HTTP API. Needs no Airwallex
-# sandbox. Every request is a plain curl, so any step can be copied out
-# and run by hand.
+# End-to-end test of merchant-delegated commerce, phases 1 through 7
+# (merchant integration and identity; funding-method bindings; mandates
+# and consent; checkout evaluation; grants; execution outcomes and
+# reconciliation), through the HTTP API. Needs no Airwallex sandbox -
+# commerce execution outcomes are reported as the merchant's own word,
+# never fetched from a PSP Enquoir calls itself. Every request is a
+# plain curl, so any step can be copied out and run by hand.
 #
 # Prerequisites (see README.md):
 #   make up       Postgres, Temporal, Redis
