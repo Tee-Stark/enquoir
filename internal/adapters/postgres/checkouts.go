@@ -82,6 +82,17 @@ func insertAuthorization(ctx context.Context, tx pgx.Tx, a commerce.Authorizatio
 	return nil
 }
 
+// countsAgainstMandate is commerce.Checkout.CountsAt in SQL, for c (a
+// checkout) and a (its authorization), at $2.
+const countsAgainstMandate = `(c.status IN ('redeemed', 'paid') OR (c.status = 'authorized' AND a.expires_at > $2))`
+
+// effectiveCheckoutStatus is commerce.Checkout.StatusAt in SQL, at the
+// parameter p.
+func effectiveCheckoutStatus(p string) string {
+	return `(CASE WHEN c.status = 'awaiting_customer_approval' AND c.approval_expires_at <= ` + p + ` THEN 'expired'
+		WHEN c.status = 'authorized' AND a.expires_at <= ` + p + ` THEN 'expired' ELSE c.status END)`
+}
+
 // lockMandate locks a mandate of scope s for the rest of tx and reads it
 // with the statuses of what it names, and what it has authorized.
 func lockMandate(ctx context.Context, tx pgx.Tx, s commerceapp.Scope, id commerce.MandateID, now time.Time) (commerceapp.MandateRow, commerce.MandateUsage, error) {
@@ -101,10 +112,9 @@ func lockMandate(ctx context.Context, tx pgx.Tx, s commerceapp.Scope, id commerc
 	var u commerce.MandateUsage
 	// What counts: redeemed checkouts, and authorized ones whose grant
 	// has not expired (commerce.Checkout.CountsAt).
-	err = tx.QueryRow(ctx, `SELECT count(*), COALESCE(sum(c.total_minor), 0) FROM commerce_checkouts c
-		LEFT JOIN commerce_authorizations a ON a.checkout_id = c.id
-		WHERE c.mandate_id = $1 AND (c.status = 'redeemed' OR (c.status = 'authorized' AND a.expires_at > $2))`,
-		string(id), now).Scan(&u.Purchases, &u.SpentMinor)
+	err = tx.QueryRow(ctx, `SELECT count(*), COALESCE(sum(c.total_minor), 0), COALESCE(sum(c.total_minor) FILTER (WHERE c.status = 'paid'), 0)
+		FROM commerce_checkouts c LEFT JOIN commerce_authorizations a ON a.checkout_id = c.id
+		WHERE c.mandate_id = $1 AND `+countsAgainstMandate, string(id), now).Scan(&u.Purchases, &u.SpentMinor, &u.PaidMinor)
 	return row, u, err
 }
 
@@ -315,7 +325,8 @@ func (s *CommerceCheckoutStore) IssueGrant(ctx context.Context, sc commerceapp.S
 
 var executionSelect = `
 	SELECT e.id, e.authorization_id, e.checkout_id, e.external_checkout_id, e.checkout_hash, e.mandate_id, e.merchant_id, e.org_id,
-	       e.amount_minor, e.currency, e.status, e.created_at, ` + fundingColumnsAs("f") + `
+	       e.amount_minor, e.currency, e.status, e.created_at, COALESCE(e.provider_payment_reference, ''), COALESCE(e.failure_reason, ''),
+	       e.updated_at, e.report_deadline, e.finished_at, ` + fundingColumnsAs("f") + `
 	FROM commerce_executions e
 	JOIN commerce_funding_methods f ON f.id = e.funding_method_id`
 
@@ -325,6 +336,7 @@ func scanExecution(row pgx.Row) (commerce.Execution, error) {
 	var f commerce.FundingMethod
 	var fid, fmerchant, forg, fcustomer, ref, pref, provider, fstatus string
 	err := row.Scan(&id, &auth, &checkout, &ext, &e.CheckoutHash, &mandate, &merchant, &org, &e.AmountMinor, &currency, &status, &e.CreatedAt,
+		&e.ProviderPaymentReference, &e.FailureReason, &e.UpdatedAt, &e.ReportDeadline, &e.FinishedAt,
 		&fid, &fmerchant, &forg, &fcustomer, &ref, &pref, &provider, &f.Display.Brand, &f.Display.LastFour, &fstatus, &f.CreatedAt, &f.DisabledAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return commerce.Execution{}, app.ErrNotFound
@@ -382,11 +394,16 @@ func (s *CommerceCheckoutStore) RedeemGrant(ctx context.Context, sc commerceapp.
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO commerce_executions (id, authorization_id, checkout_id, external_checkout_id, checkout_hash, mandate_id, merchant_id, org_id,
-				amount_minor, currency, funding_method_id, status, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+				amount_minor, currency, funding_method_id, status, created_at, updated_at, report_deadline)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 			string(e.ID), string(e.AuthorizationID), string(e.CheckoutID), string(e.ExternalCheckoutID), e.CheckoutHash, string(e.MandateID),
-			string(e.MerchantID), string(e.OrgID), e.AmountMinor, string(e.Currency), string(e.FundingMethod.ID), string(e.Status), e.CreatedAt); err != nil {
+			string(e.MerchantID), string(e.OrgID), e.AmountMinor, string(e.Currency), string(e.FundingMethod.ID), string(e.Status), e.CreatedAt,
+			e.UpdatedAt, e.ReportDeadline); err != nil {
 			return fmt.Errorf("storing execution: %w", err)
+		}
+		if err := appendExecutionEvent(ctx, tx, e.ID, commerce.ExecutionEvent{Kind: commerce.EventRedeemed, StatusAfter: e.Status,
+			AmountMinor: e.AmountMinor, Currency: e.Currency, At: at}); err != nil {
+			return err
 		}
 		if _, err := tx.Exec(ctx, `UPDATE commerce_authorizations SET redeemed_at = $2, execution_id = $3 WHERE id = $1`, string(a.ID), at, string(e.ID)); err != nil {
 			return err

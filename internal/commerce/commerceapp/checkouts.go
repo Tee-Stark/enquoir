@@ -73,6 +73,9 @@ type CheckoutStore interface {
 	// at most one execution.
 	RedeemGrant(ctx context.Context, s Scope, grantHash string, at time.Time, redeem GrantRedeemer) (commerce.Execution, bool, error)
 	GetExecution(ctx context.Context, s Scope, id commerce.ExecutionID) (commerce.Execution, error)
+
+	ExecutionStore
+	MandateUsageReader
 }
 
 // GrantRedeemer decides a redemption, given the authorization, its

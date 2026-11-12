@@ -45,10 +45,32 @@ type MandateRow struct {
 	Deps commerce.Dependencies
 }
 
-// MandateView is a mandate with its effective status.
+// MandateView is a mandate with its effective status and, where read
+// with a usage reader, what counts against it.
 type MandateView struct {
 	commerce.Mandate
 	Status commerce.MandateStatus
+	Usage  *commerce.MandateUsage
+}
+
+// withUsage fills in views' usage from u, if set.
+func withUsage(ctx context.Context, u MandateUsageReader, s Scope, views []MandateView, now time.Time) error {
+	if u == nil || len(views) == 0 {
+		return nil
+	}
+	ids := make([]commerce.MandateID, len(views))
+	for i, v := range views {
+		ids[i] = v.ID
+	}
+	usage, err := u.MandateUsage(ctx, s, ids, now)
+	if err != nil {
+		return err
+	}
+	for i := range views {
+		x := usage[views[i].ID]
+		views[i].Usage = &x
+	}
+	return nil
 }
 
 // MandateFilter narrows a list of mandates. Zero fields don't filter.
@@ -390,6 +412,7 @@ func view(row MandateRow, now time.Time) MandateView {
 // merchant shows a customer who asks what they have allowed.
 type ListMandates struct {
 	Mandates MandateStore
+	Usage    MandateUsageReader // optional
 	Clock    app.Clock
 }
 
@@ -413,12 +436,16 @@ func (l *ListMandates) Run(ctx context.Context, p MerchantPrincipal, f MandateFi
 	for i, row := range rows {
 		page.Mandates[i] = view(row, now)
 	}
+	if err := withUsage(ctx, l.Usage, p.Scope(), page.Mandates, now); err != nil {
+		return MandatePage{}, err
+	}
 	return page, nil
 }
 
 // GetMandate fetches one of the merchant's mandates.
 type GetMandate struct {
 	Mandates MandateStore
+	Usage    MandateUsageReader // optional
 	Clock    app.Clock
 }
 
@@ -427,7 +454,12 @@ func (g *GetMandate) Run(ctx context.Context, p MerchantPrincipal, id commerce.M
 	if err != nil {
 		return MandateView{}, err
 	}
-	return view(row, g.Clock.Now()), nil
+	now := g.Clock.Now()
+	v := []MandateView{view(row, now)}
+	if err := withUsage(ctx, g.Usage, p.Scope(), v, now); err != nil {
+		return MandateView{}, err
+	}
+	return v[0], nil
 }
 
 // RequestMandateRevocation is the merchant asking, for its customer, to

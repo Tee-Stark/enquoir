@@ -92,9 +92,18 @@ func (r *RedeemGrant) Run(ctx context.Context, p MerchantPrincipal, grant, exter
 	return e, true, nil
 }
 
-// GetExecution fetches one of the merchant's executions.
+// GetExecution fetches one of the merchant's executions, with its
+// history.
 type GetExecution struct{ Checkouts CheckoutStore }
 
-func (g *GetExecution) Run(ctx context.Context, p MerchantPrincipal, id commerce.ExecutionID) (commerce.Execution, error) {
-	return g.Checkouts.GetExecution(ctx, p.Scope(), id)
+func (g *GetExecution) Run(ctx context.Context, p MerchantPrincipal, id commerce.ExecutionID) (ExecutionDetail, error) {
+	e, err := g.Checkouts.GetExecution(ctx, p.Scope(), id)
+	if err != nil {
+		return ExecutionDetail{}, err
+	}
+	h, err := g.Checkouts.ExecutionHistory(ctx, p.Scope(), id)
+	if err != nil {
+		return ExecutionDetail{}, err
+	}
+	return ExecutionDetail{Execution: e, History: h}, nil
 }

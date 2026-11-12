@@ -106,5 +106,5 @@ func (h *Handler) getExecution(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, err, "could not load the execution")
 		return
 	}
-	writeJSON(w, http.StatusOK, newExecutionDTO(e))
+	writeJSON(w, http.StatusOK, newExecutionDTO(e.Execution))
 }

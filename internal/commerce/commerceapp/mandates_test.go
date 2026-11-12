@@ -23,19 +23,21 @@ type mandatesFixture struct {
 	auditor *app.Audit
 	ids     *apptest.IDs
 	secrets *apptest.Secrets
-	store   *commercetest.Mandates
-	request *commerceapp.RequestMandate
-	getReq  *commerceapp.GetMandateRequest
-	view    *commerceapp.ViewConsent
-	decide  *commerceapp.DecideConsent
-	list    *commerceapp.ListMandates
-	get     *commerceapp.GetMandate
-	revoke  *commerceapp.RequestMandateRevocation
-	viewRev *commerceapp.ViewRevocation
-	confirm *commerceapp.ConfirmRevocation
-	ada     commerce.Customer
-	bot     commerce.Agent
-	card    commerce.FundingMethod
+	// integrations is an empty store for tests that need one.
+	integrations *commercetest.Integrations
+	store        *commercetest.Mandates
+	request      *commerceapp.RequestMandate
+	getReq       *commerceapp.GetMandateRequest
+	view         *commerceapp.ViewConsent
+	decide       *commerceapp.DecideConsent
+	list         *commerceapp.ListMandates
+	get          *commerceapp.GetMandate
+	revoke       *commerceapp.RequestMandateRevocation
+	viewRev      *commerceapp.ViewRevocation
+	confirm      *commerceapp.ConfirmRevocation
+	ada          commerce.Customer
+	bot          commerce.Agent
+	card         commerce.FundingMethod
 }
 
 func newMandatesFixture(t *testing.T) *mandatesFixture {
@@ -50,7 +52,7 @@ func newMandatesFixture(t *testing.T) *mandatesFixture {
 	customers, agents, methods := f.getCustomer.Customers, f.getAgent.Agents, f.get.Methods
 	store := commercetest.NewMandates(tokens, customers.(*commercetest.Customers), agents.(*commercetest.Agents), methods.(*commercetest.FundingMethods))
 	m := &mandatesFixture{
-		fundingFixture: f, mailer: mailer, store: store, tokens: tokens, emails: emails, auditor: audit, ids: ids, secrets: secrets,
+		fundingFixture: f, mailer: mailer, store: store, tokens: tokens, emails: emails, auditor: audit, ids: ids, secrets: secrets, integrations: commercetest.NewIntegrations(),
 		request: &commerceapp.RequestMandate{Mandates: store, Customers: customers, Agents: agents, Methods: methods, Emails: emails, IDs: ids, Clock: f.clock, Audit: audit},
 		getReq:  &commerceapp.GetMandateRequest{Mandates: store, Clock: f.clock},
 		view:    &commerceapp.ViewConsent{Tokens: tokens, Mandates: store, Clock: f.clock},
