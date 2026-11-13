@@ -352,7 +352,8 @@ func TestSubmitIntent_AllowedByPolicy_StartsNormallyAndPassesTheRightInput(t *te
 	intent := testIntent(t)
 	starter := &apptest.PaymentStarter{}
 	policies := &apptest.FixedPolicy{Outcome: policy.Allow, Version: 2}
-	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: starter, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock(), Policies: policies}
+	intents := apptest.NewIntents()
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: starter, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: intents, Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock(), Policies: policies}
 
 	result, err := use.Run(context.Background(), commandFor(intent))
 	if err != nil {
@@ -370,6 +371,13 @@ func TestSubmitIntent_AllowedByPolicy_StartsNormallyAndPassesTheRightInput(t *te
 	}
 	if in.Payee == nil || *in.Payee != intent.Payee {
 		t.Errorf("evaluation input payee = %v, want %q", in.Payee, intent.Payee)
+	}
+	// Allow must record which version decided it too, not just
+	// Deny/Escalate's audit entries - AGENTS.md's Phase 6 requires
+	// every decision to record the version it used.
+	stored, ok := intents.Get(intent.Key)
+	if !ok || stored.PolicyVersion == nil || *stored.PolicyVersion != 2 {
+		t.Errorf("saved intent's policy version = %v, ok=%v; want 2", stored.PolicyVersion, ok)
 	}
 }
 

@@ -3983,7 +3983,7 @@ components:
 
     Payment:
       type: object
-      required: [key, state, terminal, amount, payee, reference, reason, agent, transfer_id, failure_reason,
+      required: [key, state, terminal, amount, payee, reference, reason, agent, transfer_id, failure_reason, policy_version,
                  created_at, state_changed_at, submissions, rail_calls]
       properties:
         key:
@@ -4012,6 +4012,9 @@ components:
         failure_reason:
           type: [string, "null"]
           description: Why it is FAILED or BLOCKED.
+        policy_version:
+          type: [integer, "null"]
+          description: The policy version that decided it (Allow or Escalate), null if no policy was configured at submission.
         created_at:
           type: string
           format: date-time

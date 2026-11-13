@@ -199,6 +199,10 @@ func (s *SubmitIntent) submit(ctx context.Context, cmd SubmitIntentCommand, atte
 			})
 			return SubmitIntentResult{}, &PolicyDeniedError{Decision: decision}
 		}
+		// Allow and Escalate both proceed to be saved, so both record
+		// which version decided them - not just Deny/Escalate's audit
+		// entries above.
+		intent.PolicyVersion = &decision.Version
 		if decision.Outcome == policy.Escalate {
 			escalate = true
 			s.Audit.record(ctx, intent.OrgID, AuditPaymentEscalated, "intent", string(intent.Key), map[string]string{

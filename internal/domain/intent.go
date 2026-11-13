@@ -28,6 +28,12 @@ type Intent struct {
 	// of the key: two agents of one organisation paying the same
 	// invoice are the same payment.
 	Agent AgentID
+
+	// PolicyVersion is the policy version that decided this intent at
+	// submission (Allow or Escalate - a Deny is never saved), nil when
+	// no Policies store was configured for the submission. AGENTS.md's
+	// Phase 6 requires every decision to record the version it used.
+	PolicyVersion *int
 }
 
 // NewIntent builds an Intent, normalising its reference (trimmed) and

@@ -25,7 +25,7 @@ const paymentSelect = `
 	SELECT i.key, i.org_id, COALESCE(i.state, 'RECEIVED'), i.payee, COALESCE(b.name, ''),
 	       i.minor_units, i.currency, i.reference, i.reason,
 	       COALESCE(i.agent_id, ''), COALESCE(ag.name, ''),
-	       COALESCE(i.transfer_id, ''), COALESCE(i.failure_reason, ''),
+	       COALESCE(i.transfer_id, ''), COALESCE(i.failure_reason, ''), i.policy_version,
 	       i.created_at, i.state_changed_at,
 	       (SELECT count(*) FROM attempts a WHERE a.org_id = i.org_id AND a.intent_key = i.key AND a.kind = 'agent_submission'),
 	       (SELECT count(*) FROM attempts a WHERE a.org_id = i.org_id AND a.intent_key = i.key AND a.kind = 'rail_call')
@@ -38,7 +38,7 @@ func scanPayment(row pgx.Row) (app.Payment, error) {
 	var key, org, currency, agent string
 	var minor int64
 	err := row.Scan(&key, &org, &p.State, &p.Payee, &p.PayeeName, &minor, &currency, &p.Reference, &p.Reason,
-		&agent, &p.AgentName, &p.TransferID, &p.FailureReason, &p.CreatedAt, &p.StateChangedAt, &p.Submissions, &p.RailCalls)
+		&agent, &p.AgentName, &p.TransferID, &p.FailureReason, &p.PolicyVersion, &p.CreatedAt, &p.StateChangedAt, &p.Submissions, &p.RailCalls)
 	if err != nil {
 		return app.Payment{}, err
 	}

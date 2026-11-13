@@ -27,6 +27,7 @@ type Payment struct {
 	AgentName      string
 	TransferID     string
 	FailureReason  string
+	PolicyVersion  *int // nil if no Policies store was configured at submission
 	CreatedAt      time.Time
 	StateChangedAt *time.Time
 	Submissions    int // agent submissions of this intent
