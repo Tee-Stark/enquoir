@@ -211,7 +211,44 @@ each one you depend on, and record differences in docs/rail-notes.md.
   FAILED. Read failure_type and failure_reason.
 - Limits: 20 requests per second overall, 10 per endpoint, 10 concurrent.
 
-## Commerce Phase 7: reconciliation and resilience (current, with 6)
+## Phase 6: treasuries, spending policies and escalation (current)
+
+Done when every organisation has its own logical treasury, and its
+policies decide - allow, deny, or ask a human - for treasury payments
+and commerce checkouts alike.
+
+- **Treasuries.** Every organisation has its own logical treasury, created
+  with the organisation (one per organisation for now; several later, with
+  agents, payees and payments each assigned to one). Every treasury
+  operation is scoped explicitly by `org_id` and `treasury_id`. Internal
+  idempotency (the intent key, the payee key) includes both; the Airwallex
+  `request_id` and beneficiary nickname derive from those keys, so they stay
+  unique across the one shared Airwallex account. A treasury is a logical
+  attribution over that shared account, never a segregated provider
+  balance, and the API never presents it as one.
+- **Policies.** One per organisation, edited by owners and admins, every
+  change a new version; every decision records the version it used. Rules
+  for treasury and for commerce, per currency: maximum per transaction,
+  rolling 24-hour, 7-day and 30-day totals, a count per rolling hour,
+  payee allow/block lists (treasury), category block list (commerce), and
+  an approval threshold. Evaluation returns allow, deny (every reason) or
+  escalate; deny beats escalate. A dry-run endpoint evaluates a sample
+  payment without moving or reserving anything.
+- **Reservations.** Allowed amounts are reserved against the
+  organisation's totals at once, decided under a per-organisation lock, so
+  concurrent payments can't overspend: held while in flight or unknown,
+  consumed when applied, released when blocked or failed. Commerce
+  checkouts count the same way their mandate usage does.
+- **Escalation.** Above the threshold a treasury payment waits in
+  `AWAITING_APPROVAL` (a durable Temporal wait, 24 hours) and a checkout in
+  `awaiting_review` (1 hour). Owners and admins are emailed and decide
+  from the dashboard; one approval; the member who created the paying agent
+  can't approve it. Approval rechecks the limits; rejection or expiry
+  denies. Audit events for every policy change and decision.
+- `MAX_PAYMENT_MINOR_UNITS` stays as the platform's hard ceiling. Policies
+  per agent or per merchant integration come later.
+
+## Commerce Phase 7: reconciliation and resilience (done)
 
 Done when unknown outcomes, retries, duplicate webhooks and crashes are
 handled.
@@ -231,7 +268,7 @@ handled.
   execution gives the merchant an idempotency key for its PSP request, so
   a retried charge can't charge twice.
 
-## Commerce Phase 6: execution tracking (current, with 7)
+## Commerce Phase 6: execution tracking (done)
 
 Done when the merchant can report verified PSP outcomes.
 
@@ -409,8 +446,7 @@ to humans follow commerce and are wired in alongside commerce mandates.
 
 ## Out of scope until told otherwise
 
-Webhooks, currency conversion, compensation, the full policy engine and
-escalation to humans (after commerce), any UI, the MCP proxy, cards,
+Webhooks, currency conversion, compensation, any UI, the MCP proxy, cards,
 connected accounts, per-organisation Airwallex credentials, two-factor
 authentication, agent credentials for commerce, a real PSP integration
 before commerce asks for one, and the self-hosted edition. Leave clear seams
