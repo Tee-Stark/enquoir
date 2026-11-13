@@ -234,8 +234,10 @@ func (s *SubmitCheckout) Run(ctx context.Context, p MerchantPrincipal, cmd Check
 	// before the mandate is ever evaluated or locked, so its reasons -
 	// which a customer must never see - never mix with the mandate's
 	// own, which sometimes are shown to the customer on the approval
-	// page. Escalate is shimmed to behave exactly like Deny until Phase
-	// 6d adds the real awaiting_review state and escalation workflow.
+	// page. Escalate is shimmed to behave exactly like Deny: commerce
+	// has no awaiting_review state or escalation workflow of its own
+	// (an accepted scope cut for Phase 6, see docs/progress.md) - this
+	// is the standing behaviour, not a placeholder for a later phase.
 	var policyDenied []commerce.Denial
 	if s.Policies != nil {
 		decision, err := s.Policies.EvaluateAndReserve(ctx, p.OrgID, policy.EvaluationInput{

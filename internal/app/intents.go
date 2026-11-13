@@ -20,9 +20,9 @@ var ErrIntentNotFound = errors.New("intent not found")
 var ErrPayeeUnknown = errors.New("payee not registered by this organisation")
 
 // PolicyDeniedError means the organisation's spending policy denied a
-// candidate payment, or (until escalation exists, Phase 6d) decided
-// to escalate it - until then, escalate is treated identically to
-// deny, distinguishable only by Decision.Outcome.
+// candidate payment outright. An Escalate decision is never wrapped
+// in this error - it proceeds and waits for a human instead (see
+// submit() and the workflow's awaitApproval).
 type PolicyDeniedError struct {
 	Decision policy.Decision
 }

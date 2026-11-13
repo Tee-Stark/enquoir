@@ -294,9 +294,6 @@ func TestSubmitIntent_DeniedByPolicy_NeverStartsWorkflowOrSavesIntent(t *testing
 	}
 }
 
-// Escalate is treated identically to Deny until the real escalation
-// state exists (6d) - this is an explicit interim shim, not the final
-// behaviour, so the test name says so.
 // Escalate starts the workflow normally - unlike Deny, which never
 // does - but tells it to wait for an approval decision before
 // authorizing. The HTTP response still reports PROPOSED, exactly like

@@ -161,7 +161,10 @@ func TestSubmitCheckout_DeniedByOrgPolicy_MandateNeverEvaluated(t *testing.T) {
 	}
 }
 
-// Escalate is shimmed to behave exactly like Deny until Phase 6d.
+// Escalate is shimmed to behave exactly like Deny - commerce has no
+// awaiting_review state or escalation workflow of its own, an
+// accepted scope cut for Phase 6 (see docs/progress.md), not a gap
+// a later phase will close.
 func TestSubmitCheckout_EscalatedByOrgPolicy_TreatedAsDeniedForNow(t *testing.T) {
 	f := newCheckoutsFixture(t)
 	m := f.mandate(t, "m1", commerce.Autonomous)
