@@ -203,15 +203,7 @@ func (s *SubmitIntent) submit(ctx context.Context, cmd SubmitIntentCommand, atte
 		// which version decided them - not just Deny/Escalate's audit
 		// entries above.
 		intent.PolicyVersion = &decision.Version
-		if decision.Outcome == policy.Escalate {
-			escalate = true
-			s.Audit.record(ctx, intent.OrgID, AuditPaymentEscalated, "intent", string(intent.Key), map[string]string{
-				"policy_version": fmt.Sprint(decision.Version),
-			})
-			if err := s.notifyApprovers(ctx, intent); err != nil {
-				return SubmitIntentResult{}, fmt.Errorf("notifying approvers: %w", err)
-			}
-		}
+		escalate = decision.Outcome == policy.Escalate
 	}
 
 	_, created, err := s.Intents.Save(ctx, intent)
@@ -234,6 +226,18 @@ func (s *SubmitIntent) submit(ctx context.Context, cmd SubmitIntentCommand, atte
 	// that hasn't recorded anything - starting attaches to that run.
 	if err := s.Starter.Start(ctx, intent, escalate); err != nil {
 		return SubmitIntentResult{}, err
+	}
+	// The escalation audit record and approver emails fire only once
+	// the workflow has actually started waiting on them - not
+	// earlier, when Save or Start could still fail and leave both for
+	// a payment that never began.
+	if escalate {
+		s.Audit.record(ctx, intent.OrgID, AuditPaymentEscalated, "intent", string(intent.Key), map[string]string{
+			"policy_version": fmt.Sprint(*intent.PolicyVersion),
+		})
+		if err := s.notifyApprovers(ctx, intent); err != nil {
+			return SubmitIntentResult{}, fmt.Errorf("notifying approvers: %w", err)
+		}
 	}
 	outcome := OutcomeStarted
 	if !created {

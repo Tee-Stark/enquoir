@@ -321,6 +321,30 @@ func TestSubmitIntent_EscalatedByPolicy_StartsAndTellsTheWorkflowToWait(t *testi
 	}
 }
 
+// If starting the workflow fails after an Escalate decision, the
+// payment never actually began waiting for anyone - so neither the
+// audit record nor an approver email must have gone out for it.
+func TestSubmitIntent_EscalatedByPolicy_StarterFailureSendsNoAuditOrEmail(t *testing.T) {
+	intent := testIntent(t)
+	wantErr := errors.New("temporal unavailable")
+	policies := &apptest.FixedPolicy{Outcome: policy.Escalate, Reasons: []policy.Reason{{Code: policy.ReasonOverApprovalThreshold}}, Version: 1}
+	auditLog := apptest.NewAuditLog()
+	clock := apptest.NewClock()
+	use := &app.SubmitIntent{
+		Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: &apptest.PaymentStarter{Err: wantErr},
+		Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(),
+		IDs: &apptest.IDs{}, Clock: clock, Policies: policies, Audit: &app.Audit{Log: auditLog, IDs: &apptest.IDs{}, Clock: clock},
+	}
+
+	_, err := use.Run(context.Background(), commandFor(intent))
+	if !errors.Is(err, wantErr) {
+		t.Errorf("Run error = %v, want it to wrap %v", err, wantErr)
+	}
+	if events := auditLog.All(); len(events) != 0 {
+		t.Errorf("audit events = %+v, want none - the workflow never actually started", events)
+	}
+}
+
 func TestSubmitIntent_EscalatedByPolicy_NotifiesEveryOwnerAndAdminOnly(t *testing.T) {
 	intent := testIntent(t)
 	accounts := apptest.NewAccounts()
