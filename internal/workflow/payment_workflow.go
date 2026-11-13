@@ -117,10 +117,11 @@ func PaymentWorkflow(ctx workflow.Context, in PaymentInput) (PaymentResult, erro
 // awaitApproval moves the intent to AWAITING_APPROVAL and durably
 // waits, up to EscalationTimeout, for an approve/reject signal. On
 // approval it rechecks the policy - limits may have moved since the
-// payment was escalated - and denies it if they no longer allow it,
-// never letting it through on a decision now stale. On rejection,
-// or no decision within the timeout, it moves to BLOCKED itself
-// (the caller only learns whether to continue towards AUTHORIZED).
+// payment was escalated - and denies it if the recheck now finds an
+// outright Deny (a new reason, not just "still over the threshold":
+// that is exactly what the human just approved). On rejection, or no
+// decision within the timeout, it moves to BLOCKED itself (the
+// caller only learns whether to continue towards AUTHORIZED).
 func awaitApproval(ctx workflow.Context, state *domain.State, intent domain.Intent) (bool, error) {
 	if err := moveTo(ctx, state, intent.OrgID, intent.Key, domain.AWAITING_APPROVAL, ""); err != nil {
 		return false, err
@@ -157,7 +158,7 @@ func awaitApproval(ctx workflow.Context, state *domain.State, intent domain.Inte
 	if err := execActivity(ctx, activities().RecheckPolicy, intent).Get(ctx, &decision); err != nil {
 		return false, fmt.Errorf("rechecking the policy on approval: %w", err)
 	}
-	if decision.Outcome != policy.Allow {
+	if decision.Outcome == policy.Deny {
 		return false, moveTo(ctx, state, intent.OrgID, intent.Key, domain.BLOCKED, "no longer within the organisation's policy on recheck")
 	}
 	return true, nil

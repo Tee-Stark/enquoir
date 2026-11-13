@@ -171,6 +171,34 @@ func TestPaymentWorkflow_Escalated_ApprovalRechecksPolicyAndProceeds(t *testing.
 	require.Len(t, policies.Calls, 1, "approval must recheck the policy exactly once")
 }
 
+// The common case: the recheck still escalates (nothing about the
+// amount or the threshold changed between submission and approval).
+// That must not re-block the payment - a human just approved it - so
+// Escalate-again proceeds exactly like Allow does.
+func TestPaymentWorkflow_Escalated_StillEscalatesOnRecheckButProceeds(t *testing.T) {
+	intent := testIntent(t, 10050)
+	rail := &fakeRail{
+		createFunc: func(ctx context.Context, intent domain.Intent, callNum int) (app.Transfer, error) {
+			return app.Transfer{ID: "tr_1", Status: app.TransferPaid}, nil
+		},
+	}
+	te := newEnv(t, rail)
+	policies := &apptest.FixedPolicy{Outcome: policy.Escalate, Reasons: []policy.Reason{{Code: policy.ReasonOverApprovalThreshold}}}
+	te.activities.Policies = policies
+
+	te.env.RegisterDelayedCallback(func() {
+		te.env.SignalWorkflow(EscalationSignalName, EscalationSignal{Approved: true, DecidedBy: "usr_owner"})
+	}, 0)
+	te.env.ExecuteWorkflow(PaymentWorkflow, PaymentInput{Intent: intent, MaxAmountMinorUnits: highMax, Escalate: true})
+
+	require.True(t, te.env.IsWorkflowCompleted())
+	require.NoError(t, te.env.GetWorkflowError())
+	var result PaymentResult
+	require.NoError(t, te.env.GetWorkflowResult(&result))
+	require.Equal(t, domain.APPLIED, result.State)
+	require.Len(t, policies.Calls, 1, "approval must recheck the policy exactly once")
+}
+
 // Approval rechecks the limits: if they no longer allow it (spent
 // elsewhere meanwhile), it is denied, not let through on a stale
 // decision from submission time.
