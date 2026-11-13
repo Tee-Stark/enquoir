@@ -249,6 +249,49 @@ func TestPaymentWorkflow_Escalated_RejectionBlocksWithoutCallingRail(t *testing.
 	require.Equal(t, []string{"PROPOSED", "AWAITING_APPROVAL", "BLOCKED"}, te.eventTypes(t, intent.Key))
 }
 
+// flakyPolicy fails EvaluateAndReserve a fixed number of times before
+// succeeding - standing in for a transient Postgres blip during the
+// approval recheck.
+type flakyPolicy struct {
+	policy.Store
+	failures int32
+	outcome  policy.Outcome
+}
+
+func (f *flakyPolicy) EvaluateAndReserve(ctx context.Context, org domain.OrgID, in policy.EvaluationInput) (policy.Decision, error) {
+	if atomic.AddInt32(&f.failures, -1) >= 0 {
+		return policy.Decision{}, errors.New("transient failure")
+	}
+	return policy.Decision{Outcome: f.outcome}, nil
+}
+
+// A transient failure rechecking the policy on approval must not
+// strand the payment at AWAITING_APPROVAL forever - RecheckPolicy
+// retries past the modest 3-attempt budget every other activity in
+// this workflow uses, since it is a pure read with nothing to
+// duplicate.
+func TestPaymentWorkflow_Escalated_RecheckSurvivesMoreFailuresThanTheDefaultBudget(t *testing.T) {
+	intent := testIntent(t, 10050)
+	rail := &fakeRail{
+		createFunc: func(ctx context.Context, intent domain.Intent, callNum int) (app.Transfer, error) {
+			return app.Transfer{ID: "tr_1", Status: app.TransferPaid}, nil
+		},
+	}
+	te := newEnv(t, rail)
+	te.activities.Policies = &flakyPolicy{failures: 5, outcome: policy.Allow}
+
+	te.env.RegisterDelayedCallback(func() {
+		te.env.SignalWorkflow(EscalationSignalName, EscalationSignal{Approved: true, DecidedBy: "usr_owner"})
+	}, 0)
+	te.env.ExecuteWorkflow(PaymentWorkflow, PaymentInput{Intent: intent, MaxAmountMinorUnits: highMax, Escalate: true})
+
+	require.True(t, te.env.IsWorkflowCompleted())
+	require.NoError(t, te.env.GetWorkflowError())
+	var result PaymentResult
+	require.NoError(t, te.env.GetWorkflowResult(&result))
+	require.Equal(t, domain.APPLIED, result.State)
+}
+
 // No decision within 24 hours denies it too - the test environment
 // auto-skips virtual time when nothing else is runnable, so this
 // completes without a real 24-hour wait.

@@ -72,6 +72,17 @@ var activityOptions = workflow.ActivityOptions{
 	RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 3},
 }
 
+// recheckPolicyOptions governs only RecheckPolicy's own call, retried
+// without limit: it is a pure read (no money moves, nothing to
+// duplicate), and a payment a human already approved must eventually
+// resolve once a transient failure (a Postgres blip) clears, never
+// strand at AWAITING_APPROVAL forever because the modest budget above
+// ran out - the same reasoning readUntilClear uses for rail reads.
+var recheckPolicyOptions = workflow.ActivityOptions{
+	StartToCloseTimeout: 30 * time.Second,
+	RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 0},
+}
+
 // PaymentWorkflow takes one Intent from PROPOSED to APPLIED, FAILED or
 // BLOCKED. The intent's key is this workflow's ID: starting the same
 // intent twice attaches to the run already in progress instead of
@@ -155,7 +166,8 @@ func awaitApproval(ctx workflow.Context, state *domain.State, intent domain.Inte
 	}
 
 	var decision policy.Decision
-	if err := execActivity(ctx, activities().RecheckPolicy, intent).Get(ctx, &decision); err != nil {
+	recheckCtx := workflow.WithActivityOptions(ctx, recheckPolicyOptions)
+	if err := execActivity(recheckCtx, activities().RecheckPolicy, intent).Get(ctx, &decision); err != nil {
 		return false, fmt.Errorf("rechecking the policy on approval: %w", err)
 	}
 	if decision.Outcome == policy.Deny {
