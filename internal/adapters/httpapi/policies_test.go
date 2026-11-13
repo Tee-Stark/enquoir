@@ -66,6 +66,22 @@ func TestPolicies_RolesAreEnforced(t *testing.T) {
 	if dry.Code != http.StatusOK || decision.Outcome != "allow" {
 		t.Errorf("owner dry-run = %d %s, want 200 allow", dry.Code, dry.Body)
 	}
+
+	// Admins have the same access as owners here - not just "not
+	// forbidden" like viewer/operator above, but an actual successful
+	// edit and dry-run.
+	admin := f.memberAs(t, org, domain.Admin)
+	rec = f.do(t, http.MethodPut, "/v1/policies", body, admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin PUT policy: %d %s", rec.Code, rec.Body)
+	}
+	json.Unmarshal(rec.Body.Bytes(), &saved)
+	if saved.CreatedBy == "" {
+		t.Errorf("admin's saved version = %+v, want it attributed to the admin", saved)
+	}
+	if rec := f.do(t, http.MethodPost, "/v1/policies/dry-run", `{"context":"treasury","currency":"USD","amount_minor":1000}`, admin); rec.Code != http.StatusOK {
+		t.Errorf("admin dry-run: %d %s, want 200", rec.Code, rec.Body)
+	}
 }
 
 // Approving/rejecting an escalated payment needs PermApproveEscalation

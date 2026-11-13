@@ -124,6 +124,57 @@ func TestDecideEscalatedPayment_CreatorMayAlwaysReject(t *testing.T) {
 	}
 }
 
+// An admin is just as eligible an approver as an owner - the
+// exclusion applies to the creator even when the only other eligible
+// approver is an admin, not only when it's an owner.
+func TestDecideEscalatedPayment_CreatorExclusionConsidersAdminToo(t *testing.T) {
+	f := newEscalationFixture(t, false)
+	f.accounts.AddMember(f.org, f.other, domain.Admin, time.Now())
+
+	err := f.decide.Run(asUser(context.Background(), f.creator), f.org, "key_1", true)
+	if !errors.Is(err, app.ErrApproverExcluded) {
+		t.Fatalf("creator approving with an admin available: err = %v, want ErrApproverExcluded", err)
+	}
+
+	if err := f.decide.Run(asUser(context.Background(), f.other), f.org, "key_1", true); err != nil {
+		t.Fatalf("the admin approving: %v, want it allowed", err)
+	}
+}
+
+// Operators and viewers are not eligible approvers - their presence
+// must never count towards "another eligible approver exists", so
+// the exclusion stays waived for the creator exactly as if nobody
+// else were in the organisation at all.
+func TestDecideEscalatedPayment_OperatorsAndViewersDontCountAsEligibleApprovers(t *testing.T) {
+	f := newEscalationFixture(t, true)
+	f.accounts.AddMember(f.org, f.other, domain.Operator, time.Now())
+	viewer := app.User{ID: "usr_viewer", Email: "viewer@example.com", CreatedAt: time.Now()}
+	if err := f.accounts.CreateOrganisationWithOwner(context.Background(), app.Organisation{ID: "org_throwaway2", Name: "x", CreatedAt: time.Now()}, viewer); err != nil {
+		t.Fatal(err)
+	}
+	f.accounts.AddMember(f.org, viewer.ID, domain.Viewer, time.Now())
+
+	if err := f.decide.Run(asUser(context.Background(), f.creator), f.org, "key_1", true); err != nil {
+		t.Fatalf("creator approving with only an operator and a viewer around: %v, want it allowed (neither is an eligible approver)", err)
+	}
+}
+
+// An agent recorded before Agent.CreatedBy existed (6a) has no known
+// creator - the exclusion can never apply to it, for anyone.
+func TestDecideEscalatedPayment_NoRecordedCreator_ExclusionNeverApplies(t *testing.T) {
+	f := newEscalationFixture(t, false)
+	legacyAgent := domain.AgentID("agt_legacy")
+	if err := f.agents.CreateAgent(context.Background(), app.Agent{ID: legacyAgent, OrgID: f.org, Name: "legacy-bot", CreatedAt: time.Now()},
+		app.APIKey{ID: "key_legacy", AgentID: legacyAgent, OrgID: f.org, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	f.payments.Add(app.Payment{Key: "key_legacy_pay", OrgID: f.org, State: string(domain.AWAITING_APPROVAL), AgentID: legacyAgent})
+
+	if err := f.decide.Run(asUser(context.Background(), f.creator), f.org, "key_legacy_pay", true); err != nil {
+		t.Fatalf("approving a legacy agent's payment with no recorded creator: %v, want it allowed", err)
+	}
+}
+
 func TestDecideEscalatedPayment_RefusesAPaymentNotAwaitingApproval(t *testing.T) {
 	f := newEscalationFixture(t, false)
 	f.payments.Add(app.Payment{Key: "key_2", OrgID: f.org, State: string(domain.AUTHORIZED)})
