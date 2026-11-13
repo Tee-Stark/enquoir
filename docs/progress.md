@@ -1653,3 +1653,14 @@ reviewers) before the PR, which fixed every finding raised.
 - No live end-to-end escalation run against the dev stack (email
   queued, approved via the dashboard API, and separately a timeout) -
   code-reviewed and unit/integration-tested only.
+- **Known issue: a duplicate audit record on concurrent double-approval.**
+  `DecideEscalatedPayment.Run` reads the payment's state, then signals
+  the workflow and records `AuditPaymentApproved`/`Rejected` - nothing
+  between those steps is locked, so two concurrent approve calls on
+  the same payment can both pass the AWAITING_APPROVAL check and both
+  write an audit record, even though the workflow's selector only
+  ever consumes one signal (the second sits unread; no payment is ever
+  approved twice, no money moves twice). Left unfixed: a real fix
+  needs either a synchronous Temporal Update in place of the
+  fire-and-forget signal, or a new dedup row - disproportionate for a
+  narrow race whose only effect is an extra identical audit line.
