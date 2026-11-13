@@ -115,8 +115,10 @@ func rollingUsage(ctx context.Context, tx pgx.Tx, org domain.OrgID, currency dom
 }
 
 // treasuryUsage counts intents that reserved or spent their amount:
-// AUTHORIZED/IN_FLIGHT/UNKNOWN (held) and APPLIED (spent). PROPOSED
-// hasn't passed policy yet; BLOCKED/FAILED released, never counted.
+// PROPOSED (the state Intents.Save itself writes, the instant a payment
+// is persisted - see policy.Store's doc comment on what "persisting"
+// counting on means), AWAITING_APPROVAL/AUTHORIZED/IN_FLIGHT/UNKNOWN
+// (held) and APPLIED (spent). BLOCKED/FAILED released, never counted.
 func treasuryUsage(ctx context.Context, tx pgx.Tx, org domain.OrgID, currency domain.Currency, now time.Time) (policy.Usage, error) {
 	var u policy.Usage
 	err := tx.QueryRow(ctx, `
@@ -126,14 +128,21 @@ func treasuryUsage(ctx context.Context, tx pgx.Tx, org domain.OrgID, currency do
 			COALESCE(sum(minor_units) FILTER (WHERE state_changed_at > $3::timestamptz - interval '30 days'), 0),
 			count(*) FILTER (WHERE state_changed_at > $3::timestamptz - interval '1 hour')
 		FROM intents
-		WHERE org_id = $1 AND currency = $2 AND state IN ('AUTHORIZED', 'IN_FLIGHT', 'UNKNOWN', 'APPLIED')`,
+		WHERE org_id = $1 AND currency = $2 AND state IN ('PROPOSED', 'AWAITING_APPROVAL', 'AUTHORIZED', 'IN_FLIGHT', 'UNKNOWN', 'APPLIED')`,
 		string(org), string(currency), now).Scan(&u.Last24h, &u.Last7d, &u.Last30d, &u.LastHourCount)
 	return u, err
 }
 
 // commerceUsage mirrors countsAgainstMandate (checkouts.go), org-scoped
 // instead of mandate-scoped: redeemed/paid, or authorized with a grant
-// not yet expired.
+// not yet expired. It additionally counts a checkout still
+// awaiting_customer_approval: that checkout already passed this
+// organisation's policy (the gate runs before the mandate is ever
+// evaluated) and is only waiting on the customer, so it must already
+// count here - otherwise several such checkouts could each pass
+// org-policy evaluation independently without ever seeing each
+// other's pending amount. countsAgainstMandate itself stays
+// unchanged, since a mandate's own budget isn't spent until approved.
 func commerceUsage(ctx context.Context, tx pgx.Tx, org domain.OrgID, currency domain.Currency, now time.Time) (policy.Usage, error) {
 	var u policy.Usage
 	// countsAgainstMandate (checkouts.go) hardcodes $2 as "now" - $2
@@ -145,7 +154,7 @@ func commerceUsage(ctx context.Context, tx pgx.Tx, org domain.OrgID, currency do
 			COALESCE(sum(c.total_minor) FILTER (WHERE c.created_at > $2::timestamptz - interval '30 days'), 0),
 			count(*) FILTER (WHERE c.created_at > $2::timestamptz - interval '1 hour')
 		FROM commerce_checkouts c LEFT JOIN commerce_authorizations a ON a.checkout_id = c.id
-		WHERE c.org_id = $1 AND c.currency = $3 AND `+countsAgainstMandate,
+		WHERE c.org_id = $1 AND c.currency = $3 AND (`+countsAgainstMandate+` OR c.status = 'awaiting_customer_approval')`,
 		string(org), now, string(currency)).Scan(&u.Last24h, &u.Last7d, &u.Last30d, &u.LastHourCount)
 	return u, err
 }

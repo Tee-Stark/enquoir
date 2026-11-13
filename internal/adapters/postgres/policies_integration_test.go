@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"enquoir/internal/commerce"
 	"enquoir/internal/domain"
 	"enquoir/internal/policy"
 )
@@ -98,6 +99,101 @@ func TestEvaluateAndReserve_DeniesOverASavedLimit(t *testing.T) {
 	})
 	if err != nil || d.Outcome != policy.Deny {
 		t.Errorf("EvaluateAndReserve over the saved limit = %+v, %v, want Deny", d, err)
+	}
+}
+
+// A payment counts towards usage the instant it is persisted - at
+// PROPOSED, before any Temporal worker ever advances it - matching
+// policy.Store's doc comment on what "persisting" means. Before this,
+// treasuryUsage only counted AUTHORIZED onward, so a payment stuck at
+// PROPOSED or AWAITING_APPROVAL (awaiting an escalation decision) was
+// invisible to a concurrent evaluation for as long as the worker took
+// to advance it.
+func TestEvaluateAndReserve_CountsIntentsStillProposedOrAwaitingApproval(t *testing.T) {
+	ctx := context.Background()
+	accounts := NewAccountStore(testPool(t))
+	store := NewPolicyStore(testPool(t))
+	intents := NewIntentRepository(testPool(t))
+	events := NewEventLog(testPool(t))
+	org, _ := newTestOrg(t, accounts)
+
+	v, _ := policy.NewPolicyVersion(org.ID, 0, map[domain.Currency]policy.CurrencyRule{
+		domain.USD: {Max24hMinor: 15_000},
+	}, nil, nil, nil)
+	if _, err := store.SaveNewVersion(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+
+	proposed, err := domain.NewIntent(org.ID, treasuryOf(org.ID), "payee-proposed", 10_000, "USD", "ref-proposed", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := intents.Save(ctx, proposed); err != nil {
+		t.Fatal(err)
+	}
+	cleanupIntent(t, testPool(t), proposed.Key)
+	if _, err := events.Append(ctx, org.ID, proposed.Key, "PROPOSED", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	awaiting, err := domain.NewIntent(org.ID, treasuryOf(org.ID), "payee-awaiting", 4_000, "USD", "ref-awaiting", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := intents.Save(ctx, awaiting); err != nil {
+		t.Fatal(err)
+	}
+	cleanupIntent(t, testPool(t), awaiting.Key)
+	if _, err := events.Append(ctx, org.ID, awaiting.Key, "PROPOSED", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.Append(ctx, org.ID, awaiting.Key, "AWAITING_APPROVAL", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// 10,000 (proposed) + 4,000 (awaiting approval) + 2,000 candidate =
+	// 16,000, over the 15,000 24h limit - denied only if both pending
+	// intents already count.
+	d, err := store.EvaluateAndReserve(ctx, org.ID, policy.EvaluationInput{
+		Context: policy.ContextTreasury, Currency: domain.USD, AmountMinor: 2_000,
+	})
+	if err != nil || d.Outcome != policy.Deny {
+		t.Errorf("EvaluateAndReserve with PROPOSED+AWAITING_APPROVAL usage already at 14,000 = %+v, %v, want Deny", d, err)
+	}
+}
+
+// A per-transaction checkout already passed this organisation's
+// policy (that gate runs before the mandate is ever evaluated) and is
+// only waiting on the customer's own approval - it must already count
+// against the org's rolling usage, or several such checkouts could
+// each pass org-policy evaluation independently without ever seeing
+// each other's pending amount.
+func TestEvaluateAndReserve_CountsCommerceCheckoutsAwaitingCustomerApproval(t *testing.T) {
+	ctx := context.Background()
+	w := newCheckoutWorld(t)
+	m := w.mandate(t, "m1", commerce.PerTransaction)
+
+	store := NewPolicyStore(testPool(t))
+	v, _ := policy.NewPolicyVersion(w.merchant.OrgID, 0, map[domain.Currency]policy.CurrencyRule{
+		domain.EUR: {Max24hMinor: 6_000},
+	}, nil, nil, nil)
+	if _, err := store.SaveNewVersion(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+
+	a, _, err := w.submit.Run(ctx, w.merchant, w.book(m, "a", 5000))
+	if err != nil || a.Status != commerce.CheckoutAwaitingApproval {
+		t.Fatalf("submit: %+v %v", a, err)
+	}
+
+	// 5,000 already awaiting the customer + 2,000 candidate = 7,000,
+	// over the 6,000 24h limit - denied only if the awaiting checkout
+	// already counts.
+	d, err := store.EvaluateAndReserve(ctx, w.merchant.OrgID, policy.EvaluationInput{
+		Context: policy.ContextCommerce, Currency: domain.EUR, AmountMinor: 2_000,
+	})
+	if err != nil || d.Outcome != policy.Deny {
+		t.Errorf("EvaluateAndReserve with a checkout awaiting_customer_approval already at 5,000 = %+v, %v, want Deny", d, err)
 	}
 }
 
