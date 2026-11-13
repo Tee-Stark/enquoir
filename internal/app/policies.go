@@ -71,7 +71,18 @@ type DryRunPolicyCommand struct {
 type DryRunPolicy struct{ Policies policy.Store }
 
 func (d *DryRunPolicy) Run(ctx context.Context, org domain.OrgID, cmd DryRunPolicyCommand) (policy.Decision, error) {
-	return d.Policies.EvaluateAndReserve(ctx, org, policy.EvaluationInput{
+	decision, err := d.Policies.EvaluateAndReserve(ctx, org, policy.EvaluationInput{
 		Context: cmd.Context, Currency: cmd.Currency, AmountMinor: cmd.AmountMinor, Payee: cmd.Payee, Categories: cmd.Categories,
 	})
+	if err != nil {
+		return policy.Decision{}, err
+	}
+	// Commerce has no escalation workflow yet - SubmitCheckout's
+	// interim shim treats Escalate exactly like Deny until it does.
+	// Dry-run exists to preview what submission will actually do, so
+	// it must report the same outcome, not the raw, not-yet-true one.
+	if cmd.Context == policy.ContextCommerce && decision.Outcome == policy.Escalate {
+		decision.Outcome = policy.Deny
+	}
+	return decision, nil
 }

@@ -68,6 +68,31 @@ func TestUpdatePolicy_RejectsAMalformedEdit(t *testing.T) {
 	}
 }
 
+// Commerce has no escalation workflow yet - SubmitCheckout's interim
+// shim treats Escalate exactly like Deny. Dry-run must report the
+// same thing, or it drifts from what submission actually does.
+func TestDryRunPolicy_CommerceEscalateReportsAsDeny(t *testing.T) {
+	policies := &apptest.FixedPolicy{Outcome: policy.Escalate, Reasons: []policy.Reason{{Code: policy.ReasonOverApprovalThreshold}}}
+	use := &app.DryRunPolicy{Policies: policies}
+
+	d, err := use.Run(context.Background(), testOrg, app.DryRunPolicyCommand{Context: policy.ContextCommerce, Currency: domain.USD, AmountMinor: 1_000_000})
+	if err != nil || d.Outcome != policy.Deny {
+		t.Errorf("DryRunPolicy(commerce, Escalate) = %+v, %v, want it reported as Deny", d, err)
+	}
+}
+
+// Treasury's own escalation workflow is real (Phase 6d), so an
+// Escalate decision must be reported as-is there.
+func TestDryRunPolicy_TreasuryEscalateReportsAsEscalate(t *testing.T) {
+	policies := &apptest.FixedPolicy{Outcome: policy.Escalate, Reasons: []policy.Reason{{Code: policy.ReasonOverApprovalThreshold}}}
+	use := &app.DryRunPolicy{Policies: policies}
+
+	d, err := use.Run(context.Background(), testOrg, app.DryRunPolicyCommand{Context: policy.ContextTreasury, Currency: domain.USD, AmountMinor: 1_000_000})
+	if err != nil || d.Outcome != policy.Escalate {
+		t.Errorf("DryRunPolicy(treasury, Escalate) = %+v, %v, want it reported as Escalate", d, err)
+	}
+}
+
 func TestDryRunPolicy_EvaluatesWithoutError(t *testing.T) {
 	policies := &apptest.FixedPolicy{Outcome: policy.Deny, Reasons: []policy.Reason{{Code: policy.ReasonOverTransactionLimit}}}
 	use := &app.DryRunPolicy{Policies: policies}
