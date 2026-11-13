@@ -3911,7 +3911,7 @@ components:
       description: |
         A State, or RECEIVED: accepted by the API, not yet picked up by a
         worker (nothing has happened to it yet).
-      enum: [RECEIVED, PROPOSED, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED]
+      enum: [RECEIVED, PROPOSED, AWAITING_APPROVAL, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED]
 
     Payment:
       type: object
@@ -4018,12 +4018,14 @@ components:
       description: |
         Agent submissions: started (a new payment began), attached (joined a
         run already starting), deduplicated (already had history; nothing
-        started), invalid, payee_unknown, error.
+        started), invalid, payee_unknown, policy_denied (the organisation's
+        spending policy denied it, or - until escalation exists - decided
+        to escalate it), error.
         Rail calls: ok, not_found (a lookup found nothing), rejected (a clear
         no), ambiguous (outcome unclear: timeout, 5xx, network),
         duplicate_transfers, error, in_progress (under way), interrupted
         (started but never finished - the worker likely died mid-call).
-      enum: [started, attached, deduplicated, invalid, payee_unknown, error,
+      enum: [started, attached, deduplicated, invalid, payee_unknown, policy_denied, error,
              ok, not_found, rejected, ambiguous, duplicate_transfers, in_progress, interrupted]
 
     Attempt:
@@ -5302,13 +5304,17 @@ components:
       description: |
         Where an intent is in its lifecycle. APPLIED and BLOCKED are final.
         - PROPOSED: received by the workflow.
+        - AWAITING_APPROVAL: the organisation's policy escalated it, above
+          the approval threshold; an owner or admin must approve or reject
+          it within 24 hours, or it is denied.
         - AUTHORIZED: policy passed.
         - IN_FLIGHT: recorded, then sent to the rail.
         - UNKNOWN: the outcome is unclear; Enquoir looks it up before anything else.
         - APPLIED: the rail confirmed the transfer PAID.
         - FAILED: the rail rejected or cancelled it.
-        - BLOCKED: policy refused it; the rail was never called.
-      enum: [PROPOSED, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED]
+        - BLOCKED: policy refused it, or an escalation was rejected or
+          expired; the rail was never called.
+      enum: [PROPOSED, AWAITING_APPROVAL, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED]
 
     SubmitIntentRequest:
       type: object
