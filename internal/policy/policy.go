@@ -125,3 +125,35 @@ func (v PolicyVersion) Hash() string {
 	sum := sha256.Sum256(v.Canonical())
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
+
+// ParsePolicyVersion reads a stored canonical snapshot back. It does
+// not restore OrgID/Version as top-level typed fields beyond what the
+// snapshot itself carries - the store, which knows which row this
+// came from, sets those from its own columns after parsing.
+func ParsePolicyVersion(b []byte) (PolicyVersion, error) {
+	var c canonicalVersion
+	if err := json.Unmarshal(b, &c); err != nil {
+		return PolicyVersion{}, err
+	}
+	rules := make(map[domain.Currency]CurrencyRule, len(c.CurrencyRules))
+	for _, r := range c.CurrencyRules {
+		rules[domain.Currency(r.Currency)] = CurrencyRule{
+			MaxPerTransactionMinor: r.MaxPerTransactionMinor, Max24hMinor: r.Max24hMinor,
+			Max7dMinor: r.Max7dMinor, Max30dMinor: r.Max30dMinor,
+			MaxPerHourCount: r.MaxPerHourCount, ApprovalThresholdMinor: r.ApprovalThresholdMinor,
+		}
+	}
+	return PolicyVersion{
+		OrgID: domain.OrgID(c.OrgID), Version: c.Version, CurrencyRules: rules,
+		PayeeAllow: c.PayeeAllow, PayeeBlock: c.PayeeBlock, CategoryBlock: c.CategoryBlock,
+	}, nil
+}
+
+// DefaultPolicyVersion is what an organisation that has never edited
+// its policy is evaluated against: every limit unlimited, version 0
+// so a real edit (version 1 onward) always reads back as distinct
+// from "nothing has been set yet".
+func DefaultPolicyVersion(org domain.OrgID) PolicyVersion {
+	v, _ := NewPolicyVersion(org, 0, nil, nil, nil, nil)
+	return v
+}

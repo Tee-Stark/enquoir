@@ -58,6 +58,28 @@ func TestPolicyVersion_HashChangesWithAnyField(t *testing.T) {
 	}
 }
 
+func TestParsePolicyVersion_RoundTripsCanonical(t *testing.T) {
+	v := testVersion(t)
+	parsed, err := policy.ParsePolicyVersion(v.Canonical())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Hash() != v.Hash() {
+		t.Errorf("parsed version hash = %s, want %s", parsed.Hash(), v.Hash())
+	}
+	if parsed.CurrencyRules[domain.USD] != v.CurrencyRules[domain.USD] {
+		t.Errorf("parsed USD rule = %+v, want %+v", parsed.CurrencyRules[domain.USD], v.CurrencyRules[domain.USD])
+	}
+}
+
+func TestDefaultPolicyVersion_IsMaximallyPermissive(t *testing.T) {
+	v := policy.DefaultPolicyVersion(domain.OrgID("org_a"))
+	d := policy.Evaluate(v, policy.EvaluationInput{Currency: domain.USD, AmountMinor: 1_000_000_000}, policy.Usage{})
+	if d.Outcome != policy.Allow {
+		t.Errorf("default version denied/escalated a huge amount: %+v, want Allow (no org has edited its policy yet)", d)
+	}
+}
+
 func TestPolicyVersion_HashIgnoresListOrder(t *testing.T) {
 	a, err := policy.NewPolicyVersion(domain.OrgID("org_a"), 1, nil, []string{"pay_1", "pay_2"}, nil, nil)
 	if err != nil {

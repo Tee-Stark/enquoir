@@ -46,6 +46,9 @@ func (s *AccountStore) CreateOrganisationWithOwner(ctx context.Context, org app.
 			string(org.TreasuryID), string(org.ID), app.DefaultTreasuryName, org.CreatedAt); err != nil {
 			return fmt.Errorf("creating the organisation's treasury: %w", err)
 		}
+		if _, err := tx.Exec(ctx, `INSERT INTO organisation_policy_locks (org_id) VALUES ($1)`, string(org.ID)); err != nil {
+			return fmt.Errorf("creating the organisation's policy lock: %w", err)
+		}
 		if err := insertUser(ctx, tx, owner); err != nil {
 			return err
 		}
