@@ -10,6 +10,7 @@ import (
 	"enquoir/internal/app"
 	"enquoir/internal/commerce"
 	"enquoir/internal/domain"
+	"enquoir/internal/policy"
 )
 
 var (
@@ -172,6 +173,41 @@ type SubmitCheckout struct {
 	Secrets   app.SecretGenerator
 	Clock     app.Clock
 	Audit     *app.Audit
+	// Policies evaluates a candidate checkout against the merchant's
+	// organisation's spending policy, org-wide across both treasury
+	// payments and commerce checkouts. Nil skips the check and always
+	// allows.
+	Policies policy.Store
+}
+
+// policyDenials turns a policy decision's reasons into Denials, each
+// code prefixed "policy_" so it can never collide with a mandate-level
+// DenialCode of the same underlying name (e.g. both have an
+// "over_transaction_limit" reason, for two different authorities) -
+// not that the two ever appear in the same response, since a
+// policy-denied checkout never reaches mandate evaluation, but a
+// reader of one stored denial should never have to guess which
+// authority it came from.
+func policyDenials(d policy.Decision) []commerce.Denial {
+	out := make([]commerce.Denial, 0, len(d.Reasons))
+	for _, r := range d.Reasons {
+		out = append(out, commerce.Denial{Code: commerce.DenialCode("policy_" + string(r.Code)), Detail: r.Detail})
+	}
+	return out
+}
+
+// checkoutCategories is every distinct item category in snap, in
+// first-seen order, for the organisation's category-block policy rule.
+func checkoutCategories(items []commerce.CheckoutItem) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, it := range items {
+		if !seen[it.Category] {
+			seen[it.Category] = true
+			out = append(out, it.Category)
+		}
+	}
+	return out
 }
 
 func (s *SubmitCheckout) Run(ctx context.Context, p MerchantPrincipal, cmd CheckoutCommand) (CheckoutView, bool, error) {
@@ -193,6 +229,27 @@ func (s *SubmitCheckout) Run(ctx context.Context, p MerchantPrincipal, cmd Check
 	if err != nil {
 		return CheckoutView{}, false, fieldErr(err)
 	}
+
+	// The organisation's policy is a prior, separate gate: decided
+	// before the mandate is ever evaluated or locked, so its reasons -
+	// which a customer must never see - never mix with the mandate's
+	// own, which sometimes are shown to the customer on the approval
+	// page. Escalate is shimmed to behave exactly like Deny until Phase
+	// 6d adds the real awaiting_review state and escalation workflow.
+	var policyDenied []commerce.Denial
+	if s.Policies != nil {
+		decision, err := s.Policies.EvaluateAndReserve(ctx, p.OrgID, policy.EvaluationInput{
+			Context: policy.ContextCommerce, Currency: snap.Currency, AmountMinor: snap.TotalMinor,
+			Categories: checkoutCategories(snap.Items),
+		})
+		if err != nil {
+			return CheckoutView{}, false, fmt.Errorf("evaluating the organisation's spending policy: %w", err)
+		}
+		if decision.Outcome != policy.Allow {
+			policyDenied = policyDenials(decision)
+		}
+	}
+
 	c := commerce.Checkout{ID: commerce.CheckoutID(s.IDs.NewID("chk")), Snapshot: snap, CreatedAt: now}
 	var terms commerce.MandateTerms
 	grant := ""
@@ -201,6 +258,11 @@ func (s *SubmitCheckout) Run(ctx context.Context, p MerchantPrincipal, cmd Check
 		grant = mintGrant(s.Secrets, &a, now)
 		return a
 	})
+	if policyDenied != nil {
+		rule = func(m MandateRow, u commerce.MandateUsage) CheckoutOutcome {
+			return CheckoutOutcome{Status: commerce.CheckoutDenied, Denials: policyDenied}
+		}
+	}
 	stored, created, err := s.Checkouts.SubmitCheckout(ctx, p.Scope(), c, func(m MandateRow, u commerce.MandateUsage) CheckoutOutcome {
 		terms = m.Terms
 		return rule(m, u)

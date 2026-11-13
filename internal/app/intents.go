@@ -28,7 +28,11 @@ type PolicyDeniedError struct {
 }
 
 func (e *PolicyDeniedError) Error() string {
-	return fmt.Sprintf("denied by the organisation's spending policy (version %d, %d reason(s))", e.Decision.Version, len(e.Decision.Reasons))
+	details := make([]string, 0, len(e.Decision.Reasons))
+	for _, r := range e.Decision.Reasons {
+		details = append(details, r.Detail)
+	}
+	return fmt.Sprintf("denied by the organisation's spending policy (version %d): %s", e.Decision.Version, strings.Join(details, "; "))
 }
 
 // PaymentStarter starts, or attaches to, the durable workflow that

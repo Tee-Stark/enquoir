@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"enquoir/internal/app"
+	"enquoir/internal/app/apptest"
 	"enquoir/internal/commerce"
 	"enquoir/internal/commerce/commerceapp"
 	"enquoir/internal/commerce/commerceapp/commercetest"
+	"enquoir/internal/policy"
 )
 
 type checkoutsFixture struct {
@@ -131,6 +133,71 @@ func TestSubmitCheckout_DeniedCheckoutsAreRecordedWithEveryReason(t *testing.T) 
 	}
 	if a := f.actions("commerce.checkout."); strings.Join(a, ",") != app.AuditCheckoutDenied {
 		t.Errorf("audit = %v", a)
+	}
+}
+
+// A checkout the organisation's policy denies never reaches mandate
+// evaluation at all - its denial carries only the policy's reasons,
+// each prefixed "policy_" so they can never be confused with a
+// mandate-level reason of the same underlying name.
+func TestSubmitCheckout_DeniedByOrgPolicy_MandateNeverEvaluated(t *testing.T) {
+	f := newCheckoutsFixture(t)
+	m := f.mandate(t, "m1", commerce.Autonomous)
+	f.submit.Policies = &apptest.FixedPolicy{
+		Outcome: policy.Deny,
+		Reasons: []policy.Reason{{Code: policy.ReasonOverTransactionLimit, Detail: "too much for the organisation"}},
+	}
+
+	cmd := f.laptop(m, "checkout_1")
+	c := f.mustSubmit(t, cmd)
+	if c.Status != commerce.CheckoutDenied {
+		t.Fatalf("status = %s, want denied", c.Status)
+	}
+	if codesOf(c) != "policy_over_transaction_limit" {
+		t.Errorf("denial codes = %s, want exactly the policy's own, prefixed", codesOf(c))
+	}
+	if a := f.actions("commerce.checkout."); strings.Join(a, ",") != app.AuditCheckoutDenied {
+		t.Errorf("audit = %v", a)
+	}
+}
+
+// Escalate is shimmed to behave exactly like Deny until Phase 6d.
+func TestSubmitCheckout_EscalatedByOrgPolicy_TreatedAsDeniedForNow(t *testing.T) {
+	f := newCheckoutsFixture(t)
+	m := f.mandate(t, "m1", commerce.Autonomous)
+	f.submit.Policies = &apptest.FixedPolicy{
+		Outcome: policy.Escalate,
+		Reasons: []policy.Reason{{Code: policy.ReasonOverApprovalThreshold, Detail: "over the threshold"}},
+	}
+
+	c := f.mustSubmit(t, f.laptop(m, "checkout_1"))
+	if c.Status != commerce.CheckoutDenied || codesOf(c) != "policy_over_approval_threshold" {
+		t.Errorf("checkout = %s %s, want denied with the shimmed escalate reason", c.Status, codesOf(c))
+	}
+}
+
+// When the organisation's policy allows, the mandate is evaluated
+// exactly as before - an unrelated regression check.
+func TestSubmitCheckout_AllowedByOrgPolicy_FallsThroughToMandateEvaluationUnchanged(t *testing.T) {
+	f := newCheckoutsFixture(t)
+	m := f.mandate(t, "m1", commerce.Autonomous)
+	policies := &apptest.FixedPolicy{Outcome: policy.Allow}
+	f.submit.Policies = policies
+
+	c := f.mustSubmit(t, f.laptop(m, "checkout_1"))
+	if c.Status != commerce.CheckoutAuthorized || len(c.Denials) != 0 {
+		t.Errorf("checkout = %+v, want authorized exactly as without a policy configured", c)
+	}
+	if len(policies.Calls) != 1 {
+		t.Fatalf("policy evaluated %d times, want 1", len(policies.Calls))
+	}
+	in := policies.Calls[0]
+	if in.Context != policy.ContextCommerce || in.Currency != "USD" || in.AmountMinor != 134600 {
+		t.Errorf("evaluation input = %+v, want context=commerce matching the checkout's currency/total", in)
+	}
+	wantCategories := "electronics"
+	if len(in.Categories) == 0 || strings.Join(in.Categories, ",") != wantCategories {
+		t.Errorf("evaluation input categories = %v, want %q", in.Categories, wantCategories)
 	}
 }
 

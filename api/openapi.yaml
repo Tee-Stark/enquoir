@@ -3692,6 +3692,7 @@ components:
             - invalid_credentials
             - email_taken
             - payee_unknown
+            - policy_denied
             - forbidden_origin
             - not_implemented
             - body_too_large
@@ -4656,8 +4657,16 @@ components:
                 properties:
                   code:
                     type: string
+                    description: |
+                      A mandate-level reason (the customer's own consent doesn't
+                      allow this), or a policy_-prefixed one (the organisation's
+                      spending policy doesn't, decided before the mandate is ever
+                      evaluated - the two never appear together in one checkout).
                     enum: [mandate_not_active, customer_mismatch, agent_mismatch, funding_method_mismatch, currency_mismatch,
-                      over_transaction_limit, category_not_allowed, over_transaction_count, over_budget]
+                      over_transaction_limit, category_not_allowed, over_transaction_count, over_budget,
+                      policy_over_transaction_limit, policy_over_24h_total, policy_over_7d_total, policy_over_30d_total,
+                      policy_over_hourly_count, policy_payee_blocked, policy_payee_not_allowed, policy_category_blocked,
+                      policy_no_currency_rule, policy_over_approval_threshold]
                   detail:
                     type: string
         checkout:

@@ -26,6 +26,7 @@ const (
 	codeInvalidCreds         = "invalid_credentials"
 	codeEmailTaken           = "email_taken"
 	codePayeeUnknown         = "payee_unknown"
+	codePolicyDenied         = "policy_denied"
 	codeForbiddenOrigin      = "forbidden_origin"
 	codeNotImplemented       = "not_implemented"
 	codeBodyTooLarge         = "body_too_large"
@@ -91,7 +92,10 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 	var verr *app.ValidationError
 	var limited *app.RateLimitedError
 	var locked *app.AccountLockedError
+	var policyDenied *app.PolicyDeniedError
 	switch {
+	case errors.As(err, &policyDenied):
+		writeProblem(w, http.StatusUnprocessableEntity, codePolicyDenied, err.Error())
 	case errors.As(err, &limited):
 		w.Header().Set("Retry-After", retryAfter(limited.RetryAfter))
 		writeProblem(w, http.StatusTooManyRequests, codeRateLimited, limited.Error())
