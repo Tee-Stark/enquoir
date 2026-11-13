@@ -4537,8 +4537,9 @@ components:
             type: string
           description: Commerce only.
         created_at:
-          type: string
+          type: [string, "null"]
           format: date-time
+          description: Null for the default, unedited version.
         created_by:
           type: string
           description: The user who saved this version. Omitted for the default, unedited version.

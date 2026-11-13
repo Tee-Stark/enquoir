@@ -26,7 +26,7 @@ type policyVersionDTO struct {
 	PayeeAllow    []string        `json:"payee_allow"`
 	PayeeBlock    []string        `json:"payee_block"`
 	CategoryBlock []string        `json:"category_block"`
-	CreatedAt     time.Time       `json:"created_at"`
+	CreatedAt     *time.Time      `json:"created_at"`
 	CreatedBy     string          `json:"created_by,omitempty"`
 }
 
@@ -43,10 +43,18 @@ func newPolicyVersionDTO(v policy.PolicyVersion) policyVersionDTO {
 	// repeat GET of the same version could reorder currency_rules
 	// between calls with no change behind it.
 	sort.Slice(rules, func(i, j int) bool { return rules[i].Currency < rules[j].Currency })
+	// DefaultPolicyVersion (version 0, never edited) carries a zero
+	// CreatedAt - report it as null rather than 0001-01-01, which
+	// looks like a real, very old timestamp.
+	var createdAt *time.Time
+	if v.Version > 0 {
+		t := v.CreatedAt.UTC()
+		createdAt = &t
+	}
 	return policyVersionDTO{
 		Version: v.Version, CurrencyRules: rules, PayeeAllow: emptyIfNil(v.PayeeAllow),
 		PayeeBlock: emptyIfNil(v.PayeeBlock), CategoryBlock: emptyIfNil(v.CategoryBlock),
-		CreatedAt: v.CreatedAt.UTC(), CreatedBy: string(v.CreatedBy),
+		CreatedAt: createdAt, CreatedBy: string(v.CreatedBy),
 	}
 }
 

@@ -15,9 +15,25 @@ func payment(key string, org domain.OrgID, state domain.State, agent domain.Agen
 }
 
 type policyVersionBody struct {
-	Version       int    `json:"version"`
-	CurrencyRules []any  `json:"currency_rules"`
-	CreatedBy     string `json:"created_by"`
+	Version       int     `json:"version"`
+	CurrencyRules []any   `json:"currency_rules"`
+	CreatedAt     *string `json:"created_at"`
+	CreatedBy     string  `json:"created_by"`
+}
+
+// The default, never-edited version has no real creation time -
+// reported as null, not the Go zero time (0001-01-01), which reads
+// as a real, implausibly old timestamp.
+func TestPolicies_DefaultVersionHasNullCreatedAt(t *testing.T) {
+	f := newAuthFixture(t, true)
+	_, owner := f.newOrg(t)
+
+	rec := f.do(t, http.MethodGet, "/v1/policies/current", "", owner)
+	var v policyVersionBody
+	json.Unmarshal(rec.Body.Bytes(), &v)
+	if rec.Code != http.StatusOK || v.Version != 0 || v.CreatedAt != nil {
+		t.Errorf("default policy = %d %+v, want version 0 with created_at null", rec.Code, v)
+	}
 }
 
 // Editing the policy and running its dry-run need PermManagePolicy
