@@ -7,6 +7,7 @@ import (
 
 	"enquoir/internal/app"
 	"enquoir/internal/domain"
+	"enquoir/internal/policy"
 )
 
 func payment(key string, org domain.OrgID, state domain.State, agent domain.AgentID) app.Payment {
@@ -127,6 +128,24 @@ func TestEscalation_CreatorExcludedFromApprovingOwnAgentsPayment(t *testing.T) {
 // is rejected as 400, not silently saved with the bad currency
 // dropped or the negative limit accepted as a ceiling nothing can
 // pass.
+// Go's map iteration order is randomised, so currency_rules must be
+// sorted explicitly - otherwise a repeat GET of the same version
+// could reorder it between calls with nothing behind it changed.
+func TestNewPolicyVersionDTO_SortsCurrencyRules(t *testing.T) {
+	v, err := policy.NewPolicyVersion(domain.OrgID("org_a"), 1, map[domain.Currency]policy.CurrencyRule{
+		domain.USD: {}, domain.EUR: {}, domain.GBP: {},
+	}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ {
+		d := newPolicyVersionDTO(v)
+		if len(d.CurrencyRules) != 3 || d.CurrencyRules[0].Currency != "EUR" || d.CurrencyRules[1].Currency != "GBP" || d.CurrencyRules[2].Currency != "USD" {
+			t.Fatalf("iteration %d: currency_rules = %+v, want EUR, GBP, USD in order", i, d.CurrencyRules)
+		}
+	}
+}
+
 func TestPolicies_UpdateRejectsAMalformedEdit(t *testing.T) {
 	f := newAuthFixture(t, true)
 	_, owner := f.newOrg(t)

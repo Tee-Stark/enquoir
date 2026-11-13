@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"sort"
 	"time"
 
 	"enquoir/internal/app"
@@ -38,6 +39,10 @@ func newPolicyVersionDTO(v policy.PolicyVersion) policyVersionDTO {
 			MaxPerHourCount: r.MaxPerHourCount, ApprovalThresholdMinor: r.ApprovalThresholdMinor,
 		})
 	}
+	// Go's map iteration order is randomised, so without this a
+	// repeat GET of the same version could reorder currency_rules
+	// between calls with no change behind it.
+	sort.Slice(rules, func(i, j int) bool { return rules[i].Currency < rules[j].Currency })
 	return policyVersionDTO{
 		Version: v.Version, CurrencyRules: rules, PayeeAllow: emptyIfNil(v.PayeeAllow),
 		PayeeBlock: emptyIfNil(v.PayeeBlock), CategoryBlock: emptyIfNil(v.CategoryBlock),
