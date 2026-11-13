@@ -119,14 +119,19 @@ func rollingUsage(ctx context.Context, tx pgx.Tx, org domain.OrgID, currency dom
 // is persisted - see policy.Store's doc comment on what "persisting"
 // counting on means), AWAITING_APPROVAL/AUTHORIZED/IN_FLIGHT/UNKNOWN
 // (held) and APPLIED (spent). BLOCKED/FAILED released, never counted.
+// Windowed on created_at, not state_changed_at: the latter moves with
+// every transition, so a payment stuck in UNKNOWN for a day would
+// re-enter the last-hour/24h windows the moment it finally settles,
+// as if it were a brand new payment - created_at is stable for a
+// payment's whole life, matching commerceUsage's own c.created_at.
 func treasuryUsage(ctx context.Context, tx pgx.Tx, org domain.OrgID, currency domain.Currency, now time.Time) (policy.Usage, error) {
 	var u policy.Usage
 	err := tx.QueryRow(ctx, `
 		SELECT
-			COALESCE(sum(minor_units) FILTER (WHERE state_changed_at > $3::timestamptz - interval '24 hours'), 0),
-			COALESCE(sum(minor_units) FILTER (WHERE state_changed_at > $3::timestamptz - interval '7 days'), 0),
-			COALESCE(sum(minor_units) FILTER (WHERE state_changed_at > $3::timestamptz - interval '30 days'), 0),
-			count(*) FILTER (WHERE state_changed_at > $3::timestamptz - interval '1 hour')
+			COALESCE(sum(minor_units) FILTER (WHERE created_at > $3::timestamptz - interval '24 hours'), 0),
+			COALESCE(sum(minor_units) FILTER (WHERE created_at > $3::timestamptz - interval '7 days'), 0),
+			COALESCE(sum(minor_units) FILTER (WHERE created_at > $3::timestamptz - interval '30 days'), 0),
+			count(*) FILTER (WHERE created_at > $3::timestamptz - interval '1 hour')
 		FROM intents
 		WHERE org_id = $1 AND currency = $2 AND state IN ('PROPOSED', 'AWAITING_APPROVAL', 'AUTHORIZED', 'IN_FLIGHT', 'UNKNOWN', 'APPLIED')`,
 		string(org), string(currency), now).Scan(&u.Last24h, &u.Last7d, &u.Last30d, &u.LastHourCount)

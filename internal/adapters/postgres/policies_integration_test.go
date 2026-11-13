@@ -162,6 +162,59 @@ func TestEvaluateAndReserve_CountsIntentsStillProposedOrAwaitingApproval(t *test
 	}
 }
 
+// The rolling window is anchored on created_at, not state_changed_at:
+// a payment created well outside the window must stay excluded even
+// if it only just settled (state_changed_at refreshed to now) -
+// otherwise a payment stuck in UNKNOWN for a day would re-enter the
+// window the moment it finally resolves, as if it were brand new.
+func TestEvaluateAndReserve_WindowIsAnchoredOnCreatedAtNotStateChangedAt(t *testing.T) {
+	ctx := context.Background()
+	accounts := NewAccountStore(testPool(t))
+	store := NewPolicyStore(testPool(t))
+	intents := NewIntentRepository(testPool(t))
+	events := NewEventLog(testPool(t))
+	pool := testPool(t)
+	org, _ := newTestOrg(t, accounts)
+
+	v, _ := policy.NewPolicyVersion(org.ID, 0, map[domain.Currency]policy.CurrencyRule{
+		domain.USD: {Max24hMinor: 15_000},
+	}, nil, nil, nil)
+	if _, err := store.SaveNewVersion(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+
+	old, err := domain.NewIntent(org.ID, treasuryOf(org.ID), "payee-old", 10_000, "USD", "ref-old", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := intents.Save(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	cleanupIntent(t, pool, old.Key)
+	if _, err := events.Append(ctx, org.ID, old.Key, "PROPOSED", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Backdate created_at to 2 days ago, then settle it just now -
+	// state_changed_at refreshes to the current time, created_at
+	// stays old.
+	if _, err := pool.Exec(ctx, `UPDATE intents SET created_at = now() - interval '2 days' WHERE key = $1`, string(old.Key)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.Append(ctx, org.ID, old.Key, "APPLIED", "tr_1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 10,000 (the old, just-settled payment) + 6,000 candidate =
+	// 16,000, over the 15,000 24h limit only if the old payment still
+	// counts despite its state_changed_at being seconds old.
+	d, err := store.EvaluateAndReserve(ctx, org.ID, policy.EvaluationInput{
+		Context: policy.ContextTreasury, Currency: domain.USD, AmountMinor: 6_000,
+	})
+	if err != nil || d.Outcome != policy.Allow {
+		t.Errorf("EvaluateAndReserve with a 2-day-old settled payment = %+v, %v, want Allow (it must not count towards the 24h window)", d, err)
+	}
+}
+
 // A per-transaction checkout already passed this organisation's
 // policy (that gate runs before the mandate is ever evaluated) and is
 // only waiting on the customer's own approval - it must already count
