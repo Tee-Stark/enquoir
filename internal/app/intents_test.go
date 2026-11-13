@@ -244,6 +244,37 @@ func TestSubmitIntent_RecordsTheIntentAndTheAgentThatFirstSubmittedIt(t *testing
 
 // A policy denial never starts the workflow or saves the intent - the
 // same "the rail was never called" semantics as a payee unknown error.
+// A retry of an intent that already has history (settled or still in
+// flight) must be recognised as a duplicate before policy is ever
+// re-evaluated - otherwise a retry near a limit could be spuriously
+// denied (or re-escalated, re-emailing every approver) for a payment
+// that already went through.
+func TestSubmitIntent_RetryOfAlreadyRecordedIntent_NeverReEvaluatesPolicy(t *testing.T) {
+	intent := testIntent(t)
+	events := apptest.NewEventLog()
+	events.Append(context.Background(), testOrg, intent.Key, "PROPOSED", "")
+	events.Append(context.Background(), testOrg, intent.Key, "AUTHORIZED", "")
+	events.Append(context.Background(), testOrg, intent.Key, "APPLIED", "tr_1")
+
+	starter := &apptest.PaymentStarter{}
+	policies := &apptest.FixedPolicy{Outcome: policy.Deny, Reasons: []policy.Reason{{Code: policy.ReasonOverTransactionLimit}}}
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: starter, Events: events, Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock(), Policies: policies}
+
+	result, err := use.Run(context.Background(), commandFor(intent))
+	if err != nil {
+		t.Fatalf("retrying an already-applied intent: %v, want the deduplicated result, not a policy denial", err)
+	}
+	if result.State != domain.APPLIED || result.Outcome != app.OutcomeDeduplicated {
+		t.Errorf("result = %+v, want the already-recorded APPLIED/deduplicated result", result)
+	}
+	if len(policies.Calls) != 0 {
+		t.Errorf("policy evaluated %d times on a retry with existing history, want 0", len(policies.Calls))
+	}
+	if starter.CallCount() != 0 {
+		t.Errorf("started %d workflows for a retry, want 0", starter.CallCount())
+	}
+}
+
 func TestSubmitIntent_DeniedByPolicy_NeverStartsWorkflowOrSavesIntent(t *testing.T) {
 	intent := testIntent(t)
 	starter, intents := &apptest.PaymentStarter{}, apptest.NewIntents()

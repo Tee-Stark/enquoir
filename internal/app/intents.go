@@ -167,6 +167,22 @@ func (s *SubmitIntent) submit(ctx context.Context, cmd SubmitIntentCommand, atte
 	if !owned {
 		return SubmitIntentResult{}, ErrPayeeUnknown
 	}
+	// The dedupe check on the real key comes before policy evaluation,
+	// not after: an event can only exist for this key once some prior
+	// call's Intents.Save already created the row, so this read is
+	// safe before Save runs here too. Checking first means a retry of
+	// an intent that already has a chain short-circuits straight to
+	// OutcomeDeduplicated, instead of re-running policy's real side
+	// effects (a denial, an audit record, escalation emails) on a
+	// payment that already went through.
+	chain, err := s.Events.Load(ctx, intent.OrgID, intent.Key)
+	if err != nil {
+		return SubmitIntentResult{}, err
+	}
+	if len(chain) > 0 {
+		return SubmitIntentResult{Key: intent.Key, State: domain.State(chain[len(chain)-1].Type), Outcome: OutcomeDeduplicated}, nil
+	}
+
 	var escalate bool
 	if s.Policies != nil {
 		payee := intent.Payee
@@ -193,12 +209,16 @@ func (s *SubmitIntent) submit(ctx context.Context, cmd SubmitIntentCommand, atte
 			}
 		}
 	}
+
 	_, created, err := s.Intents.Save(ctx, intent)
 	if err != nil {
 		return SubmitIntentResult{}, err
 	}
 
-	chain, err := s.Events.Load(ctx, intent.OrgID, intent.Key)
+	// Re-checked after Save: a concurrent fresh submission of this
+	// same brand-new intent may have already appended PROPOSED between
+	// the check above and this Save.
+	chain, err = s.Events.Load(ctx, intent.OrgID, intent.Key)
 	if err != nil {
 		return SubmitIntentResult{}, err
 	}
