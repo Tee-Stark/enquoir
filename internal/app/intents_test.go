@@ -8,6 +8,7 @@ import (
 	"enquoir/internal/app"
 	"enquoir/internal/app/apptest"
 	"enquoir/internal/domain"
+	"enquoir/internal/policy"
 )
 
 const testOrg domain.OrgID = "org_test"
@@ -236,6 +237,80 @@ func TestSubmitIntent_RecordsTheIntentAndTheAgentThatFirstSubmittedIt(t *testing
 	stored, ok := intents.Get(intent.Key)
 	if !ok || stored.Agent != "agt_first" || stored.OrgID != testOrg {
 		t.Errorf("stored = %+v (found %v), want the intent attributed to agt_first", stored, ok)
+	}
+}
+
+// A policy denial never starts the workflow or saves the intent - the
+// same "the rail was never called" semantics as a payee unknown error.
+func TestSubmitIntent_DeniedByPolicy_NeverStartsWorkflowOrSavesIntent(t *testing.T) {
+	intent := testIntent(t)
+	starter, intents := &apptest.PaymentStarter{}, apptest.NewIntents()
+	policies := &apptest.FixedPolicy{Outcome: policy.Deny, Reasons: []policy.Reason{{Code: policy.ReasonOverTransactionLimit, Detail: "too much"}}, Version: 3}
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: starter, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: intents, Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock(), Policies: policies}
+
+	_, err := use.Run(context.Background(), commandFor(intent))
+	var denied *app.PolicyDeniedError
+	if !errors.As(err, &denied) || denied.Decision.Outcome != policy.Deny {
+		t.Fatalf("err = %v, want a *PolicyDeniedError", err)
+	}
+	if starter.CallCount() != 0 {
+		t.Errorf("started %d workflows for a policy-denied intent, want 0", starter.CallCount())
+	}
+	if _, ok := intents.Get(intent.Key); ok {
+		t.Error("a policy-denied intent was saved; want it never persisted")
+	}
+}
+
+// Escalate is treated identically to Deny until the real escalation
+// state exists (6d) - this is an explicit interim shim, not the final
+// behaviour, so the test name says so.
+func TestSubmitIntent_EscalatedByPolicy_TreatedAsDeniedForNow(t *testing.T) {
+	intent := testIntent(t)
+	policies := &apptest.FixedPolicy{Outcome: policy.Escalate, Reasons: []policy.Reason{{Code: policy.ReasonOverApprovalThreshold}}, Version: 1}
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: &apptest.PaymentStarter{}, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock(), Policies: policies}
+
+	_, err := use.Run(context.Background(), commandFor(intent))
+	var denied *app.PolicyDeniedError
+	if !errors.As(err, &denied) || denied.Decision.Outcome != policy.Escalate {
+		t.Fatalf("err = %v, want a *PolicyDeniedError carrying the Escalate decision", err)
+	}
+}
+
+func TestSubmitIntent_AllowedByPolicy_StartsNormallyAndPassesTheRightInput(t *testing.T) {
+	intent := testIntent(t)
+	starter := &apptest.PaymentStarter{}
+	policies := &apptest.FixedPolicy{Outcome: policy.Allow, Version: 2}
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: starter, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock(), Policies: policies}
+
+	result, err := use.Run(context.Background(), commandFor(intent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != domain.PROPOSED || starter.CallCount() != 1 {
+		t.Errorf("result = %+v, started %d times; want a normal PROPOSED start", result, starter.CallCount())
+	}
+	if len(policies.Calls) != 1 {
+		t.Fatalf("policy evaluated %d times, want 1", len(policies.Calls))
+	}
+	in := policies.Calls[0]
+	if in.Context != policy.ContextTreasury || in.Currency != intent.Amount.Currency() || in.AmountMinor != intent.Amount.MinorUnits() {
+		t.Errorf("evaluation input = %+v, want context=treasury, currency/amount matching the intent", in)
+	}
+	if in.Payee == nil || *in.Payee != intent.Payee {
+		t.Errorf("evaluation input payee = %v, want %q", in.Payee, intent.Payee)
+	}
+}
+
+// SubmitIntent works exactly as before when Policies is left unset -
+// existing callers that have no stake in policy evaluation (and the
+// many existing tests in this file) don't need to be updated.
+func TestSubmitIntent_WithNoPolicyStoreConfigured_AlwaysAllows(t *testing.T) {
+	intent := testIntent(t)
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: &apptest.PaymentStarter{}, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
+
+	result, err := use.Run(context.Background(), commandFor(intent))
+	if err != nil || result.State != domain.PROPOSED {
+		t.Errorf("result = %+v, %v, want a normal PROPOSED start with no Policies configured", result, err)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 
 	"enquoir/internal/app"
 	"enquoir/internal/domain"
+	"enquoir/internal/policy"
 )
 
 // Hasher is a transparent, fast stand-in for the slow hasher. It
@@ -1303,4 +1304,29 @@ func (l *AuditLog) ListForUser(ctx context.Context, user domain.UserID, f app.Au
 		}
 	}
 	return app.AuditPage{Events: out}, nil
+}
+
+// FixedPolicy is a policy.Store that always decides with Outcome,
+// whatever the input - for tests that only care how a use case reacts
+// to allow/deny/escalate, not how a real evaluation reaches one.
+type FixedPolicy struct {
+	Outcome policy.Outcome
+	Reasons []policy.Reason
+	Version int
+	// Calls records every EvaluateAndReserve input, in order.
+	Calls []policy.EvaluationInput
+}
+
+func (f *FixedPolicy) CurrentPolicy(ctx context.Context, org domain.OrgID) (policy.PolicyVersion, error) {
+	return policy.DefaultPolicyVersion(org), nil
+}
+
+func (f *FixedPolicy) SaveNewVersion(ctx context.Context, v policy.PolicyVersion) (policy.PolicyVersion, error) {
+	v.Version = f.Version + 1
+	return v, nil
+}
+
+func (f *FixedPolicy) EvaluateAndReserve(ctx context.Context, org domain.OrgID, in policy.EvaluationInput) (policy.Decision, error) {
+	f.Calls = append(f.Calls, in)
+	return policy.Decision{Outcome: f.Outcome, Reasons: f.Reasons, Version: f.Version}, nil
 }

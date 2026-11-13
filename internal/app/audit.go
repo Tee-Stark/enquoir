@@ -58,22 +58,24 @@ type AuditEvent struct {
 
 // Audit actions.
 const (
-	AuditLoggedIn           = "auth.logged_in"
-	AuditLockedOut          = "auth.locked_out"
-	AuditEmailVerified      = "auth.email_verified"
-	AuditPasswordChanged    = "auth.password_changed"
-	AuditPasswordReset      = "auth.password_reset"
-	AuditSessionsRevoked    = "auth.sessions_revoked"
-	AuditMemberInvited      = "member.invited"
-	AuditInvitationRevoked  = "invitation.revoked"
-	AuditInvitationAccepted = "invitation.accepted"
-	AuditRoleChanged        = "member.role_changed"
-	AuditMemberRemoved      = "member.removed"
-	AuditMemberLeft         = "member.left"
-	AuditAgentCreated       = "agent.created"
-	AuditAgentKeyRotated    = "agent.key_rotated"
-	AuditAgentRevoked       = "agent.revoked"
-	AuditPayeeRegistered    = "payee.registered"
+	AuditLoggedIn              = "auth.logged_in"
+	AuditLockedOut             = "auth.locked_out"
+	AuditEmailVerified         = "auth.email_verified"
+	AuditPasswordChanged       = "auth.password_changed"
+	AuditPasswordReset         = "auth.password_reset"
+	AuditSessionsRevoked       = "auth.sessions_revoked"
+	AuditMemberInvited         = "member.invited"
+	AuditInvitationRevoked     = "invitation.revoked"
+	AuditInvitationAccepted    = "invitation.accepted"
+	AuditRoleChanged           = "member.role_changed"
+	AuditMemberRemoved         = "member.removed"
+	AuditMemberLeft            = "member.left"
+	AuditAgentCreated          = "agent.created"
+	AuditAgentKeyRotated       = "agent.key_rotated"
+	AuditAgentRevoked          = "agent.revoked"
+	AuditPayeeRegistered       = "payee.registered"
+	AuditPolicyUpdated         = "policy.updated"
+	AuditPaymentDeniedByPolicy = "payment.denied_by_policy"
 
 	// Commerce. Treasury records none of these; they are listed here so
 	// the one audit log can filter by them.
@@ -177,6 +179,7 @@ var knownAuditActions = map[string]bool{
 	AuditSessionsRevoked: true, AuditMemberInvited: true, AuditInvitationRevoked: true, AuditInvitationAccepted: true,
 	AuditRoleChanged: true, AuditMemberRemoved: true, AuditMemberLeft: true, AuditAgentCreated: true,
 	AuditAgentKeyRotated: true, AuditAgentRevoked: true, AuditPayeeRegistered: true,
+	AuditPolicyUpdated: true, AuditPaymentDeniedByPolicy: true,
 	AuditIntegrationCreated: true, AuditIntegrationDisabled: true, AuditIntegrationEnabled: true,
 	AuditIntegrationKeyRotated: true, AuditIntegrationKeyRevoked: true,
 	AuditCommerceCustomerRegistered: true, AuditCommerceCustomerDisabled: true, AuditCommerceCustomerEnabled: true,

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"enquoir/internal/domain"
+	"enquoir/internal/policy"
 )
 
 // ErrIntentNotFound means no event has ever been recorded for a key -
@@ -17,6 +18,18 @@ var ErrIntentNotFound = errors.New("intent not found")
 // registered - possibly another organisation's, which the shared rail
 // account would otherwise pay.
 var ErrPayeeUnknown = errors.New("payee not registered by this organisation")
+
+// PolicyDeniedError means the organisation's spending policy denied a
+// candidate payment, or (until escalation exists, Phase 6d) decided
+// to escalate it - until then, escalate is treated identically to
+// deny, distinguishable only by Decision.Outcome.
+type PolicyDeniedError struct {
+	Decision policy.Decision
+}
+
+func (e *PolicyDeniedError) Error() string {
+	return fmt.Sprintf("denied by the organisation's spending policy (version %d, %d reason(s))", e.Decision.Version, len(e.Decision.Reasons))
+}
 
 // PaymentStarter starts, or attaches to, the durable workflow that
 // carries one Intent to a terminal state. Submitting the same intent
@@ -58,6 +71,11 @@ type SubmitIntent struct {
 	Attempts   AttemptLog
 	IDs        IDGenerator
 	Clock      Clock
+	// Policies evaluates a candidate payment against the organisation's
+	// spending policy. Nil skips the check and always allows - existing
+	// callers with no stake in policy evaluation need no change.
+	Policies policy.Store
+	Audit    *Audit
 }
 
 // Run validates the submission and starts intent's workflow only if
@@ -85,11 +103,14 @@ func (s *SubmitIntent) Run(ctx context.Context, cmd SubmitIntentCommand) (Submit
 	result, err := s.submit(ctx, cmd, &attempt)
 	if err != nil {
 		attempt.ErrorMessage = err.Error()
+		var policyDenied *PolicyDeniedError
 		switch {
 		case isValidation(err):
 			attempt.Outcome = OutcomeInvalid
 		case err == ErrPayeeUnknown:
 			attempt.Outcome = OutcomePayeeUnknown
+		case errors.As(err, &policyDenied):
+			attempt.Outcome = OutcomePolicyDenied
 		default:
 			attempt.Outcome = OutcomeError
 			attempt.ErrorMessage = "Enquoir could not process the submission"
@@ -135,6 +156,24 @@ func (s *SubmitIntent) submit(ctx context.Context, cmd SubmitIntentCommand, atte
 	}
 	if !owned {
 		return SubmitIntentResult{}, ErrPayeeUnknown
+	}
+	if s.Policies != nil {
+		payee := intent.Payee
+		decision, err := s.Policies.EvaluateAndReserve(ctx, intent.OrgID, policy.EvaluationInput{
+			Context: policy.ContextTreasury, Currency: intent.Amount.Currency(),
+			AmountMinor: intent.Amount.MinorUnits(), Payee: &payee,
+		})
+		if err != nil {
+			return SubmitIntentResult{}, fmt.Errorf("evaluating the organisation's spending policy: %w", err)
+		}
+		// Escalate is shimmed to behave exactly like Deny until Phase 6d
+		// adds the real AWAITING_APPROVAL state and escalation workflow.
+		if decision.Outcome != policy.Allow {
+			s.Audit.record(ctx, intent.OrgID, AuditPaymentDeniedByPolicy, "intent", string(intent.Key), map[string]string{
+				"decision": decision.Outcome.String(), "policy_version": fmt.Sprint(decision.Version),
+			})
+			return SubmitIntentResult{}, &PolicyDeniedError{Decision: decision}
+		}
 	}
 	_, created, err := s.Intents.Save(ctx, intent)
 	if err != nil {

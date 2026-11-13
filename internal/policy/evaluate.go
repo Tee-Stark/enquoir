@@ -27,6 +27,19 @@ const (
 	Escalate
 )
 
+func (o Outcome) String() string {
+	switch o {
+	case Allow:
+		return "allow"
+	case Deny:
+		return "deny"
+	case Escalate:
+		return "escalate"
+	default:
+		return "unknown"
+	}
+}
+
 // ReasonCode is a stable, closed set of reasons a decision can carry.
 type ReasonCode string
 
