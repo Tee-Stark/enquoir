@@ -59,6 +59,19 @@ func TestCreateAgent_IssuesAKeyShownOnce(t *testing.T) {
 	}
 }
 
+func TestCreateAgent_RecordsCreatedBy(t *testing.T) {
+	f := newAgentsFixture()
+	ctx := app.WithActor(context.Background(), app.Actor{UserID: domain.UserID("usr_creator")})
+
+	got, err := f.create.Run(ctx, orgA, "bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Agent.CreatedBy != domain.UserID("usr_creator") {
+		t.Errorf("CreatedBy = %q, want usr_creator", got.Agent.CreatedBy)
+	}
+}
+
 func TestCreateAgent_RequiresAName(t *testing.T) {
 	_, err := newAgentsFixture().create.Run(context.Background(), orgA, " ")
 	var verr *app.ValidationError
