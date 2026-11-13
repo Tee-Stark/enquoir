@@ -16,7 +16,7 @@ func seedAt(t *testing.T, org domain.OrgID, ref string, minor int64, state strin
 	t.Helper()
 	ctx := context.Background()
 	pool := testPool(t)
-	i, _ := domain.NewIntent(org, "ben_x", minor, "USD", ref, "")
+	i, _ := domain.NewIntent(org, treasuryOf(org), "ben_x", minor, "USD", ref, "")
 	if _, _, err := NewIntentRepository(pool).Save(ctx, i); err != nil {
 		t.Fatal(err)
 	}

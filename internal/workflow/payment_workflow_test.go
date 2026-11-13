@@ -19,7 +19,7 @@ const testOrg domain.OrgID = "org_test"
 
 func testIntent(t *testing.T, minorUnits int64) domain.Intent {
 	t.Helper()
-	intent, err := domain.NewIntent(testOrg, "beneficiary-1", minorUnits, "USD", fmt.Sprintf("ref-%s", t.Name()), "test")
+	intent, err := domain.NewIntent(testOrg, "trs_test", "beneficiary-1", minorUnits, "USD", fmt.Sprintf("ref-%s", t.Name()), "test")
 	require.NoError(t, err)
 	return intent
 }

@@ -112,16 +112,18 @@ func main() {
 
 	handler := &httpapi.Handler{
 		Submit: &app.SubmitIntent{
-			Starter:  &httpapi.TemporalPaymentStarter{Client: temporalClient, MaxAmountMinorUnits: maxMinorUnits},
-			Events:   events,
-			Payees:   beneficiaries,
-			Intents:  postgres.NewIntentRepository(pool),
-			Attempts: attempts,
-			IDs:      ids,
-			Clock:    sysClock,
+			Treasuries: accounts,
+			Starter:    &httpapi.TemporalPaymentStarter{Client: temporalClient, MaxAmountMinorUnits: maxMinorUnits},
+			Events:     events,
+			Payees:     beneficiaries,
+			Intents:    postgres.NewIntentRepository(pool),
+			Attempts:   attempts,
+			IDs:        ids,
+			Clock:      sysClock,
 		},
 		Get: &app.GetIntent{Events: events},
 		Register: &app.RegisterBeneficiary{
+			Treasuries:    accounts,
 			Registrar:     &httpapi.TemporalBeneficiaryRegistrar{Client: temporalClient},
 			Beneficiaries: beneficiaries,
 			Clock:         sysClock,

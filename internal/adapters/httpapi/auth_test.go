@@ -85,7 +85,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: clock},
 		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: clock},
 
-		Submit: &app.SubmitIntent{Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents(), Attempts: attempts, IDs: ids, Clock: clock},
+		Submit: &app.SubmitIntent{Treasuries: accounts, Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents(), Attempts: attempts, IDs: ids, Clock: clock},
 		Get:    &app.GetIntent{Events: events},
 
 		ListPayments:      &app.ListPayments{Payments: payments},

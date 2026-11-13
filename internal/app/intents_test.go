@@ -14,7 +14,7 @@ const testOrg domain.OrgID = "org_test"
 
 func testIntent(t *testing.T) domain.Intent {
 	t.Helper()
-	intent, err := domain.NewIntent(testOrg, "payee-1", 10050, "USD", "ref-"+t.Name(), "test")
+	intent, err := domain.NewIntent(testOrg, "trs_test", "payee-1", 10050, "USD", "ref-"+t.Name(), "test")
 	if err != nil {
 		t.Fatalf("building test intent: %v", err)
 	}
@@ -24,7 +24,7 @@ func testIntent(t *testing.T) domain.Intent {
 func TestSubmitIntent_FreshSubmissionReturnsProposed(t *testing.T) {
 	intent := testIntent(t)
 	starter := &apptest.PaymentStarter{}
-	use := &app.SubmitIntent{Starter: starter, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: starter, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 
 	result, err := use.Run(context.Background(), commandFor(intent))
 	if err != nil {
@@ -48,7 +48,7 @@ func TestSubmitIntent_AttachingReturnsCurrentRecordedState(t *testing.T) {
 	events.Append(context.Background(), testOrg, intent.Key, "AUTHORIZED", "")
 	events.Append(context.Background(), testOrg, intent.Key, "APPLIED", "tr_1")
 
-	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{}, Events: events, Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: &apptest.PaymentStarter{}, Events: events, Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 
 	result, err := use.Run(context.Background(), commandFor(intent))
 	if err != nil {
@@ -84,7 +84,7 @@ func TestSubmitIntent_RecordedHistoryIsNeverRestarted(t *testing.T) {
 				events.Append(context.Background(), testOrg, intent.Key, typ, "")
 			}
 			starter := &apptest.PaymentStarter{}
-			use := &app.SubmitIntent{Starter: starter, Events: events, Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
+			use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: starter, Events: events, Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 
 			result, err := use.Run(context.Background(), commandFor(intent))
 			if err != nil {
@@ -106,7 +106,7 @@ func TestSubmitIntent_PropagatesEventLogError(t *testing.T) {
 	intent := testIntent(t)
 	wantErr := errors.New("postgres unavailable")
 	starter := &apptest.PaymentStarter{}
-	use := &app.SubmitIntent{Starter: starter, Events: failingEventLog{err: wantErr}, Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: starter, Events: failingEventLog{err: wantErr}, Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 
 	_, err := use.Run(context.Background(), commandFor(intent))
 	if !errors.Is(err, wantErr) {
@@ -130,7 +130,7 @@ func (l failingEventLog) Load(ctx context.Context, org domain.OrgID, key domain.
 func TestSubmitIntent_PropagatesStarterError(t *testing.T) {
 	intent := testIntent(t)
 	wantErr := errors.New("temporal unavailable")
-	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{Err: wantErr}, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: &apptest.PaymentStarter{Err: wantErr}, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 
 	_, err := use.Run(context.Background(), commandFor(intent))
 	if !errors.Is(err, wantErr) {
@@ -201,7 +201,7 @@ func TestSubmitIntent_RefusesAPayeeTheOrganisationDoesNotOwn(t *testing.T) {
 	for name, payees := range cases {
 		t.Run(name, func(t *testing.T) {
 			starter, events := &apptest.PaymentStarter{}, apptest.NewEventLog()
-			use := &app.SubmitIntent{Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
+			use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 
 			_, err := use.Run(context.Background(), commandFor(intent))
 			if !errors.Is(err, app.ErrPayeeUnknown) {
@@ -222,7 +222,7 @@ func TestSubmitIntent_RecordsTheIntentAndTheAgentThatFirstSubmittedIt(t *testing
 	intent := testIntent(t)
 	intent.Agent = "agt_first"
 	intents := apptest.NewIntents()
-	use := &app.SubmitIntent{Starter: &apptest.PaymentStarter{}, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: intents, Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: &apptest.PaymentStarter{}, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: intents, Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
 
 	if _, err := use.Run(context.Background(), commandFor(intent)); err != nil {
 		t.Fatal(err)
@@ -245,5 +245,49 @@ func commandFor(intent domain.Intent) app.SubmitIntentCommand {
 		OrgID: intent.OrgID, Agent: intent.Agent, Payee: intent.Payee,
 		Amount: intent.Amount.MajorUnitsString(), Currency: string(intent.Amount.Currency()),
 		Reference: intent.Reference, Reason: intent.Reason,
+	}
+}
+
+// An intent recorded before treasuries has its key without one. A
+// resubmission of it is the same payment: it is reported as it stands,
+// under that key, and nothing new starts - a new key would mean a new
+// rail request_id, and the invoice paid twice.
+func TestSubmitIntent_AnIntentRecordedBeforeTreasuriesIsNotPaidAgain(t *testing.T) {
+	intent := testIntent(t)
+	events := apptest.NewEventLog()
+	events.Append(context.Background(), testOrg, intent.LegacyKey(), "PROPOSED", "")
+	events.Append(context.Background(), testOrg, intent.LegacyKey(), "APPLIED", "tr_1")
+	starter, intents := &apptest.PaymentStarter{}, apptest.NewIntents()
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: starter, Events: events, Payees: ownedPayees(), Intents: intents, Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
+
+	result, err := use.Run(context.Background(), commandFor(intent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Key != intent.LegacyKey() || result.State != domain.APPLIED || result.Outcome != app.OutcomeDeduplicated || starter.CallCount() != 0 {
+		t.Errorf("result = %+v, %d starts; want the recorded intent, deduplicated, nothing started", result, starter.CallCount())
+	}
+	// Another organisation's identical submission is its own payment.
+	other := commandFor(intent)
+	other.OrgID = "org_other"
+	use.Payees = apptest.NewBeneficiaries().Own("org_other", "payee-1")
+	if r, _ := use.Run(context.Background(), other); r.Outcome != app.OutcomeStarted {
+		t.Errorf("another organisation: %+v", r)
+	}
+}
+
+// The submission is scoped to the organisation's treasury: its key
+// includes it, and only a payee that treasury registered may be paid.
+func TestSubmitIntent_IsScopedToTheTreasury(t *testing.T) {
+	intent := testIntent(t)
+	payees := apptest.NewBeneficiaries().OwnIn(testOrg, "trs_other", "payee-1")
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: &apptest.PaymentStarter{}, Events: apptest.NewEventLog(), Payees: payees, Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
+	if _, err := use.Run(context.Background(), commandFor(intent)); !errors.Is(err, app.ErrPayeeUnknown) {
+		t.Errorf("another treasury's payee: %v", err)
+	}
+	payees.OwnIn(testOrg, "trs_test", "payee-1")
+	r, err := use.Run(context.Background(), commandFor(intent))
+	if err != nil || r.Key != intent.Key {
+		t.Errorf("result = %+v, %v; want the key with the treasury", r, err)
 	}
 }

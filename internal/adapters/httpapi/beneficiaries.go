@@ -32,18 +32,15 @@ func (h *Handler) registerBeneficiary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b, err := domain.NewBeneficiary(orgOf(r.Context()), req.Name, req.AccountNumber, req.RoutingNumber, domain.AccountCategory(req.Category), domain.BeneficiaryAddress{
-		Street:   req.Address.Street,
-		City:     req.Address.City,
-		State:    req.Address.State,
-		Postcode: req.Address.Postcode,
+	result, err := h.Register.Run(r.Context(), app.RegisterBeneficiaryCommand{
+		OrgID: orgOf(r.Context()), Name: req.Name, AccountNumber: req.AccountNumber, RoutingNumber: req.RoutingNumber,
+		Category: req.Category, Address: domain.BeneficiaryAddress{Street: req.Address.Street, City: req.Address.City,
+			State: req.Address.State, Postcode: req.Address.Postcode},
 	})
-	if err != nil {
-		writeProblem(w, http.StatusBadRequest, codeValidationFailed, err.Error())
+	if isValidationErr(err) {
+		writeProblem(w, http.StatusBadRequest, codeValidationFailed, err.(*app.ValidationError).Message)
 		return
 	}
-
-	result, err := h.Register.Run(r.Context(), b)
 	if errors.Is(err, app.ErrRejected) {
 		// The rail's own reason, so the caller can see which field to fix.
 		writeProblem(w, http.StatusUnprocessableEntity, codeRailRejected, err.Error())
@@ -58,4 +55,9 @@ func (h *Handler) registerBeneficiary(w http.ResponseWriter, r *http.Request) {
 		ID:  result.ID,
 		Key: string(result.Key),
 	})
+}
+
+func isValidationErr(err error) bool {
+	var v *app.ValidationError
+	return errors.As(err, &v)
 }

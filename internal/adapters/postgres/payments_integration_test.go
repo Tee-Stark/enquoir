@@ -21,11 +21,11 @@ func TestPaymentReader_ListsAndFiltersAnOrganisationsPayments(t *testing.T) {
 	repo, events, log, reader := NewIntentRepository(pool), NewEventLog(pool), NewAttemptLog(pool), NewPaymentReader(pool)
 
 	payee := ids.NewID("ben")
-	NewBeneficiaryStore(pool).Save(ctx, app.RegisteredBeneficiary{OrgID: org.ID, Key: domain.BeneficiaryKey(ids.NewID("bk")), RailID: payee,
+	NewBeneficiaryStore(pool).Save(ctx, app.RegisteredBeneficiary{OrgID: org.ID, TreasuryID: treasuryOf(org.ID), Key: domain.BeneficiaryKey(ids.NewID("bk")), RailID: payee,
 		Name: "Acme Ltd", AccountLast4: "1121", RoutingNumber: "021000021", Category: domain.Checking, CreatedAt: time.Now()})
 
 	newIntent := func(o domain.OrgID, ref string, history ...string) domain.Intent {
-		i, err := domain.NewIntent(o, payee, 1050, "USD", ref, "")
+		i, err := domain.NewIntent(o, treasuryOf(o), payee, 1050, "USD", ref, "")
 		if err != nil {
 			t.Fatal(err)
 		}

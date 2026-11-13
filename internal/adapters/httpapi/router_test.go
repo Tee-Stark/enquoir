@@ -180,7 +180,7 @@ func TestGetIntent_ReturnsStateAndHistory(t *testing.T) {
 	f := newAuthFixture(t, true)
 	org, bearer := f.newAgent(t)
 
-	intent, err := domain.NewIntent(org, "payee-1", 1050, "USD", "INV-2", "test")
+	intent, err := domain.NewIntent(org, "trs_test", "payee-1", 1050, "USD", "INV-2", "test")
 	if err != nil {
 		t.Fatalf("building intent: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestGetIntent_KeyFromAnotherOrganisationReturnsNotFound(t *testing.T) {
 	orgA, bearerA := f.newAgent(t)
 	_, bearerB := f.newAgent(t)
 
-	intent, err := domain.NewIntent(orgA, "payee-1", 1050, "USD", "INV-3", "test")
+	intent, err := domain.NewIntent(orgA, "trs_test", "payee-1", 1050, "USD", "INV-3", "test")
 	if err != nil {
 		t.Fatalf("building intent: %v", err)
 	}

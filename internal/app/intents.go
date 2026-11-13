@@ -50,13 +50,14 @@ type SubmitIntentResult struct {
 // SubmitIntent is the submit-intent use case. Every submission, valid
 // or not, is recorded as an agent_submission attempt.
 type SubmitIntent struct {
-	Starter  PaymentStarter
-	Events   EventLog
-	Payees   BeneficiaryStore
-	Intents  IntentRepository
-	Attempts AttemptLog
-	IDs      IDGenerator
-	Clock    Clock
+	Treasuries TreasuryStore
+	Starter    PaymentStarter
+	Events     EventLog
+	Payees     BeneficiaryStore
+	Intents    IntentRepository
+	Attempts   AttemptLog
+	IDs        IDGenerator
+	Clock      Clock
 }
 
 // Run validates the submission and starts intent's workflow only if
@@ -106,13 +107,29 @@ func (s *SubmitIntent) Run(ctx context.Context, cmd SubmitIntentCommand) (Submit
 }
 
 func (s *SubmitIntent) submit(ctx context.Context, cmd SubmitIntentCommand, attempt *Attempt) (SubmitIntentResult, error) {
-	intent, err := buildIntent(cmd)
+	treasury, err := s.Treasuries.TreasuryOf(ctx, cmd.OrgID)
+	if err != nil {
+		return SubmitIntentResult{}, fmt.Errorf("finding the organisation's treasury: %w", err)
+	}
+	intent, err := buildIntent(cmd, treasury.ID)
 	if err != nil {
 		return SubmitIntentResult{}, err
 	}
 	attempt.IntentKey = intent.Key
 
-	owned, err := s.Payees.Owns(ctx, intent.OrgID, intent.Payee)
+	// An intent recorded before treasuries has its key without one. A
+	// resubmission of it is the same payment: report it as it stands,
+	// never derive a new key and pay again.
+	legacy, err := s.Events.Load(ctx, intent.OrgID, intent.LegacyKey())
+	if err != nil {
+		return SubmitIntentResult{}, err
+	}
+	if len(legacy) > 0 {
+		attempt.IntentKey = intent.LegacyKey()
+		return SubmitIntentResult{Key: intent.LegacyKey(), State: domain.State(legacy[len(legacy)-1].Type), Outcome: OutcomeDeduplicated}, nil
+	}
+
+	owned, err := s.Payees.Owns(ctx, intent.OrgID, intent.TreasuryID, intent.Payee)
 	if err != nil {
 		return SubmitIntentResult{}, err
 	}
@@ -146,7 +163,7 @@ func (s *SubmitIntent) submit(ctx context.Context, cmd SubmitIntentCommand, atte
 
 // buildIntent validates a submission into an Intent, naming the field
 // at fault.
-func buildIntent(cmd SubmitIntentCommand) (domain.Intent, error) {
+func buildIntent(cmd SubmitIntentCommand, treasury domain.TreasuryID) (domain.Intent, error) {
 	if strings.TrimSpace(cmd.Payee) == "" {
 		return domain.Intent{}, &ValidationError{Field: "payee", Message: "payee is required"}
 	}
@@ -161,7 +178,7 @@ func buildIntent(cmd SubmitIntentCommand) (domain.Intent, error) {
 	if strings.TrimSpace(cmd.Reference) == "" {
 		return domain.Intent{}, &ValidationError{Field: "reference", Message: "reference is required"}
 	}
-	intent, err := domain.NewIntent(cmd.OrgID, cmd.Payee, amount.MinorUnits(), string(currency), cmd.Reference, cmd.Reason)
+	intent, err := domain.NewIntent(cmd.OrgID, treasury, cmd.Payee, amount.MinorUnits(), string(currency), cmd.Reference, cmd.Reason)
 	if err != nil {
 		return domain.Intent{}, invalid("intent", err)
 	}

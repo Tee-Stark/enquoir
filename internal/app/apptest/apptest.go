@@ -433,15 +433,38 @@ func NewBeneficiaries() *Beneficiaries {
 	return &Beneficiaries{saved: map[domain.BeneficiaryKey]app.RegisteredBeneficiary{}}
 }
 
-// Own seeds that org owns railID, for tests that need a payee. Unlike
-// Save it skips the one-owner check, so tests can give several
-// organisations a payee with the same literal ID.
+// Own seeds that org owns railID, in whichever treasury asks - for
+// tests that need a payee and don't care which treasury. Unlike Save it
+// skips the one-owner check, so tests can give several organisations a
+// payee with the same literal ID.
 func (s *Beneficiaries) Own(org domain.OrgID, railID string) *Beneficiaries {
+	return s.OwnIn(org, "", railID)
+}
+
+// OwnIn seeds that org's treasury owns railID ("" for any treasury).
+func (s *Beneficiaries) OwnIn(org domain.OrgID, treasury domain.TreasuryID, railID string) *Beneficiaries {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := domain.BeneficiaryKey(string(org) + "/" + railID)
-	s.saved[key] = app.RegisteredBeneficiary{OrgID: org, Key: key, RailID: railID}
+	key := domain.BeneficiaryKey(string(org) + "/" + string(treasury) + "/" + railID)
+	s.saved[key] = app.RegisteredBeneficiary{OrgID: org, TreasuryID: treasury, Key: key, RailID: railID}
 	return s
+}
+
+// Seed stores b as registered, as an earlier registration would have.
+func (s *Beneficiaries) Seed(b app.RegisteredBeneficiary) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.saved[b.Key] = b
+}
+
+func (s *Beneficiaries) ByKey(ctx context.Context, org domain.OrgID, treasury domain.TreasuryID, key domain.BeneficiaryKey) (app.RegisteredBeneficiary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.saved[key]
+	if !ok || b.OrgID != org || (b.TreasuryID != "" && b.TreasuryID != treasury) {
+		return app.RegisteredBeneficiary{}, app.ErrNotFound
+	}
+	return b, nil
 }
 
 func (s *Beneficiaries) Save(ctx context.Context, b app.RegisteredBeneficiary) error {
@@ -458,11 +481,11 @@ func (s *Beneficiaries) Save(ctx context.Context, b app.RegisteredBeneficiary) e
 	return nil
 }
 
-func (s *Beneficiaries) Owns(ctx context.Context, org domain.OrgID, railID string) (bool, error) {
+func (s *Beneficiaries) Owns(ctx context.Context, org domain.OrgID, treasury domain.TreasuryID, railID string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, b := range s.saved {
-		if b.OrgID == org && b.RailID == railID {
+		if b.OrgID == org && (b.TreasuryID == "" || b.TreasuryID == treasury) && b.RailID == railID {
 			return true, nil
 		}
 	}
@@ -475,6 +498,38 @@ func (s *Beneficiaries) Get(key domain.BeneficiaryKey) (app.RegisteredBeneficiar
 	defer s.mu.Unlock()
 	b, ok := s.saved[key]
 	return b, ok
+}
+
+// FixedTreasury is an app.TreasuryStore giving every organisation the
+// treasury ID.
+type FixedTreasury struct{ ID domain.TreasuryID }
+
+func (f FixedTreasury) TreasuryOf(ctx context.Context, org domain.OrgID) (app.Treasury, error) {
+	return app.Treasury{ID: f.ID, OrgID: org, Name: app.DefaultTreasuryName}, nil
+}
+
+func (f FixedTreasury) ListTreasuries(ctx context.Context, org domain.OrgID) ([]app.Treasury, error) {
+	t, _ := f.TreasuryOf(ctx, org)
+	return []app.Treasury{t}, nil
+}
+
+// TreasuryOf is the treasury org was created with.
+func (a *Accounts) TreasuryOf(ctx context.Context, org domain.OrgID) (app.Treasury, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	o, ok := a.orgs[org]
+	if !ok || o.TreasuryID == "" {
+		return app.Treasury{}, app.ErrNotFound
+	}
+	return app.Treasury{ID: o.TreasuryID, OrgID: org, Name: app.DefaultTreasuryName, CreatedAt: o.CreatedAt}, nil
+}
+
+func (a *Accounts) ListTreasuries(ctx context.Context, org domain.OrgID) ([]app.Treasury, error) {
+	t, err := a.TreasuryOf(ctx, org)
+	if err != nil {
+		return nil, err
+	}
+	return []app.Treasury{t}, nil
 }
 
 // Intents is an in-memory app.IntentRepository.
