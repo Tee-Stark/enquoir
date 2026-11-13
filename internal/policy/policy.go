@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"time"
 
@@ -52,10 +53,53 @@ type PolicyVersion struct {
 	CreatedBy     domain.UserID
 }
 
+// isSupportedCurrency reports whether c is one of supportedCurrencies.
+func isSupportedCurrency(c domain.Currency) bool {
+	for _, s := range supportedCurrencies {
+		if c == s {
+			return true
+		}
+	}
+	return false
+}
+
+// validateRule rejects a negative ceiling - zero means unlimited,
+// but a negative limit has no legitimate meaning and would otherwise
+// be treated as "everything exceeds it", the opposite of what an
+// owner editing a policy almost certainly intends.
+func validateRule(c domain.Currency, r CurrencyRule) error {
+	fields := map[string]int64{
+		"max_transaction_minor":    r.MaxPerTransactionMinor,
+		"max_24h_minor":            r.Max24hMinor,
+		"max_7d_minor":             r.Max7dMinor,
+		"max_30d_minor":            r.Max30dMinor,
+		"max_per_hour_count":       int64(r.MaxPerHourCount),
+		"approval_threshold_minor": r.ApprovalThresholdMinor,
+	}
+	for name, v := range fields {
+		if v < 0 {
+			return fmt.Errorf("currency %s: %s must not be negative, got %d", c, name, v)
+		}
+	}
+	return nil
+}
+
 // NewPolicyVersion builds a version with every supported currency
 // densely present: an omitted currency in rules defaults to the
-// zero/unlimited rule, rather than being absent.
+// zero/unlimited rule, rather than being absent. It is an error for
+// rules to name a currency this policy engine does not support, or a
+// negative value for any limit - both are rejected here rather than
+// silently dropped or saved, since a policy is a safety control, and
+// a safety control must fail closed on bad input, not open.
 func NewPolicyVersion(org domain.OrgID, version int, rules map[domain.Currency]CurrencyRule, payeeAllow, payeeBlock, categoryBlock []string) (PolicyVersion, error) {
+	for c, r := range rules {
+		if !isSupportedCurrency(c) {
+			return PolicyVersion{}, fmt.Errorf("unsupported currency %q: must be one of %v", c, supportedCurrencies)
+		}
+		if err := validateRule(c, r); err != nil {
+			return PolicyVersion{}, err
+		}
+	}
 	dense := make(map[domain.Currency]CurrencyRule, len(supportedCurrencies))
 	for _, c := range supportedCurrencies {
 		dense[c] = rules[c]

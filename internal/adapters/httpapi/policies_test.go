@@ -123,6 +123,28 @@ func TestEscalation_CreatorExcludedFromApprovingOwnAgentsPayment(t *testing.T) {
 	}
 }
 
+// A malformed edit - an unsupported currency, or a negative limit -
+// is rejected as 400, not silently saved with the bad currency
+// dropped or the negative limit accepted as a ceiling nothing can
+// pass.
+func TestPolicies_UpdateRejectsAMalformedEdit(t *testing.T) {
+	f := newAuthFixture(t, true)
+	_, owner := f.newOrg(t)
+
+	tests := map[string]string{
+		"unsupported currency": `{"currency_rules":[{"currency":"JPY","max_transaction_minor":1000}]}`,
+		"negative limit":       `{"currency_rules":[{"currency":"USD","max_transaction_minor":-1}]}`,
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			rec := f.do(t, http.MethodPut, "/v1/policies", body, owner)
+			if p := decodeProblem(t, rec); rec.Code != http.StatusBadRequest || p.Code != "validation_failed" {
+				t.Errorf("PUT policy with a %s: %d %q, want 400 validation_failed", name, rec.Code, p.Code)
+			}
+		})
+	}
+}
+
 func TestPolicies_DryRunRejectsAnUnknownContext(t *testing.T) {
 	f := newAuthFixture(t, true)
 	_, owner := f.newOrg(t)

@@ -39,7 +39,7 @@ type UpdatePolicy struct {
 func (u *UpdatePolicy) Run(ctx context.Context, org domain.OrgID, cmd UpdatePolicyCommand) (policy.PolicyVersion, error) {
 	v, err := policy.NewPolicyVersion(org, 0, cmd.CurrencyRules, cmd.PayeeAllow, cmd.PayeeBlock, cmd.CategoryBlock)
 	if err != nil {
-		return policy.PolicyVersion{}, err
+		return policy.PolicyVersion{}, &ValidationError{Field: "currency_rules", Message: err.Error()}
 	}
 	v.CreatedAt = u.Clock.Now()
 	v.CreatedBy = ActorFrom(ctx).UserID

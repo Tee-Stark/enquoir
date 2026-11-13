@@ -80,6 +80,36 @@ func TestDefaultPolicyVersion_IsMaximallyPermissive(t *testing.T) {
 	}
 }
 
+func TestNewPolicyVersion_RejectsAnUnsupportedCurrency(t *testing.T) {
+	_, err := policy.NewPolicyVersion(domain.OrgID("org_a"), 1, map[domain.Currency]policy.CurrencyRule{
+		domain.Currency("JPY"): {MaxPerTransactionMinor: 1_000},
+	}, nil, nil, nil)
+	if err == nil {
+		t.Fatal("NewPolicyVersion with an unsupported currency = nil error, want one naming it")
+	}
+}
+
+func TestNewPolicyVersion_RejectsANegativeLimit(t *testing.T) {
+	tests := map[string]policy.CurrencyRule{
+		"max_transaction_minor":    {MaxPerTransactionMinor: -1},
+		"max_24h_minor":            {Max24hMinor: -1},
+		"max_7d_minor":             {Max7dMinor: -1},
+		"max_30d_minor":            {Max30dMinor: -1},
+		"max_per_hour_count":       {MaxPerHourCount: -1},
+		"approval_threshold_minor": {ApprovalThresholdMinor: -1},
+	}
+	for name, rule := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := policy.NewPolicyVersion(domain.OrgID("org_a"), 1, map[domain.Currency]policy.CurrencyRule{
+				domain.USD: rule,
+			}, nil, nil, nil)
+			if err == nil {
+				t.Errorf("NewPolicyVersion with a negative %s = nil error, want one rejecting it", name)
+			}
+		})
+	}
+}
+
 func TestPolicyVersion_HashIgnoresListOrder(t *testing.T) {
 	a, err := policy.NewPolicyVersion(domain.OrgID("org_a"), 1, nil, []string{"pay_1", "pay_2"}, nil, nil)
 	if err != nil {

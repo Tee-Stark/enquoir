@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"enquoir/internal/app"
@@ -39,6 +40,31 @@ func TestUpdatePolicy_SavesANewVersionAndAudits(t *testing.T) {
 	events := auditLog.All()
 	if len(events) != 1 || events[0].Action != app.AuditPolicyUpdated {
 		t.Errorf("audit events = %+v, want exactly one AuditPolicyUpdated", events)
+	}
+}
+
+// A malformed edit - an unsupported currency, or a negative limit -
+// must be rejected as a validation error, not silently saved with the
+// bad currency dropped or the negative limit accepted as a ceiling
+// nothing can pass.
+func TestUpdatePolicy_RejectsAMalformedEdit(t *testing.T) {
+	policies := &apptest.FixedPolicy{}
+	clock := apptest.NewClock()
+	use := &app.UpdatePolicy{Policies: policies, Clock: clock, Audit: &app.Audit{Log: apptest.NewAuditLog(), IDs: &apptest.IDs{}, Clock: clock}}
+	ctx := app.WithActor(context.Background(), app.Actor{UserID: domain.UserID("usr_owner")})
+
+	tests := map[string]app.UpdatePolicyCommand{
+		"unsupported currency": {CurrencyRules: map[domain.Currency]policy.CurrencyRule{domain.Currency("JPY"): {MaxPerTransactionMinor: 1_000}}},
+		"negative limit":       {CurrencyRules: map[domain.Currency]policy.CurrencyRule{domain.USD: {MaxPerTransactionMinor: -1}}},
+	}
+	for name, cmd := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := use.Run(ctx, testOrg, cmd)
+			var verr *app.ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("Run with a %s = %v, want a *ValidationError", name, err)
+			}
+		})
 	}
 }
 
