@@ -119,3 +119,16 @@ func TestTreasuryDoesNotImportCommerce(t *testing.T) {
 		}
 	}
 }
+
+// internal/policy is the one thing both bounded contexts are allowed
+// to share: it must stay free of any dependency on either of them, or
+// it would smuggle a treasury<->commerce edge in through the back door.
+func TestPolicyImportsOnlyStandardLibraryAndDomain(t *testing.T) {
+	for file, paths := range importsByFile(t, "../policy") {
+		for _, p := range paths {
+			if !isStdlib(p) && p != "enquoir/internal/domain" {
+				t.Errorf("%s imports %q: internal/policy may import only the standard library and internal/domain", file, p)
+			}
+		}
+	}
+}
