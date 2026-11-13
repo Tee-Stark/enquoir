@@ -86,6 +86,39 @@ func TestAgentStore_LifecycleAndScoping(t *testing.T) {
 	}
 }
 
+// CreatedBy round-trips, and an agent created before the column existed
+// (simulated by inserting without it) reads back as empty, not an error.
+func TestAgentStore_CreatedByRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	accounts, store := NewAccountStore(pool), NewAgentStore(pool)
+	org, user := newTestOrg(t, accounts)
+	create, _, _, _ := newAgentUseCases(store)
+
+	actorCtx := app.WithActor(ctx, app.Actor{UserID: user.ID})
+	issued, err := create.Run(actorCtx, org.ID, "bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issued.Agent.CreatedBy != user.ID {
+		t.Fatalf("CreatedBy = %q, want %q", issued.Agent.CreatedBy, user.ID)
+	}
+	got, err := store.GetAgent(ctx, org.ID, issued.Agent.ID)
+	if err != nil || got.CreatedBy != user.ID {
+		t.Errorf("GetAgent CreatedBy = %q, %v, want %q", got.CreatedBy, err, user.ID)
+	}
+
+	legacyID := ids.NewID("agt")
+	if _, err := pool.Exec(ctx, `INSERT INTO agents (id, org_id, name, created_at) VALUES ($1, $2, $3, now())`,
+		legacyID, string(org.ID), "legacy bot"); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := store.GetAgent(ctx, org.ID, domain.AgentID(legacyID))
+	if err != nil || legacy.CreatedBy != "" {
+		t.Errorf("legacy agent CreatedBy = %q, %v, want empty", legacy.CreatedBy, err)
+	}
+}
+
 func newAgentFor(t *testing.T, pool *pgxpool.Pool, org domain.OrgID) (domain.AgentID, error) {
 	t.Helper()
 	create, _, _, _ := newAgentUseCases(NewAgentStore(pool))

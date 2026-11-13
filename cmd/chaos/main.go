@@ -125,8 +125,13 @@ func main() {
 		logger.Error("ensuring demo organisation", "error", err)
 		os.Exit(1)
 	}
+	treasury, err := postgres.NewAccountStore(pool).TreasuryOf(ctx, org)
+	if err != nil {
+		logger.Error("finding the demo organisation's treasury", "error", err)
+		os.Exit(1)
+	}
 
-	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail, postgres.NewBeneficiaryStore(pool), clock.System{}, org)
+	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail, postgres.NewBeneficiaryStore(pool), clock.System{}, org, treasury.ID)
 	if err != nil {
 		logger.Error("ensuring test beneficiary", "error", err)
 		os.Exit(1)
@@ -149,7 +154,7 @@ func main() {
 		logger.Info("chaos: running kill point", "point", point)
 		var r pointResult
 		for try := 1; try <= maxTries; try++ {
-			r = runKillPoint(ctx, logger, temporalClient, rail, simulator, events, workerBin, postgres.NewAttemptLog(pool), org, beneficiaryID, point)
+			r = runKillPoint(ctx, logger, temporalClient, rail, simulator, events, workerBin, postgres.NewAttemptLog(pool), org, treasury.ID, beneficiaryID, point)
 			if !r.Inconclusive {
 				break
 			}
@@ -281,11 +286,12 @@ func runKillPoint(
 	workerBin string,
 	attempts app.AttemptLog,
 	org domain.OrgID,
+	treasury domain.TreasuryID,
 	beneficiaryID string,
 	point chaos.Point,
 ) pointResult {
 	reference := fmt.Sprintf("chaos-%s-%d", point, time.Now().UnixNano())
-	intent, err := domain.NewIntent(org, beneficiaryID, demoAmountMinorUnits, "USD", reference, "chaos test: "+string(point))
+	intent, err := domain.NewIntent(org, treasury, beneficiaryID, demoAmountMinorUnits, "USD", reference, "chaos test: "+string(point))
 	if err != nil {
 		return pointResult{Point: point, Detail: fmt.Sprintf("building intent: %v", err)}
 	}

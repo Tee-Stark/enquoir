@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"enquoir/internal/app/apptest"
 	"enquoir/internal/domain"
+	"enquoir/internal/policy"
 )
 
 func postIntentAs(t *testing.T, f *authFixture, bearer, body string) *httptest.ResponseRecorder {
@@ -165,6 +168,31 @@ func TestSubmitIntent_RejectsInvalidInput(t *testing.T) {
 	}
 }
 
+// The agent gets reason codes only, never the policy's exact numeric
+// limits - an agent has no permission to read the policy itself
+// (GET /v1/policies/current needs a member session), so its own
+// denied submission must not be a side channel for learning those
+// limits by trial and error.
+func TestSubmitIntent_PolicyDeniedTellsTheAgentCodesNotLimits(t *testing.T) {
+	f := newAuthFixture(t, true)
+	_, bearer := f.newAgent(t)
+	policies := f.handler.Submit.Policies.(*apptest.FixedPolicy)
+	policies.Outcome = policy.Deny
+	policies.Reasons = []policy.Reason{{Code: policy.ReasonOverTransactionLimit, Detail: "amount 1050 exceeds the per-transaction limit of 500"}}
+
+	rec := postIntentAs(t, f, bearer, validIntentJSON)
+	p := decodeProblem(t, rec)
+	if rec.Code != http.StatusUnprocessableEntity || p.Code != "policy_denied" {
+		t.Fatalf("status/code = %d %q, want 422 policy_denied", rec.Code, p.Code)
+	}
+	if strings.Contains(p.Detail, "500") || strings.Contains(p.Detail, "1050") {
+		t.Errorf("detail = %q, want no numeric limit leaked to the agent", p.Detail)
+	}
+	if !strings.Contains(p.Detail, string(policy.ReasonOverTransactionLimit)) {
+		t.Errorf("detail = %q, want the reason code at least", p.Detail)
+	}
+}
+
 func getIntentAs(t *testing.T, f *authFixture, bearer, key string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/v1/intents/"+key, nil)
@@ -180,7 +208,7 @@ func TestGetIntent_ReturnsStateAndHistory(t *testing.T) {
 	f := newAuthFixture(t, true)
 	org, bearer := f.newAgent(t)
 
-	intent, err := domain.NewIntent(org, "payee-1", 1050, "USD", "INV-2", "test")
+	intent, err := domain.NewIntent(org, "trs_test", "payee-1", 1050, "USD", "INV-2", "test")
 	if err != nil {
 		t.Fatalf("building intent: %v", err)
 	}
@@ -225,7 +253,7 @@ func TestGetIntent_KeyFromAnotherOrganisationReturnsNotFound(t *testing.T) {
 	orgA, bearerA := f.newAgent(t)
 	_, bearerB := f.newAgent(t)
 
-	intent, err := domain.NewIntent(orgA, "payee-1", 1050, "USD", "INV-3", "test")
+	intent, err := domain.NewIntent(orgA, "trs_test", "payee-1", 1050, "USD", "INV-3", "test")
 	if err != nil {
 		t.Fatalf("building intent: %v", err)
 	}

@@ -59,6 +59,10 @@ func TestSignUp_CreatesOrganisationOwnerAndSession(t *testing.T) {
 	if m, err := f.accounts.Membership(context.Background(), got.Organisation.ID, got.User.ID); err != nil || m.Role != domain.Owner {
 		t.Errorf("membership = %+v, %v; want an owner membership", m, err)
 	}
+	// Every organisation is created with its own treasury.
+	if tr, err := f.accounts.TreasuryOf(context.Background(), got.Organisation.ID); err != nil || tr.ID == "" || tr.Name != app.DefaultTreasuryName {
+		t.Errorf("treasury = %+v, %v; want one created with the organisation", tr, err)
+	}
 	if got.User.PasswordHash == validSignUp.Password {
 		t.Error("the password was stored in plaintext")
 	}

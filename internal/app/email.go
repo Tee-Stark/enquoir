@@ -24,6 +24,11 @@ const (
 	TemplateMandateConsent    TemplateID = "mandate_consent"
 	TemplateMandateRevocation TemplateID = "mandate_revocation"
 	TemplateCheckoutApproval  TemplateID = "checkout_approval"
+	// TemplateEscalationCreated notifies an owner/admin that a payment
+	// needs their approval - no link, unlike the templates above: the
+	// recipient is already an authenticated member, who decides from
+	// the dashboard, not a one-time emailed link.
+	TemplateEscalationCreated TemplateID = "escalation_created"
 )
 
 // RenderedEmail is a template filled in: ready to send.

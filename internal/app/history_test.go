@@ -42,6 +42,16 @@ func TestListPayments_DefaultsThePageSizeAndAcceptsReceived(t *testing.T) {
 	}
 }
 
+// AWAITING_APPROVAL is a real intent state (Phase 6's escalation) - a
+// dashboard filtering for payments pending approval must not 400.
+func TestListPayments_AcceptsAwaitingApproval(t *testing.T) {
+	payments := apptest.NewPayments()
+	_, err := (&app.ListPayments{Payments: payments}).Run(context.Background(), testOrg, app.PaymentFilter{States: []string{string(domain.AWAITING_APPROVAL)}})
+	if err != nil {
+		t.Errorf("filtering by AWAITING_APPROVAL: %v, want it accepted", err)
+	}
+}
+
 func TestGetPayment_AssemblesHistoryChainAndAttempts(t *testing.T) {
 	ctx := context.Background()
 	key := domain.IntentKey("k1")
@@ -114,5 +124,14 @@ func TestListAttempts_ValidatesTheFilter(t *testing.T) {
 	if _, err := (&app.ListAttempts{Attempts: apptest.NewAttempts()}).Run(context.Background(), testOrg,
 		app.AttemptFilter{Kind: app.KindRailCall, Outcomes: []app.AttemptOutcome{app.OutcomeInterrupted}}); err != nil {
 		t.Errorf("a valid filter: %v", err)
+	}
+}
+
+// policy_denied is a real, reachable attempt outcome (SubmitIntent
+// sets it on a policy denial) - filtering attempts by it must not 400.
+func TestListAttempts_AcceptsPolicyDenied(t *testing.T) {
+	if _, err := (&app.ListAttempts{Attempts: apptest.NewAttempts()}).Run(context.Background(), testOrg,
+		app.AttemptFilter{Outcomes: []app.AttemptOutcome{app.OutcomePolicyDenied}}); err != nil {
+		t.Errorf("filtering by policy_denied: %v, want it accepted", err)
 	}
 }

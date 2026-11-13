@@ -35,9 +35,19 @@ func NewAccountStore(pool *pgxpool.Pool) *AccountStore { return &AccountStore{po
 
 func (s *AccountStore) CreateOrganisationWithOwner(ctx context.Context, org app.Organisation, owner app.User) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if org.TreasuryID == "" {
+			return fmt.Errorf("creating organisation %s: no treasury ID", org.ID)
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO organisations (id, name, created_at) VALUES ($1, $2, $3)`,
 			string(org.ID), org.Name, org.CreatedAt); err != nil {
 			return fmt.Errorf("creating organisation: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO treasuries (id, org_id, name, created_at) VALUES ($1, $2, $3, $4)`,
+			string(org.TreasuryID), string(org.ID), app.DefaultTreasuryName, org.CreatedAt); err != nil {
+			return fmt.Errorf("creating the organisation's treasury: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO organisation_policy_locks (org_id) VALUES ($1)`, string(org.ID)); err != nil {
+			return fmt.Errorf("creating the organisation's policy lock: %w", err)
 		}
 		if err := insertUser(ctx, tx, owner); err != nil {
 			return err
@@ -226,4 +236,36 @@ func (s *SessionStore) RevokeByID(ctx context.Context, user domain.UserID, id st
 		return app.ErrNotFound
 	}
 	return err
+}
+
+var _ app.TreasuryStore = (*AccountStore)(nil)
+
+func (s *AccountStore) TreasuryOf(ctx context.Context, org domain.OrgID) (app.Treasury, error) {
+	list, err := s.ListTreasuries(ctx, org)
+	if err != nil {
+		return app.Treasury{}, err
+	}
+	if len(list) == 0 {
+		return app.Treasury{}, app.ErrNotFound
+	}
+	return list[0], nil
+}
+
+func (s *AccountStore) ListTreasuries(ctx context.Context, org domain.OrgID) ([]app.Treasury, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, name, created_at FROM treasuries WHERE org_id = $1 ORDER BY created_at, id`, string(org))
+	if err != nil {
+		return nil, fmt.Errorf("listing treasuries: %w", err)
+	}
+	defer rows.Close()
+	var out []app.Treasury
+	for rows.Next() {
+		t := app.Treasury{OrgID: org}
+		var id string
+		if err := rows.Scan(&id, &t.Name, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		t.ID = domain.TreasuryID(id)
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }

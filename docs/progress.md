@@ -1564,3 +1564,103 @@ interleaved (one report path carries both).
 - The sweep's one-minute cadence means `unknown` can lag the deadline by
   up to a minute (plus a worker outage).
 - Phase 8 (SDK and demo) remains.
+
+## Phase 6: treasuries, spending policies and escalation - done (2026-11-13)
+
+Built on `feat/treasury-policies`, in four sub-phases (`Agent.CreatedBy`;
+`internal/policy`; policies/reservations wired into both bounded
+contexts; escalation), followed by a full review cycle (two independent
+reviewers) before the PR, which fixed every finding raised.
+
+### What exists
+
+- **Treasuries** (migration 0023): one logical treasury per organisation,
+  created with it. Every treasury operation scopes explicitly by `org_id`
+  and `treasury_id`; the intent key, the payee key, the Airwallex
+  `request_id` and beneficiary nickname all derive from both, staying
+  unique across the one shared Airwallex account.
+- **`internal/policy`** (new top-level package, stdlib + `internal/domain`
+  only - guarded by `TestPolicyImportsOnlyStandardLibraryAndDomain`):
+  `PolicyVersion` (dense per-currency `CurrencyRule`s, payee allow/block,
+  category block, a canonical-JSON `Hash`), `Evaluate` (every check runs
+  independently - a denial carries every failing reason, not just the
+  first; deny beats escalate by construction).
+- **Policies + reservations** (migration 0026): `policy_versions` and a
+  per-organisation `organisation_policy_locks` mutex row.
+  `PolicyStore.EvaluateAndReserve` locks the org, reads rolling usage
+  (24h/7d/30d totals, a per-hour count) from `intents` (treasury) and
+  `commerce_checkouts`/`commerce_authorizations` (commerce, mirroring
+  `countsAgainstMandate`), summed in Go into one organisation-wide
+  figure, and evaluates. Usage counts from the moment a payment is
+  persisted (`PROPOSED`/`awaiting_customer_approval` onward), not only
+  once settled. Wired into `SubmitIntent.Run` (before `Intents.Save`,
+  after the real-key dedupe check so a retry never re-evaluates) and
+  `SubmitCheckout.Run` (before the mandate is ever evaluated or locked).
+  `PUT /v1/policies`, `GET /v1/policies/current|versions`, `POST
+  /v1/policies/dry-run` (owners/admins; dry-run previews exactly what
+  submission will do, including commerce's escalate-as-deny shim).
+  `NewPolicyVersion` rejects an unsupported currency or a negative
+  limit - a safety control fails closed on bad input.
+- **Escalation**: `AWAITING_APPROVAL` intent state; the first Temporal
+  signal+timer in this codebase (`awaitApproval` in
+  `payment_workflow.go`) - 24-hour durable wait, a `RecheckPolicy`
+  activity on approval (retried without limit: a pure read, nothing to
+  duplicate), rejection or timeout moves to `BLOCKED`. Approving an
+  escalated payment only re-blocks on a fresh `Deny`, never on
+  "still over the threshold" - that is exactly what the approval cleared.
+  `POST /v1/payments/{key}/approve|reject`; the agent's creator can't
+  approve their own agent's payment unless they're the organisation's
+  only eligible owner/admin, in which case the exclusion is waived.
+  Every policy edit and decision is audited, including a timeout or a
+  recheck denial with no human decision to otherwise hang a record off.
+  Commerce's own escalation (an `awaiting_review` status, a second
+  Temporal workflow) was **not built** - Escalate is shimmed to behave
+  like Deny there, a deliberate, standing scope cut, not a placeholder.
+
+### Design choices
+
+- **Approval threshold is per-currency**, like every other policy rule.
+- **Creator-exclusion is waived** only when no other eligible owner/admin
+  exists - confirmed with the user before building it.
+- **Reservation is usage-based, not a ledger**: nothing is decremented;
+  "released" means a payment's state no longer matches the counting
+  predicate. The counting window is bounded by the caller actually
+  persisting the payment after a successful evaluation, not by
+  anything slower (worker latency included, now that `PROPOSED`/
+  `AWAITING_APPROVAL`/`awaiting_customer_approval` all count).
+
+### Verified
+
+- `make test` and `make test-integration` green at every commit.
+- A genuine concurrency test proving the organisation lock serialises
+  evaluations (treasury and commerce), plus a dedicated test proving
+  usage counts a payment still `PROPOSED` or `AWAITING_APPROVAL`/
+  `awaiting_customer_approval`, not only a settled one.
+- The two-reviewer review cycle's findings, all fixed and re-verified:
+  escalation approval unblockable on a stale "still escalates" recheck;
+  the usage-counting window; a retry re-running policy's side effects
+  before the dedupe check; silent currency/negative-limit validation
+  gaps; two missing read-model allowlist entries; an unbounded
+  RecheckPolicy retry budget; Allow decisions never recording their
+  policy version; two unaudited escalation outcomes (timeout, recheck
+  denial); escalation's audit/email firing before the workflow actually
+  started; dry-run drifting from commerce's real shim behaviour.
+
+### Not verified / open
+
+- Commerce escalation (`awaiting_review`, its own Temporal workflow) -
+  out of scope for this phase, Escalate is denied instead.
+- No live end-to-end escalation run against the dev stack (email
+  queued, approved via the dashboard API, and separately a timeout) -
+  code-reviewed and unit/integration-tested only.
+- **Known issue: a duplicate audit record on concurrent double-approval.**
+  `DecideEscalatedPayment.Run` reads the payment's state, then signals
+  the workflow and records `AuditPaymentApproved`/`Rejected` - nothing
+  between those steps is locked, so two concurrent approve calls on
+  the same payment can both pass the AWAITING_APPROVAL check and both
+  write an audit record, even though the workflow's selector only
+  ever consumes one signal (the second sits unread; no payment is ever
+  approved twice, no money moves twice). Left unfixed: a real fix
+  needs either a synchronous Temporal Update in place of the
+  fire-and-forget signal, or a new dedup row - disproportionate for a
+  narrow race whose only effect is an extra identical audit line.

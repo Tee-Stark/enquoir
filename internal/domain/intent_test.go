@@ -14,7 +14,7 @@ func mustIntent(t *testing.T, payee string, minorUnits int64, currency, referenc
 
 func mustIntentForOrg(t *testing.T, org OrgID, payee string, minorUnits int64, currency, reference, reason string) Intent {
 	t.Helper()
-	intent, err := NewIntent(org, payee, minorUnits, currency, reference, reason)
+	intent, err := NewIntent(org, "trs_test", payee, minorUnits, currency, reference, reason)
 	if err != nil {
 		t.Fatalf("NewIntent(%q, %q, %d, %q, %q, %q): unexpected error: %v", org, payee, minorUnits, currency, reference, reason, err)
 	}
@@ -111,32 +111,55 @@ func TestIntentKey_IsSafeLengthAndCharset(t *testing.T) {
 // derivation algorithm is caught by a test, not discovered in production.
 // Cross-checked outside Go:
 //
+//	printf 'org_test\x00trs_test\x00acme-ltd\x0010050\x00USD\x00INV-1001' | shasum -a 256 | cut -c1-32
+//
+// The legacy key, pinned too: intents recorded before treasuries keep
+// it, so it must never change either.
+//
 //	printf 'org_test\x00acme-ltd\x0010050\x00USD\x00INV-1001' | shasum -a 256 | cut -c1-32
 func TestIntentKey_Golden(t *testing.T) {
 	intent := mustIntent(t, "acme-ltd", 10050, "USD", "INV-1001", "invoice settlement")
-	const want = "6c15aeacac1e27902570d35f2b8c8af6"
-	if string(intent.Key) != want {
+	if want := "55b749b8395b25b48681eda4469518e2"; string(intent.Key) != want {
 		t.Errorf("golden key changed: got %q, want %q", intent.Key, want)
+	}
+	if want := "6c15aeacac1e27902570d35f2b8c8af6"; string(intent.LegacyKey()) != want {
+		t.Errorf("legacy key changed: got %q, want %q", intent.LegacyKey(), want)
+	}
+}
+
+// Deduplication is per organisation and treasury: the same payment
+// from two treasuries of one organisation is two intents.
+func TestIntentKey_DifferentTreasuriesGiveDifferentKeys(t *testing.T) {
+	a, _ := NewIntent(testOrg, "trs_a", "acme-ltd", 10050, "USD", "INV-1001", "")
+	b, _ := NewIntent(testOrg, "trs_b", "acme-ltd", 10050, "USD", "INV-1001", "")
+	if a.Key == b.Key || a.TreasuryID != "trs_a" {
+		t.Errorf("treasuries share key %q, or the treasury was not kept", a.Key)
+	}
+	if a.LegacyKey() != b.LegacyKey() {
+		t.Error("the legacy key depends on the treasury")
+	}
+	if _, err := NewIntent(testOrg, " ", "acme-ltd", 10050, "USD", "INV-1001", ""); err == nil {
+		t.Error("an intent with no treasury: want an error")
 	}
 }
 
 func TestNewIntent_RejectsEmptyOrgPayeeOrReference(t *testing.T) {
-	if _, err := NewIntent("", "acme-ltd", 10050, "USD", "INV-1001", "reason"); err == nil {
+	if _, err := NewIntent("", "trs_test", "acme-ltd", 10050, "USD", "INV-1001", "reason"); err == nil {
 		t.Error("NewIntent with empty org: want error, got nil")
 	}
-	if _, err := NewIntent(testOrg, "", 10050, "USD", "INV-1001", "reason"); err == nil {
+	if _, err := NewIntent(testOrg, "trs_test", "", 10050, "USD", "INV-1001", "reason"); err == nil {
 		t.Error("NewIntent with empty payee: want error, got nil")
 	}
-	if _, err := NewIntent(testOrg, "acme-ltd", 10050, "USD", "   ", "reason"); err == nil {
+	if _, err := NewIntent(testOrg, "trs_test", "acme-ltd", 10050, "USD", "   ", "reason"); err == nil {
 		t.Error("NewIntent with blank reference: want error, got nil")
 	}
 }
 
 func TestNewIntent_RejectsInvalidMoney(t *testing.T) {
-	if _, err := NewIntent(testOrg, "acme-ltd", 0, "USD", "INV-1001", "reason"); err == nil {
+	if _, err := NewIntent(testOrg, "trs_test", "acme-ltd", 0, "USD", "INV-1001", "reason"); err == nil {
 		t.Error("NewIntent with zero amount: want error, got nil")
 	}
-	if _, err := NewIntent(testOrg, "acme-ltd", 10050, "JPY", "INV-1001", "reason"); err == nil {
+	if _, err := NewIntent(testOrg, "trs_test", "acme-ltd", 10050, "JPY", "INV-1001", "reason"); err == nil {
 		t.Error("NewIntent with unsupported currency: want error, got nil")
 	}
 }

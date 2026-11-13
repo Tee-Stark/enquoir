@@ -21,7 +21,7 @@ func (r railWith) FindTransferByRequestID(ctx context.Context, requestID string)
 }
 
 func TestRejectedPoint(t *testing.T) {
-	intent, _ := domain.NewIntent("org_test", "payee", 1000, "USD", "ref", "")
+	intent, _ := domain.NewIntent("org_test", "trs_test", "payee", 1000, "USD", "ref", "")
 	failed := enquoirworkflow.PaymentResult{State: domain.FAILED, FailureReason: "fee_unknown"}
 
 	cases := []struct {

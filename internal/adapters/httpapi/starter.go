@@ -23,7 +23,7 @@ type TemporalPaymentStarter struct {
 	MaxAmountMinorUnits int64
 }
 
-func (s *TemporalPaymentStarter) Start(ctx context.Context, intent domain.Intent) error {
+func (s *TemporalPaymentStarter) Start(ctx context.Context, intent domain.Intent, escalate bool) error {
 	opts := client.StartWorkflowOptions{
 		ID:        string(intent.Key),
 		TaskQueue: enquoirworkflow.TaskQueue,
@@ -31,8 +31,16 @@ func (s *TemporalPaymentStarter) Start(ctx context.Context, intent domain.Intent
 	_, err := s.Client.ExecuteWorkflow(ctx, opts, enquoirworkflow.PaymentWorkflow, enquoirworkflow.PaymentInput{
 		Intent:              intent,
 		MaxAmountMinorUnits: s.MaxAmountMinorUnits,
+		Escalate:            escalate,
 	})
 	return err
+}
+
+// SignalApproval sends an approve/reject decision to the payment
+// workflow waiting for it in AWAITING_APPROVAL.
+func (s *TemporalPaymentStarter) SignalApproval(ctx context.Context, key domain.IntentKey, approved bool, decidedBy string) error {
+	return s.Client.SignalWorkflow(ctx, string(key), "", enquoirworkflow.EscalationSignalName,
+		enquoirworkflow.EscalationSignal{Approved: approved, DecidedBy: decidedBy})
 }
 
 // registerTimeout bounds how long a registration request waits on its

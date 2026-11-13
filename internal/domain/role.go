@@ -29,12 +29,21 @@ const (
 	// creating, disabling and enabling merchant integrations and
 	// issuing or revoking their keys.
 	PermManageIntegrations Permission = "manage_integrations"
+	// PermManagePolicy is editing the organisation's spending policy
+	// and running its dry-run evaluator.
+	PermManagePolicy Permission = "manage_policy"
+	// PermApproveEscalation is deciding a payment or checkout the
+	// policy escalated - kept separate from PermManagePolicy since
+	// editing the policy and approving one payment are different
+	// privileges in principle, even though today's role map grants
+	// both to the same roles.
+	PermApproveEscalation Permission = "approve_escalation"
 )
 
 // permissions is the whole policy: adding a role is one line here.
 var permissions = map[Role][]Permission{
-	Owner:    {PermRead, PermWrite, PermManageMembers, PermViewAuditLog, PermManageAdmins, PermManageIntegrations},
-	Admin:    {PermRead, PermWrite, PermManageMembers, PermViewAuditLog, PermManageIntegrations},
+	Owner:    {PermRead, PermWrite, PermManageMembers, PermViewAuditLog, PermManageAdmins, PermManageIntegrations, PermManagePolicy, PermApproveEscalation},
+	Admin:    {PermRead, PermWrite, PermManageMembers, PermViewAuditLog, PermManageIntegrations, PermManagePolicy, PermApproveEscalation},
 	Operator: {PermRead, PermWrite},
 	Viewer:   {PermRead},
 }

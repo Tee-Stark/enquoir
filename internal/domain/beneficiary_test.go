@@ -14,7 +14,7 @@ var testAddress = BeneficiaryAddress{
 
 func mustBeneficiary(t *testing.T, name, accountNumber, routingNumber string, addr BeneficiaryAddress) Beneficiary {
 	t.Helper()
-	b, err := NewBeneficiary(testOrg, name, accountNumber, routingNumber, Checking, addr)
+	b, err := NewBeneficiary(testOrg, "trs_test", name, accountNumber, routingNumber, Checking, addr)
 	if err != nil {
 		t.Fatalf("NewBeneficiary(testOrg, %q, %q, %q, %+v): unexpected error: %v", name, accountNumber, routingNumber, addr, err)
 	}
@@ -111,7 +111,7 @@ func TestNewBeneficiary_RejectsInvalidDetails(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewBeneficiary(testOrg, tt.beneficiary, tt.accountNumber, tt.routingNumber, Checking, tt.addr)
+			_, err := NewBeneficiary(testOrg, "trs_test", tt.beneficiary, tt.accountNumber, tt.routingNumber, Checking, tt.addr)
 			if err == nil {
 				t.Fatalf("want error containing %q, got nil", tt.wantErr)
 			}
@@ -138,7 +138,7 @@ func TestNewBeneficiary_AccountCategory(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.in), func(t *testing.T) {
-			b, err := NewBeneficiary(testOrg, "Acme Ltd", "50001121", "021000021", tt.in, testAddress)
+			b, err := NewBeneficiary(testOrg, "trs_test", "Acme Ltd", "50001121", "021000021", tt.in, testAddress)
 			if tt.wantErr {
 				if err == nil || !strings.Contains(err.Error(), "account category") {
 					t.Fatalf("want an account category error, got %v", err)
@@ -154,8 +154,8 @@ func TestNewBeneficiary_AccountCategory(t *testing.T) {
 		})
 	}
 
-	checking, _ := NewBeneficiary(testOrg, "Acme Ltd", "50001121", "021000021", Checking, testAddress)
-	savings, _ := NewBeneficiary(testOrg, "Acme Ltd", "50001121", "021000021", Savings, testAddress)
+	checking, _ := NewBeneficiary(testOrg, "trs_test", "Acme Ltd", "50001121", "021000021", Checking, testAddress)
+	savings, _ := NewBeneficiary(testOrg, "trs_test", "Acme Ltd", "50001121", "021000021", Savings, testAddress)
 	if checking.Key == savings.Key {
 		t.Error("changing the account category must change the key")
 	}
@@ -165,7 +165,7 @@ func TestNewBeneficiary_NormalisesStateToTwoLetters(t *testing.T) {
 	for _, in := range []string{"WA", "wa", " US-WA ", "us-wa"} {
 		addr := testAddress
 		addr.State = in
-		b, err := NewBeneficiary(testOrg, "Acme Ltd", "50001121", "021000021", Checking, addr)
+		b, err := NewBeneficiary(testOrg, "trs_test", "Acme Ltd", "50001121", "021000021", Checking, addr)
 		if err != nil {
 			t.Fatalf("state %q: unexpected error: %v", in, err)
 		}
@@ -195,7 +195,7 @@ func TestNewBeneficiary_RejectsInvalidUSAddressFormats(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			addr := testAddress
 			tt.mutate(&addr)
-			_, err := NewBeneficiary(testOrg, "Acme Ltd", "50001121", "021000021", Checking, addr)
+			_, err := NewBeneficiary(testOrg, "trs_test", "Acme Ltd", "50001121", "021000021", Checking, addr)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("want an error mentioning %q, got %v", tt.wantErr, err)
 			}
@@ -204,14 +204,14 @@ func TestNewBeneficiary_RejectsInvalidUSAddressFormats(t *testing.T) {
 
 	addr := testAddress
 	addr.Postcode = "98104-1234"
-	if _, err := NewBeneficiary(testOrg, "Acme Ltd", "50001121", "021000021", Checking, addr); err != nil {
+	if _, err := NewBeneficiary(testOrg, "trs_test", "Acme Ltd", "50001121", "021000021", Checking, addr); err != nil {
 		t.Errorf("ZIP+4 postcode rejected: %v", err)
 	}
 }
 
 func TestNewBeneficiary_RejectsNameTheRailWouldRefuse(t *testing.T) {
 	for _, name := range []string{"A", "12345"} {
-		if _, err := NewBeneficiary(testOrg, name, "50001121", "021000021", Checking, testAddress); err == nil || !strings.Contains(err.Error(), "name") {
+		if _, err := NewBeneficiary(testOrg, "trs_test", name, "50001121", "021000021", Checking, testAddress); err == nil || !strings.Contains(err.Error(), "name") {
 			t.Errorf("name %q: want a name error, got %v", name, err)
 		}
 	}
@@ -223,8 +223,8 @@ func TestNewBeneficiary_RejectsNameTheRailWouldRefuse(t *testing.T) {
 // registered by two organisations are two beneficiaries, never one
 // that either could pay or see through the other.
 func TestBeneficiaryKey_DifferentOrganisationsGetDifferentKeys(t *testing.T) {
-	a, _ := NewBeneficiary("org_a", "Acme Ltd", "50001121", "021000021", Checking, testAddress)
-	b, _ := NewBeneficiary("org_b", "Acme Ltd", "50001121", "021000021", Checking, testAddress)
+	a, _ := NewBeneficiary("org_a", "trs_test", "Acme Ltd", "50001121", "021000021", Checking, testAddress)
+	b, _ := NewBeneficiary("org_b", "trs_test", "Acme Ltd", "50001121", "021000021", Checking, testAddress)
 	if a.Key == b.Key {
 		t.Errorf("two organisations' identical payees share key %q", a.Key)
 	}
@@ -234,18 +234,32 @@ func TestBeneficiaryKey_DifferentOrganisationsGetDifferentKeys(t *testing.T) {
 }
 
 func TestNewBeneficiary_RequiresAnOrganisation(t *testing.T) {
-	if _, err := NewBeneficiary("  ", "Acme Ltd", "50001121", "021000021", Checking, testAddress); err == nil {
+	if _, err := NewBeneficiary("  ", "trs_test", "Acme Ltd", "50001121", "021000021", Checking, testAddress); err == nil {
 		t.Error("NewBeneficiary with no organisation: want an error")
 	}
 }
 
 // Golden, cross-checked outside Go:
 //
+//	printf 'org_a\x00trs_a\x00Acme Ltd\x0050001121\x00021000021\x00Checking\x00412 5th Avenue\x00Seattle\x00WA\x0098104' | shasum -a 256 | cut -c1-32
+//
+// and the legacy key, without the treasury, which payees registered
+// before treasuries keep:
+//
 //	printf 'org_a\x00Acme Ltd\x0050001121\x00021000021\x00Checking\x00412 5th Avenue\x00Seattle\x00WA\x0098104' | shasum -a 256 | cut -c1-32
 func TestBeneficiaryKey_Golden(t *testing.T) {
-	b, _ := NewBeneficiary("org_a", "Acme Ltd", "50001121", "021000021", Checking, testAddress)
-	const want = "49577f3801fb55707d63a741628638ae"
-	if string(b.Key) != want {
+	b, _ := NewBeneficiary("org_a", "trs_a", "Acme Ltd", "50001121", "021000021", Checking, testAddress)
+	if want := "b7fd355f80c497d375d52169c3056189"; string(b.Key) != want {
 		t.Errorf("golden key changed: got %q, want %q", b.Key, want)
+	}
+	if want := "49577f3801fb55707d63a741628638ae"; string(b.LegacyKey()) != want {
+		t.Errorf("legacy key changed: got %q, want %q", b.LegacyKey(), want)
+	}
+	if _, err := NewBeneficiary("org_a", "", "Acme Ltd", "50001121", "021000021", Checking, testAddress); err == nil {
+		t.Error("a payee with no treasury: want an error")
+	}
+	other, _ := NewBeneficiary("org_a", "trs_b", "Acme Ltd", "50001121", "021000021", Checking, testAddress)
+	if other.Key == b.Key || other.LegacyKey() != b.LegacyKey() {
+		t.Error("treasuries must give different keys and the same legacy key")
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"enquoir/internal/chaos"
 	"enquoir/internal/commerce/commerceapp"
 	"enquoir/internal/domain"
+	"enquoir/internal/policy"
 )
 
 // Activity error types, carried across the activity boundary via
@@ -48,6 +49,50 @@ type Activities struct {
 
 	// ExecutionSweep presumes overdue commerce executions unknown.
 	ExecutionSweep *commerceapp.SweepExecutions
+
+	// Policies re-evaluates a payment approved out of AWAITING_APPROVAL,
+	// since limits may have moved since it was escalated.
+	Policies policy.Store
+
+	// Audit records the escalation outcomes decided entirely inside
+	// this workflow, with no HTTP call to hang an audit record off.
+	Audit *app.Audit
+}
+
+// RecordEscalationOutcomeInput is RecordEscalationOutcome's input.
+type RecordEscalationOutcomeInput struct {
+	OrgID     domain.OrgID
+	IntentKey domain.IntentKey
+	Action    string
+	Details   map[string]string
+}
+
+// RecordEscalationOutcome audits an escalation's resolution when
+// nothing else will: a timeout with no decision, or a denial on the
+// policy recheck after a human already approved. Nil Audit is a
+// no-op, matching every other optional dependency's nil-safety.
+func (a *Activities) RecordEscalationOutcome(ctx context.Context, in RecordEscalationOutcomeInput) error {
+	if a.Audit == nil {
+		return nil
+	}
+	a.Audit.Record(ctx, in.OrgID, in.Action, "intent", string(in.IntentKey), in.Details)
+	return nil
+}
+
+// RecheckPolicy evaluates intent against the organisation's current
+// policy and usage, exactly as submission did - approving an
+// escalated payment must never let through on a decision now stale.
+// Nil Policies always allows, matching SubmitIntent/SubmitCheckout's
+// own nil-safety.
+func (a *Activities) RecheckPolicy(ctx context.Context, intent domain.Intent) (policy.Decision, error) {
+	if a.Policies == nil {
+		return policy.Decision{Outcome: policy.Allow}, nil
+	}
+	payee := intent.Payee
+	return a.Policies.EvaluateAndReserve(ctx, intent.OrgID, policy.EvaluationInput{
+		Context: policy.ContextTreasury, Currency: intent.Amount.Currency(),
+		AmountMinor: intent.Amount.MinorUnits(), Payee: &payee,
+	})
 }
 
 // TransferRef names a transfer and the intent it pays.

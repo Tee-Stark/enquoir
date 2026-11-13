@@ -50,6 +50,17 @@ tags:
       `Authorization: Bearer <key>`. Managing agents needs a dashboard session.
   - name: Payments
     description: Payment intents submitted by agents.
+  - name: Policies
+    description: |
+      One spending policy per organisation, versioned on every edit.
+      Rules are per currency: a maximum per transaction, rolling 24h/7d/30d
+      totals, a count per rolling hour, an approval threshold (above it a
+      payment or checkout needs a human's approval), a treasury payee
+      allow/block list and a commerce category block list. Evaluation is
+      allow, deny (every reason) or escalate; deny beats escalate. Dry-run
+      evaluates a candidate payment without moving or reserving anything.
+      Owners and admins edit the policy and run dry-run; any member may
+      read it.
   - name: Beneficiaries
     description: Payees registered on the rail before they can be paid.
   - name: History
@@ -1389,6 +1400,86 @@ paths:
           description: Revoked.
         "404":
           $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/policies/current:
+    get:
+      tags: [Policies]
+      operationId: getCurrentPolicy
+      summary: Read the organisation's current spending policy
+      description: Any member may read it. A new version 0 (every limit unlimited) is returned if the organisation has never edited one.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The current policy version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyVersion"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/policies:
+    put:
+      tags: [Policies]
+      operationId: updatePolicy
+      summary: Replace the organisation's spending policy with a new version
+      description: Owners and admins only, with a verified email. Every edit is a new version, never a mutation; past decisions keep reading back the version they used.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePolicyRequest"
+      responses:
+        "200":
+          description: The saved version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyVersion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/policies/dry-run:
+    post:
+      tags: [Policies]
+      operationId: dryRunPolicy
+      summary: Evaluate a candidate payment without moving or reserving anything
+      description: Owners and admins only - it reveals how close the organisation is to its limits.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DryRunPolicyRequest"
+      responses:
+        "200":
+          description: The decision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyDecision"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
@@ -3135,6 +3226,72 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/payments/{key}/approve:
+    parameters:
+      - $ref: "#/components/parameters/IntentKey"
+    post:
+      tags: [Payments]
+      operationId: approveEscalatedPayment
+      summary: Approve a payment the organisation's policy escalated
+      description: |
+        Owners and admins only, with a verified email. The payment must
+        currently be AWAITING_APPROVAL. Rechecks the policy before
+        authorizing - a decision that was fine when escalated can still
+        be refused now. The member who created the paying agent cannot
+        approve its own payment unless they are the organisation's only
+        eligible owner or admin, in which case the exclusion is waived.
+      security:
+        - session: []
+      responses:
+        "204":
+          description: Approved; the payment proceeds (or is denied on recheck).
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: Forbidden, or the acting user is excluded from approving.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The payment is not currently awaiting approval.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/payments/{key}/reject:
+    parameters:
+      - $ref: "#/components/parameters/IntentKey"
+    post:
+      tags: [Payments]
+      operationId: rejectEscalatedPayment
+      summary: Reject a payment the organisation's policy escalated
+      description: Owners and admins only. The payment must currently be AWAITING_APPROVAL. Unlike approval, rejection is never excluded - it is not a conflict of interest the way approval is.
+      security:
+        - session: []
+      responses:
+        "204":
+          description: Rejected; the payment is denied.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The payment is not currently awaiting approval.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/analytics/summary:
     get:
       tags: [Analytics]
@@ -3692,6 +3849,9 @@ components:
             - invalid_credentials
             - email_taken
             - payee_unknown
+            - policy_denied
+            - not_awaiting_approval
+            - approver_excluded
             - forbidden_origin
             - not_implemented
             - body_too_large
@@ -3819,11 +3979,11 @@ components:
       description: |
         A State, or RECEIVED: accepted by the API, not yet picked up by a
         worker (nothing has happened to it yet).
-      enum: [RECEIVED, PROPOSED, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED]
+      enum: [RECEIVED, PROPOSED, AWAITING_APPROVAL, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED]
 
     Payment:
       type: object
-      required: [key, state, terminal, amount, payee, reference, reason, agent, transfer_id, failure_reason,
+      required: [key, state, terminal, amount, payee, reference, reason, agent, transfer_id, failure_reason, policy_version,
                  created_at, state_changed_at, submissions, rail_calls]
       properties:
         key:
@@ -3852,6 +4012,9 @@ components:
         failure_reason:
           type: [string, "null"]
           description: Why it is FAILED or BLOCKED.
+        policy_version:
+          type: [integer, "null"]
+          description: The policy version that decided it (Allow or Escalate), null if no policy was configured at submission.
         created_at:
           type: string
           format: date-time
@@ -3926,12 +4089,14 @@ components:
       description: |
         Agent submissions: started (a new payment began), attached (joined a
         run already starting), deduplicated (already had history; nothing
-        started), invalid, payee_unknown, error.
+        started), invalid, payee_unknown, policy_denied (the organisation's
+        spending policy denied it, or - until escalation exists - decided
+        to escalate it), error.
         Rail calls: ok, not_found (a lookup found nothing), rejected (a clear
         no), ambiguous (outcome unclear: timeout, 5xx, network),
         duplicate_transfers, error, in_progress (under way), interrupted
         (started but never finished - the worker likely died mid-call).
-      enum: [started, attached, deduplicated, invalid, payee_unknown, error,
+      enum: [started, attached, deduplicated, invalid, payee_unknown, policy_denied, error,
              ok, not_found, rejected, ambiguous, duplicate_transfers, in_progress, interrupted]
 
     Attempt:
@@ -4318,6 +4483,133 @@ components:
         The merchant's own reference, unique per merchant and compared
         exactly. Trimmed; no spaces or control characters inside.
 
+    CurrencyRule:
+      type: object
+      description: One currency's limits within a policy version. Zero means unlimited on every field - there is no policy that blocks every payment in a currency while still naming a rule for it.
+      required: [currency, max_transaction_minor, max_24h_minor, max_7d_minor, max_30d_minor, max_per_hour_count, approval_threshold_minor]
+      properties:
+        currency:
+          type: string
+          enum: [USD, EUR, GBP]
+        max_transaction_minor:
+          type: integer
+          format: int64
+        max_24h_minor:
+          type: integer
+          format: int64
+        max_7d_minor:
+          type: integer
+          format: int64
+        max_30d_minor:
+          type: integer
+          format: int64
+        max_per_hour_count:
+          type: integer
+        approval_threshold_minor:
+          type: integer
+          format: int64
+          description: Above this, a payment or checkout escalates for a human's approval.
+
+    PolicyVersion:
+      type: object
+      required: [version, currency_rules, payee_allow, payee_block, category_block, created_at]
+      properties:
+        version:
+          type: integer
+          description: 0 means the organisation has never edited its policy - every limit is unlimited.
+        currency_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/CurrencyRule"
+        payee_allow:
+          type: array
+          items:
+            type: string
+          description: Treasury only. Empty means no allow-list restriction.
+        payee_block:
+          type: array
+          items:
+            type: string
+          description: Treasury only.
+        category_block:
+          type: array
+          items:
+            type: string
+          description: Commerce only.
+        created_at:
+          type: [string, "null"]
+          format: date-time
+          description: Null for the default, unedited version.
+        created_by:
+          type: string
+          description: The user who saved this version. Omitted for the default, unedited version.
+
+    UpdatePolicyRequest:
+      type: object
+      properties:
+        currency_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/CurrencyRule"
+          description: An omitted currency defaults to unlimited on every field.
+        payee_allow:
+          type: array
+          items:
+            type: string
+        payee_block:
+          type: array
+          items:
+            type: string
+        category_block:
+          type: array
+          items:
+            type: string
+
+    DryRunPolicyRequest:
+      type: object
+      required: [context, currency, amount_minor]
+      properties:
+        context:
+          type: string
+          enum: [treasury, commerce]
+        currency:
+          type: string
+          enum: [USD, EUR, GBP]
+        amount_minor:
+          type: integer
+          format: int64
+        payee:
+          type: string
+          description: Treasury only.
+        categories:
+          type: array
+          items:
+            type: string
+          description: Commerce only.
+
+    PolicyDecision:
+      type: object
+      required: [outcome, reasons, policy_version]
+      properties:
+        outcome:
+          type: string
+          enum: [allow, deny, escalate]
+          description: Deny beats escalate - escalate is only reached when nothing already denied.
+        reasons:
+          type: array
+          items:
+            type: object
+            required: [code, detail]
+            properties:
+              code:
+                type: string
+                enum: [over_transaction_limit, over_24h_total, over_7d_total, over_30d_total, over_hourly_count,
+                  payee_blocked, payee_not_allowed, category_blocked, no_currency_rule, over_approval_threshold]
+              detail:
+                type: string
+        policy_version:
+          type: integer
+
     MerchantIntegration:
       type: object
       required: [id, name, status, created_at, disabled_at, key]
@@ -4656,8 +4948,16 @@ components:
                 properties:
                   code:
                     type: string
+                    description: |
+                      A mandate-level reason (the customer's own consent doesn't
+                      allow this), or a policy_-prefixed one (the organisation's
+                      spending policy doesn't, decided before the mandate is ever
+                      evaluated - the two never appear together in one checkout).
                     enum: [mandate_not_active, customer_mismatch, agent_mismatch, funding_method_mismatch, currency_mismatch,
-                      over_transaction_limit, category_not_allowed, over_transaction_count, over_budget]
+                      over_transaction_limit, category_not_allowed, over_transaction_count, over_budget,
+                      policy_over_transaction_limit, policy_over_24h_total, policy_over_7d_total, policy_over_30d_total,
+                      policy_over_hourly_count, policy_payee_blocked, policy_payee_not_allowed, policy_category_blocked,
+                      policy_no_currency_rule, policy_over_approval_threshold]
                   detail:
                     type: string
         checkout:
@@ -5076,13 +5376,17 @@ components:
       description: |
         Where an intent is in its lifecycle. APPLIED and BLOCKED are final.
         - PROPOSED: received by the workflow.
+        - AWAITING_APPROVAL: the organisation's policy escalated it, above
+          the approval threshold; an owner or admin must approve or reject
+          it within 24 hours, or it is denied.
         - AUTHORIZED: policy passed.
         - IN_FLIGHT: recorded, then sent to the rail.
         - UNKNOWN: the outcome is unclear; Enquoir looks it up before anything else.
         - APPLIED: the rail confirmed the transfer PAID.
         - FAILED: the rail rejected or cancelled it.
-        - BLOCKED: policy refused it; the rail was never called.
-      enum: [PROPOSED, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED]
+        - BLOCKED: policy refused it, or an escalation was rejected or
+          expired; the rail was never called.
+      enum: [PROPOSED, AWAITING_APPROVAL, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED]
 
     SubmitIntentRequest:
       type: object

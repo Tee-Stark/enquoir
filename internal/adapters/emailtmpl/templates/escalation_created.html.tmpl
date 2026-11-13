@@ -1,0 +1,7 @@
+{{define "title"}}A payment needs your approval{{end}}
+{{define "preheader"}}{{.P.amount}} to {{.P.payee}} needs an owner or admin's approval.{{end}}
+{{define "action"}}{{end}}
+{{define "content"}}<h1 style="margin:0 0 14px;font-size:22px;color:{{.Brand.Ink}};">A payment needs approval</h1>
+<p style="margin:0 0 12px;">An agent asked to pay <strong>{{.P.payee}}</strong> <strong>{{.P.amount}}</strong>, and your organisation's spending policy says this needs an owner or admin's approval before it goes ahead.</p>
+<p style="margin:0;">Log in to review and decide. If nobody decides within 24 hours, it is denied.</p>{{end}}
+{{define "why"}}You received this because your organisation's spending policy escalated a payment above its approval threshold, and you are an owner or admin.{{end}}

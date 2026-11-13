@@ -10,6 +10,7 @@ import (
 
 	"enquoir/internal/app"
 	"enquoir/internal/domain"
+	"enquoir/internal/policy"
 )
 
 // TaskQueue is the task queue PaymentWorkflow and its activities run
@@ -23,6 +24,25 @@ const TaskQueue = "enquoir-payments"
 type PaymentInput struct {
 	Intent              domain.Intent
 	MaxAmountMinorUnits int64
+	// Escalate is set when the organisation's policy decided, at
+	// submission time, that this payment must wait for an owner or
+	// admin's approval before it can be authorized.
+	Escalate bool
+}
+
+// EscalationSignalName is the signal a payment waiting in
+// AWAITING_APPROVAL listens for - sent by the HTTP approve/reject
+// handler via the Temporal client, never from inside workflow code.
+const EscalationSignalName = "escalation-decision"
+
+// EscalationTimeout is how long a payment waits in AWAITING_APPROVAL
+// before an absent decision denies it, per AGENTS.md's Phase 6.
+const EscalationTimeout = 24 * time.Hour
+
+// EscalationSignal is what an approve/reject decision sends.
+type EscalationSignal struct {
+	Approved  bool
+	DecidedBy string
 }
 
 // PaymentResult is what a payment workflow run resolves to.
@@ -52,6 +72,17 @@ var activityOptions = workflow.ActivityOptions{
 	RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 3},
 }
 
+// recheckPolicyOptions governs only RecheckPolicy's own call, retried
+// without limit: it is a pure read (no money moves, nothing to
+// duplicate), and a payment a human already approved must eventually
+// resolve once a transient failure (a Postgres blip) clears, never
+// strand at AWAITING_APPROVAL forever because the modest budget above
+// ran out - the same reasoning readUntilClear uses for rail reads.
+var recheckPolicyOptions = workflow.ActivityOptions{
+	StartToCloseTimeout: 30 * time.Second,
+	RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 0},
+}
+
 // PaymentWorkflow takes one Intent from PROPOSED to APPLIED, FAILED or
 // BLOCKED. The intent's key is this workflow's ID: starting the same
 // intent twice attaches to the run already in progress instead of
@@ -77,11 +108,85 @@ func PaymentWorkflow(ctx workflow.Context, in PaymentInput) (PaymentResult, erro
 		return PaymentResult{State: domain.BLOCKED}, nil
 	}
 
+	if in.Escalate {
+		approved, err := awaitApproval(ctx, &state, intent)
+		if err != nil {
+			return PaymentResult{}, err
+		}
+		if !approved {
+			return PaymentResult{State: domain.BLOCKED}, nil
+		}
+	}
+
 	if err := moveTo(ctx, &state, intent.OrgID, intent.Key, domain.AUTHORIZED, ""); err != nil {
 		return PaymentResult{}, err
 	}
 
 	return authorize(ctx, &state, intent)
+}
+
+// awaitApproval moves the intent to AWAITING_APPROVAL and durably
+// waits, up to EscalationTimeout, for an approve/reject signal. On
+// approval it rechecks the policy - limits may have moved since the
+// payment was escalated - and denies it if the recheck now finds an
+// outright Deny (a new reason, not just "still over the threshold":
+// that is exactly what the human just approved). On rejection, or no
+// decision within the timeout, it moves to BLOCKED itself (the
+// caller only learns whether to continue towards AUTHORIZED).
+func awaitApproval(ctx workflow.Context, state *domain.State, intent domain.Intent) (bool, error) {
+	if err := moveTo(ctx, state, intent.OrgID, intent.Key, domain.AWAITING_APPROVAL, ""); err != nil {
+		return false, err
+	}
+
+	signalCh := workflow.GetSignalChannel(ctx, EscalationSignalName)
+	timerCtx, cancelTimer := workflow.WithCancel(ctx)
+	timer := workflow.NewTimer(timerCtx, EscalationTimeout)
+	defer cancelTimer()
+
+	var signal EscalationSignal
+	var timedOut bool
+	selector := workflow.NewSelector(ctx)
+	selector.AddReceive(signalCh, func(c workflow.ReceiveChannel, more bool) {
+		c.Receive(ctx, &signal)
+	})
+	selector.AddFuture(timer, func(f workflow.Future) {
+		timedOut = true
+	})
+	selector.Select(ctx)
+
+	if timedOut {
+		recordEscalationOutcome(ctx, intent, app.AuditPaymentEscalationExpired, nil)
+		return false, moveTo(ctx, state, intent.OrgID, intent.Key, domain.BLOCKED, "escalation timed out after 24 hours with no decision")
+	}
+	if !signal.Approved {
+		reason := "escalation rejected"
+		if signal.DecidedBy != "" {
+			reason += " by " + signal.DecidedBy
+		}
+		return false, moveTo(ctx, state, intent.OrgID, intent.Key, domain.BLOCKED, reason)
+	}
+
+	var decision policy.Decision
+	recheckCtx := workflow.WithActivityOptions(ctx, recheckPolicyOptions)
+	if err := execActivity(recheckCtx, activities().RecheckPolicy, intent).Get(ctx, &decision); err != nil {
+		return false, fmt.Errorf("rechecking the policy on approval: %w", err)
+	}
+	if decision.Outcome == policy.Deny {
+		recordEscalationOutcome(ctx, intent, app.AuditPaymentEscalationDeniedOnRecheck, map[string]string{"policy_version": fmt.Sprint(decision.Version)})
+		return false, moveTo(ctx, state, intent.OrgID, intent.Key, domain.BLOCKED, "no longer within the organisation's policy on recheck")
+	}
+	return true, nil
+}
+
+// recordEscalationOutcome best-effort audits an escalation outcome
+// the workflow decided with no HTTP call to hang a record off: a
+// timeout, or a denial on recheck after a human already approved.
+// An audit hiccup must never fail the payment itself, so its error
+// is deliberately discarded once the modest default retry budget
+// (set on ctx by PaymentWorkflow) runs out.
+func recordEscalationOutcome(ctx workflow.Context, intent domain.Intent, action string, details map[string]string) {
+	in := RecordEscalationOutcomeInput{OrgID: intent.OrgID, IntentKey: intent.Key, Action: action, Details: details}
+	_ = execActivity(ctx, activities().RecordEscalationOutcome, in).Get(ctx, nil)
 }
 
 // authorize sends the intent to the rail and waits for a result. It

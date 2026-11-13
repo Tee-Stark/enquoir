@@ -53,6 +53,7 @@ type paymentDTO struct {
 	Agent          *refDTO    `json:"agent"`
 	TransferID     *string    `json:"transfer_id"`
 	FailureReason  *string    `json:"failure_reason"`
+	PolicyVersion  *int       `json:"policy_version"`
 	CreatedAt      time.Time  `json:"created_at"`
 	StateChangedAt *time.Time `json:"state_changed_at"`
 	Submissions    int        `json:"submissions"`
@@ -63,7 +64,7 @@ func newPaymentDTO(p app.Payment) paymentDTO {
 	d := paymentDTO{
 		Key: string(p.Key), State: p.State, Terminal: p.Terminal(), Amount: newMoneyDTO(p.Amount),
 		Payee: refDTO{ID: p.Payee, Name: optional(p.PayeeName)}, Reference: p.Reference, Reason: p.Reason,
-		TransferID: optional(p.TransferID), FailureReason: optional(p.FailureReason),
+		TransferID: optional(p.TransferID), FailureReason: optional(p.FailureReason), PolicyVersion: p.PolicyVersion,
 		CreatedAt: p.CreatedAt.UTC(), StateChangedAt: utcPtr(p.StateChangedAt),
 		Submissions: p.Submissions, RailCalls: p.RailCalls,
 	}

@@ -26,6 +26,9 @@ const (
 	codeInvalidCreds         = "invalid_credentials"
 	codeEmailTaken           = "email_taken"
 	codePayeeUnknown         = "payee_unknown"
+	codePolicyDenied         = "policy_denied"
+	codeNotAwaitingApproval  = "not_awaiting_approval"
+	codeApproverExcluded     = "approver_excluded"
 	codeForbiddenOrigin      = "forbidden_origin"
 	codeNotImplemented       = "not_implemented"
 	codeBodyTooLarge         = "body_too_large"
@@ -91,7 +94,17 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 	var verr *app.ValidationError
 	var limited *app.RateLimitedError
 	var locked *app.AccountLockedError
+	var policyDenied *app.PolicyDeniedError
 	switch {
+	case errors.As(err, &policyDenied):
+		// The submitting agent gets reason codes only, never the exact
+		// limits (Error()'s numeric Detail) - an agent has no
+		// permission to read the policy itself.
+		writeProblem(w, http.StatusUnprocessableEntity, codePolicyDenied, policyDenied.AgentMessage())
+	case errors.Is(err, app.ErrNotAwaitingApproval):
+		writeProblem(w, http.StatusConflict, codeNotAwaitingApproval, err.Error())
+	case errors.Is(err, app.ErrApproverExcluded):
+		writeProblem(w, http.StatusForbidden, codeApproverExcluded, err.Error())
 	case errors.As(err, &limited):
 		w.Header().Set("Retry-After", retryAfter(limited.RetryAfter))
 		writeProblem(w, http.StatusTooManyRequests, codeRateLimited, limited.Error())

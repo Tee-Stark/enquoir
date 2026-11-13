@@ -28,6 +28,7 @@ import (
 	"enquoir/internal/adapters/redisstore"
 	"enquoir/internal/app"
 	"enquoir/internal/commerce/commerceapp"
+	"enquoir/internal/policy"
 	enquoirworkflow "enquoir/internal/workflow"
 )
 
@@ -104,6 +105,8 @@ func main() {
 	throttle, cache := connectRedis(logger)
 	auditLog := postgres.NewAuditLog(pool)
 	audit := &app.Audit{Log: auditLog, IDs: ids, Clock: sysClock}
+	policies := postgres.NewPolicyStore(pool)
+	paymentStarter := &httpapi.TemporalPaymentStarter{Client: temporalClient, MaxAmountMinorUnits: maxMinorUnits}
 
 	emails := &app.Emails{Outbox: postgres.NewEmailOutbox(pool), Dispatcher: &enquoirworkflow.EmailDispatcher{Client: temporalClient}, IDs: ids, Clock: sysClock}
 	tokens := postgres.NewTokenStore(pool)
@@ -112,16 +115,22 @@ func main() {
 
 	handler := &httpapi.Handler{
 		Submit: &app.SubmitIntent{
-			Starter:  &httpapi.TemporalPaymentStarter{Client: temporalClient, MaxAmountMinorUnits: maxMinorUnits},
-			Events:   events,
-			Payees:   beneficiaries,
-			Intents:  postgres.NewIntentRepository(pool),
-			Attempts: attempts,
-			IDs:      ids,
-			Clock:    sysClock,
+			Treasuries: accounts,
+			Starter:    paymentStarter,
+			Events:     events,
+			Payees:     beneficiaries,
+			Intents:    postgres.NewIntentRepository(pool),
+			Attempts:   attempts,
+			IDs:        ids,
+			Clock:      sysClock,
+			Policies:   policies,
+			Audit:      audit,
+			Members:    accounts,
+			Emails:     emails,
 		},
 		Get: &app.GetIntent{Events: events},
 		Register: &app.RegisterBeneficiary{
+			Treasuries:    accounts,
 			Registrar:     &httpapi.TemporalBeneficiaryRegistrar{Client: temporalClient},
 			Beneficiaries: beneficiaries,
 			Clock:         sysClock,
@@ -166,6 +175,13 @@ func main() {
 		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: sysClock, Cache: cache, Audit: audit},
 		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: sysClock, Cache: cache},
 
+		GetCurrentPolicy: &app.GetCurrentPolicy{Policies: policies},
+		UpdatePolicy:     &app.UpdatePolicy{Policies: policies, Clock: sysClock, Audit: audit},
+		DryRunPolicy:     &app.DryRunPolicy{Policies: policies},
+		DecideEscalatedPayment: &app.DecideEscalatedPayment{
+			Payments: payments, Agents: agents, Members: accounts, Signaler: paymentStarter, Audit: audit,
+		},
+
 		ListPayments:      &app.ListPayments{Payments: payments},
 		GetPayment:        &app.GetPayment{Payments: payments, Events: events, Attempts: attempts},
 		ListAttempts:      &app.ListAttempts{Attempts: attempts},
@@ -177,7 +193,7 @@ func main() {
 		Commerce:   commerceUseCases(pool, ids, secrets, sysClock, cache, audit),
 		Funding:    fundingUseCases(pool, ids, sysClock, audit),
 		Mandates:   mandateUseCases(pool, tokens, emails, ids, sysClock, audit),
-		Checkouts:  checkoutUseCases(pool, tokens, emails, ids, secrets, sysClock, audit),
+		Checkouts:  checkoutUseCases(pool, tokens, emails, ids, secrets, sysClock, audit, policies),
 		Grants:     grantUseCases(pool, ids, secrets, sysClock, audit),
 		Executions: executionUseCases(pool, sysClock, audit),
 	}
@@ -323,10 +339,10 @@ func mandateUseCases(pool *pgxpool.Pool, tokens app.TokenStore, emails *app.Emai
 
 // checkoutUseCases wires checkout evaluation on /v1/commerce and the
 // customer's checkout approval page.
-func checkoutUseCases(pool *pgxpool.Pool, tokens app.TokenStore, emails *app.Emails, ids app.IDGenerator, secrets app.SecretGenerator, clock app.Clock, audit *app.Audit) httpapi.CheckoutUseCases {
+func checkoutUseCases(pool *pgxpool.Pool, tokens app.TokenStore, emails *app.Emails, ids app.IDGenerator, secrets app.SecretGenerator, clock app.Clock, audit *app.Audit, policies policy.Store) httpapi.CheckoutUseCases {
 	store := postgres.NewCommerceCheckoutStore(pool)
 	return httpapi.CheckoutUseCases{
-		Submit: &commerceapp.SubmitCheckout{Checkouts: store, Customers: postgres.NewCommerceCustomerStore(pool), Emails: emails, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
+		Submit: &commerceapp.SubmitCheckout{Checkouts: store, Customers: postgres.NewCommerceCustomerStore(pool), Emails: emails, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit, Policies: policies},
 		Get:    &commerceapp.GetCheckout{Checkouts: store, Clock: clock},
 		Cancel: &commerceapp.CancelCheckout{Checkouts: store, Clock: clock, Audit: audit},
 		View:   &commerceapp.ViewCheckoutApproval{Tokens: tokens, Checkouts: store, Clock: clock},

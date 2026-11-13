@@ -25,7 +25,7 @@ func (f *authFixture) newOrg(t *testing.T) (domain.OrgID, *http.Cookie) {
 
 func (f *authFixture) seedPayment(t *testing.T, org domain.OrgID, ref string, history ...string) app.Payment {
 	t.Helper()
-	intent, _ := domain.NewIntent(org, "ben_1", 1050, "USD", ref, "invoice")
+	intent, _ := domain.NewIntent(org, "trs_test", "ben_1", 1050, "USD", ref, "invoice")
 	state := app.StateReceived
 	for _, h := range history {
 		f.events.Append(context.Background(), org, intent.Key, h, "")

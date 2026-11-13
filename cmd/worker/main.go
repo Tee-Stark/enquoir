@@ -98,6 +98,9 @@ func main() {
 
 		ExecutionSweep: &commerceapp.SweepExecutions{Checkouts: postgres.NewCommerceCheckoutStore(pool), Clock: clock.System{},
 			Audit: &app.Audit{Log: postgres.NewAuditLog(pool), IDs: credentials.RandomIDs{}, Clock: clock.System{}}},
+
+		Policies: postgres.NewPolicyStore(pool),
+		Audit:    &app.Audit{Log: postgres.NewAuditLog(pool), IDs: credentials.RandomIDs{}, Clock: clock.System{}},
 	}
 
 	stopSweep := make(chan struct{})

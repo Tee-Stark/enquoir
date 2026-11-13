@@ -13,21 +13,24 @@ import (
 	"enquoir/internal/app"
 	"enquoir/internal/app/apptest"
 	"enquoir/internal/domain"
+	"enquoir/internal/policy"
 )
 
 const testOrg domain.OrgID = "org_test"
 
 func testIntent(t *testing.T, minorUnits int64) domain.Intent {
 	t.Helper()
-	intent, err := domain.NewIntent(testOrg, "beneficiary-1", minorUnits, "USD", fmt.Sprintf("ref-%s", t.Name()), "test")
+	intent, err := domain.NewIntent(testOrg, "trs_test", "beneficiary-1", minorUnits, "USD", fmt.Sprintf("ref-%s", t.Name()), "test")
 	require.NoError(t, err)
 	return intent
 }
 
 type testEnv struct {
-	env      *testsuite.TestWorkflowEnvironment
-	events   *apptest.EventLog
-	attempts *apptest.Attempts
+	env        *testsuite.TestWorkflowEnvironment
+	events     *apptest.EventLog
+	attempts   *apptest.Attempts
+	audit      *apptest.AuditLog
+	activities *Activities
 }
 
 func newEnv(t *testing.T, rail app.Rail) *testEnv {
@@ -35,20 +38,22 @@ func newEnv(t *testing.T, rail app.Rail) *testEnv {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 
-	events, attempts := apptest.NewEventLog(), apptest.NewAttempts()
+	events, attempts, auditLog := apptest.NewEventLog(), apptest.NewAttempts(), apptest.NewAuditLog()
+	clock := apptest.NewClock()
 	a := &Activities{
 		Intents:  newFakeIntentRepository(),
 		Events:   events,
 		Rail:     rail,
 		Attempts: attempts,
 		IDs:      &apptest.IDs{},
-		Clock:    apptest.NewClock(),
+		Clock:    clock,
+		Audit:    &app.Audit{Log: auditLog, IDs: &apptest.IDs{}, Clock: clock},
 	}
 
 	env.RegisterWorkflow(PaymentWorkflow)
 	env.RegisterActivity(a)
 
-	return &testEnv{env: env, events: events, attempts: attempts}
+	return &testEnv{env: env, events: events, attempts: attempts, audit: auditLog, activities: a}
 }
 
 func (e *testEnv) eventTypes(t *testing.T, key domain.IntentKey) []string {
@@ -140,6 +145,182 @@ func TestPaymentWorkflow_RecordsInFlightBeforeCallingRail(t *testing.T) {
 	env.ExecuteWorkflow(PaymentWorkflow, PaymentInput{Intent: intent, MaxAmountMinorUnits: highMax})
 	require.True(t, env.IsWorkflowCompleted())
 	require.NoError(t, env.GetWorkflowError())
+}
+
+// A payment escalated at submission waits in AWAITING_APPROVAL for a
+// signal, rechecks the policy on approval, and proceeds normally.
+func TestPaymentWorkflow_Escalated_ApprovalRechecksPolicyAndProceeds(t *testing.T) {
+	intent := testIntent(t, 10050)
+	rail := &fakeRail{
+		createFunc: func(ctx context.Context, intent domain.Intent, callNum int) (app.Transfer, error) {
+			return app.Transfer{ID: "tr_1", Status: app.TransferPaid}, nil
+		},
+	}
+	te := newEnv(t, rail)
+	policies := &apptest.FixedPolicy{Outcome: policy.Allow}
+	te.activities.Policies = policies
+
+	te.env.RegisterDelayedCallback(func() {
+		te.env.SignalWorkflow(EscalationSignalName, EscalationSignal{Approved: true, DecidedBy: "usr_owner"})
+	}, 0)
+	te.env.ExecuteWorkflow(PaymentWorkflow, PaymentInput{Intent: intent, MaxAmountMinorUnits: highMax, Escalate: true})
+
+	require.True(t, te.env.IsWorkflowCompleted())
+	require.NoError(t, te.env.GetWorkflowError())
+	var result PaymentResult
+	require.NoError(t, te.env.GetWorkflowResult(&result))
+	require.Equal(t, domain.APPLIED, result.State)
+	require.Equal(t, []string{"PROPOSED", "AWAITING_APPROVAL", "AUTHORIZED", "IN_FLIGHT", "APPLIED"}, te.eventTypes(t, intent.Key))
+	require.Len(t, policies.Calls, 1, "approval must recheck the policy exactly once")
+}
+
+// The common case: the recheck still escalates (nothing about the
+// amount or the threshold changed between submission and approval).
+// That must not re-block the payment - a human just approved it - so
+// Escalate-again proceeds exactly like Allow does.
+func TestPaymentWorkflow_Escalated_StillEscalatesOnRecheckButProceeds(t *testing.T) {
+	intent := testIntent(t, 10050)
+	rail := &fakeRail{
+		createFunc: func(ctx context.Context, intent domain.Intent, callNum int) (app.Transfer, error) {
+			return app.Transfer{ID: "tr_1", Status: app.TransferPaid}, nil
+		},
+	}
+	te := newEnv(t, rail)
+	policies := &apptest.FixedPolicy{Outcome: policy.Escalate, Reasons: []policy.Reason{{Code: policy.ReasonOverApprovalThreshold}}}
+	te.activities.Policies = policies
+
+	te.env.RegisterDelayedCallback(func() {
+		te.env.SignalWorkflow(EscalationSignalName, EscalationSignal{Approved: true, DecidedBy: "usr_owner"})
+	}, 0)
+	te.env.ExecuteWorkflow(PaymentWorkflow, PaymentInput{Intent: intent, MaxAmountMinorUnits: highMax, Escalate: true})
+
+	require.True(t, te.env.IsWorkflowCompleted())
+	require.NoError(t, te.env.GetWorkflowError())
+	var result PaymentResult
+	require.NoError(t, te.env.GetWorkflowResult(&result))
+	require.Equal(t, domain.APPLIED, result.State)
+	require.Len(t, policies.Calls, 1, "approval must recheck the policy exactly once")
+}
+
+// Approval rechecks the limits: if they no longer allow it (spent
+// elsewhere meanwhile), it is denied, not let through on a stale
+// decision from submission time.
+func TestPaymentWorkflow_Escalated_ApprovalDeniedOnRecheck(t *testing.T) {
+	intent := testIntent(t, 10050)
+	var createCalled atomic.Bool
+	rail := &fakeRail{createFunc: func(ctx context.Context, intent domain.Intent, callNum int) (app.Transfer, error) {
+		createCalled.Store(true)
+		return app.Transfer{}, nil
+	}}
+	te := newEnv(t, rail)
+	te.activities.Policies = &apptest.FixedPolicy{Outcome: policy.Deny, Reasons: []policy.Reason{{Code: policy.ReasonOver24hTotal}}}
+
+	te.env.RegisterDelayedCallback(func() {
+		te.env.SignalWorkflow(EscalationSignalName, EscalationSignal{Approved: true, DecidedBy: "usr_owner"})
+	}, 0)
+	te.env.ExecuteWorkflow(PaymentWorkflow, PaymentInput{Intent: intent, MaxAmountMinorUnits: highMax, Escalate: true})
+
+	require.True(t, te.env.IsWorkflowCompleted())
+	require.NoError(t, te.env.GetWorkflowError())
+	var result PaymentResult
+	require.NoError(t, te.env.GetWorkflowResult(&result))
+	require.Equal(t, domain.BLOCKED, result.State)
+	require.False(t, createCalled.Load())
+	events := te.audit.All()
+	require.Len(t, events, 1, "a denial on recheck must be audited - Approved was already recorded, so nothing else shows this happened")
+	require.Equal(t, app.AuditPaymentEscalationDeniedOnRecheck, events[0].Action)
+}
+
+// A rejection signal blocks the payment without ever calling the rail.
+func TestPaymentWorkflow_Escalated_RejectionBlocksWithoutCallingRail(t *testing.T) {
+	intent := testIntent(t, 10050)
+	var createCalled atomic.Bool
+	rail := &fakeRail{createFunc: func(ctx context.Context, intent domain.Intent, callNum int) (app.Transfer, error) {
+		createCalled.Store(true)
+		return app.Transfer{}, nil
+	}}
+	te := newEnv(t, rail)
+
+	te.env.RegisterDelayedCallback(func() {
+		te.env.SignalWorkflow(EscalationSignalName, EscalationSignal{Approved: false, DecidedBy: "usr_owner"})
+	}, 0)
+	te.env.ExecuteWorkflow(PaymentWorkflow, PaymentInput{Intent: intent, MaxAmountMinorUnits: highMax, Escalate: true})
+
+	require.True(t, te.env.IsWorkflowCompleted())
+	require.NoError(t, te.env.GetWorkflowError())
+	var result PaymentResult
+	require.NoError(t, te.env.GetWorkflowResult(&result))
+	require.Equal(t, domain.BLOCKED, result.State)
+	require.False(t, createCalled.Load())
+	require.Equal(t, []string{"PROPOSED", "AWAITING_APPROVAL", "BLOCKED"}, te.eventTypes(t, intent.Key))
+}
+
+// flakyPolicy fails EvaluateAndReserve a fixed number of times before
+// succeeding - standing in for a transient Postgres blip during the
+// approval recheck.
+type flakyPolicy struct {
+	policy.Store
+	failures int32
+	outcome  policy.Outcome
+}
+
+func (f *flakyPolicy) EvaluateAndReserve(ctx context.Context, org domain.OrgID, in policy.EvaluationInput) (policy.Decision, error) {
+	if atomic.AddInt32(&f.failures, -1) >= 0 {
+		return policy.Decision{}, errors.New("transient failure")
+	}
+	return policy.Decision{Outcome: f.outcome}, nil
+}
+
+// A transient failure rechecking the policy on approval must not
+// strand the payment at AWAITING_APPROVAL forever - RecheckPolicy
+// retries past the modest 3-attempt budget every other activity in
+// this workflow uses, since it is a pure read with nothing to
+// duplicate.
+func TestPaymentWorkflow_Escalated_RecheckSurvivesMoreFailuresThanTheDefaultBudget(t *testing.T) {
+	intent := testIntent(t, 10050)
+	rail := &fakeRail{
+		createFunc: func(ctx context.Context, intent domain.Intent, callNum int) (app.Transfer, error) {
+			return app.Transfer{ID: "tr_1", Status: app.TransferPaid}, nil
+		},
+	}
+	te := newEnv(t, rail)
+	te.activities.Policies = &flakyPolicy{failures: 5, outcome: policy.Allow}
+
+	te.env.RegisterDelayedCallback(func() {
+		te.env.SignalWorkflow(EscalationSignalName, EscalationSignal{Approved: true, DecidedBy: "usr_owner"})
+	}, 0)
+	te.env.ExecuteWorkflow(PaymentWorkflow, PaymentInput{Intent: intent, MaxAmountMinorUnits: highMax, Escalate: true})
+
+	require.True(t, te.env.IsWorkflowCompleted())
+	require.NoError(t, te.env.GetWorkflowError())
+	var result PaymentResult
+	require.NoError(t, te.env.GetWorkflowResult(&result))
+	require.Equal(t, domain.APPLIED, result.State)
+}
+
+// No decision within 24 hours denies it too - the test environment
+// auto-skips virtual time when nothing else is runnable, so this
+// completes without a real 24-hour wait.
+func TestPaymentWorkflow_Escalated_TimesOutAfter24Hours(t *testing.T) {
+	intent := testIntent(t, 10050)
+	var createCalled atomic.Bool
+	rail := &fakeRail{createFunc: func(ctx context.Context, intent domain.Intent, callNum int) (app.Transfer, error) {
+		createCalled.Store(true)
+		return app.Transfer{}, nil
+	}}
+	te := newEnv(t, rail)
+
+	te.env.ExecuteWorkflow(PaymentWorkflow, PaymentInput{Intent: intent, MaxAmountMinorUnits: highMax, Escalate: true})
+
+	require.True(t, te.env.IsWorkflowCompleted())
+	require.NoError(t, te.env.GetWorkflowError())
+	var result PaymentResult
+	require.NoError(t, te.env.GetWorkflowResult(&result))
+	require.Equal(t, domain.BLOCKED, result.State)
+	require.False(t, createCalled.Load())
+	events := te.audit.All()
+	require.Len(t, events, 1, "a timeout with no human decision must be audited - nothing else shows this happened")
+	require.Equal(t, app.AuditPaymentEscalationExpired, events[0].Action)
 }
 
 func TestPaymentWorkflow_AmbiguousCreateFoundByLookupSendsNoSecondCreate(t *testing.T) {

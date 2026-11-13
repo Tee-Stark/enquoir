@@ -14,8 +14,8 @@ import (
 // TestPayee is org's sandbox test beneficiary: a US company paid in
 // USD over ACH. The details are fixed, so its key - and so the
 // beneficiary it registers as - stays the same across every run.
-func TestPayee(org domain.OrgID) domain.Beneficiary {
-	b, err := domain.NewBeneficiary(org, "Enquoir Sandbox Test Payee", "000123456789", "021000021", domain.Checking, domain.BeneficiaryAddress{
+func TestPayee(org domain.OrgID, treasury domain.TreasuryID) domain.Beneficiary {
+	b, err := domain.NewBeneficiary(org, treasury, "Enquoir Sandbox Test Payee", "000123456789", "021000021", domain.Checking, domain.BeneficiaryAddress{
 		Street:   "412 5th Avenue",
 		City:     "Seattle",
 		State:    "WA",
@@ -34,8 +34,12 @@ func TestPayee(org domain.OrgID) domain.Beneficiary {
 // rather than retried, and re-running finds the payee if the create
 // actually landed. Fine for setup tooling, never for the running
 // system.
-func EnsurePayee(ctx context.Context, registry app.BeneficiaryRegistry, owners app.BeneficiaryStore, clock app.Clock, org domain.OrgID) (string, error) {
-	payee := TestPayee(org)
+func EnsurePayee(ctx context.Context, registry app.BeneficiaryRegistry, owners app.BeneficiaryStore, clock app.Clock, org domain.OrgID, treasury domain.TreasuryID) (string, error) {
+	payee := TestPayee(org, treasury)
+	// Registered before treasuries: found by its old key, kept as it is.
+	if have, err := owners.ByKey(ctx, org, treasury, payee.LegacyKey()); err == nil {
+		return have.RailID, nil
+	}
 
 	id, ok, err := registry.FindBeneficiary(ctx, payee.Key)
 	if err != nil {
@@ -49,6 +53,7 @@ func EnsurePayee(ctx context.Context, registry app.BeneficiaryRegistry, owners a
 
 	if err := owners.Save(ctx, app.RegisteredBeneficiary{
 		OrgID:         org,
+		TreasuryID:    treasury,
 		Key:           payee.Key,
 		RailID:        id,
 		Name:          payee.Name,

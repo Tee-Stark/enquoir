@@ -36,7 +36,7 @@ func testIntent(t *testing.T, pool *pgxpool.Pool) domain.Intent {
 	t.Helper()
 	org, _ := newTestOrg(t, NewAccountStore(pool))
 	intent, err := domain.NewIntent(
-		org.ID,
+		org.ID, treasuryOf(org.ID),
 		fmt.Sprintf("payee-%s", t.Name()),
 		10050, "USD",
 		fmt.Sprintf("ref-%s", t.Name()),

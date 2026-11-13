@@ -21,7 +21,7 @@ func (f *fakeClock) Now() time.Time { return f.now }
 
 func testIntent(t *testing.T) domain.Intent {
 	t.Helper()
-	intent, err := domain.NewIntent("org_test", "beneficiary-123", 10050, "USD", "INV-1001", "test payment")
+	intent, err := domain.NewIntent("org_test", "trs_test", "beneficiary-123", 10050, "USD", "INV-1001", "test payment")
 	if err != nil {
 		t.Fatalf("building test intent: %v", err)
 	}
@@ -419,7 +419,7 @@ func TestBeneficiary_PersistentRateLimitIsAmbiguous(t *testing.T) {
 	})
 	c := newTestClient(t, ts, &fakeClock{now: time.Now()})
 	c.t.sleep = func(time.Duration) {}
-	b, _ := domain.NewBeneficiary("org_test", "Acme Ltd", "50001121", "021000021", domain.Checking, domain.BeneficiaryAddress{
+	b, _ := domain.NewBeneficiary("org_test", "trs_test", "Acme Ltd", "50001121", "021000021", domain.Checking, domain.BeneficiaryAddress{
 		Street: "412 5th Avenue", City: "Seattle", State: "WA", Postcode: "98104",
 	})
 	if _, err := c.CreateBeneficiary(t.Context(), b); !errors.Is(err, app.ErrAmbiguous) {

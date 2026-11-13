@@ -58,22 +58,34 @@ type AuditEvent struct {
 
 // Audit actions.
 const (
-	AuditLoggedIn           = "auth.logged_in"
-	AuditLockedOut          = "auth.locked_out"
-	AuditEmailVerified      = "auth.email_verified"
-	AuditPasswordChanged    = "auth.password_changed"
-	AuditPasswordReset      = "auth.password_reset"
-	AuditSessionsRevoked    = "auth.sessions_revoked"
-	AuditMemberInvited      = "member.invited"
-	AuditInvitationRevoked  = "invitation.revoked"
-	AuditInvitationAccepted = "invitation.accepted"
-	AuditRoleChanged        = "member.role_changed"
-	AuditMemberRemoved      = "member.removed"
-	AuditMemberLeft         = "member.left"
-	AuditAgentCreated       = "agent.created"
-	AuditAgentKeyRotated    = "agent.key_rotated"
-	AuditAgentRevoked       = "agent.revoked"
-	AuditPayeeRegistered    = "payee.registered"
+	AuditLoggedIn              = "auth.logged_in"
+	AuditLockedOut             = "auth.locked_out"
+	AuditEmailVerified         = "auth.email_verified"
+	AuditPasswordChanged       = "auth.password_changed"
+	AuditPasswordReset         = "auth.password_reset"
+	AuditSessionsRevoked       = "auth.sessions_revoked"
+	AuditMemberInvited         = "member.invited"
+	AuditInvitationRevoked     = "invitation.revoked"
+	AuditInvitationAccepted    = "invitation.accepted"
+	AuditRoleChanged           = "member.role_changed"
+	AuditMemberRemoved         = "member.removed"
+	AuditMemberLeft            = "member.left"
+	AuditAgentCreated          = "agent.created"
+	AuditAgentKeyRotated       = "agent.key_rotated"
+	AuditAgentRevoked          = "agent.revoked"
+	AuditPayeeRegistered       = "payee.registered"
+	AuditPolicyUpdated         = "policy.updated"
+	AuditPaymentDeniedByPolicy = "payment.denied_by_policy"
+	AuditPaymentEscalated      = "payment.escalated"
+	AuditPaymentApproved       = "payment.approved"
+	AuditPaymentRejected       = "payment.rejected"
+	// AuditPaymentEscalationExpired/AuditPaymentEscalationDeniedOnRecheck
+	// are recorded by the workflow itself (via an activity), not an
+	// HTTP handler: no human decision ever reaches DecideEscalatedPayment
+	// for a timeout, and a recheck denial happens after Approved was
+	// already recorded - both need their own record to be visible at all.
+	AuditPaymentEscalationExpired         = "payment.escalation_expired"
+	AuditPaymentEscalationDeniedOnRecheck = "payment.escalation_denied_on_recheck"
 
 	// Commerce. Treasury records none of these; they are listed here so
 	// the one audit log can filter by them.
@@ -177,6 +189,9 @@ var knownAuditActions = map[string]bool{
 	AuditSessionsRevoked: true, AuditMemberInvited: true, AuditInvitationRevoked: true, AuditInvitationAccepted: true,
 	AuditRoleChanged: true, AuditMemberRemoved: true, AuditMemberLeft: true, AuditAgentCreated: true,
 	AuditAgentKeyRotated: true, AuditAgentRevoked: true, AuditPayeeRegistered: true,
+	AuditPolicyUpdated: true, AuditPaymentDeniedByPolicy: true, AuditPaymentEscalated: true,
+	AuditPaymentApproved: true, AuditPaymentRejected: true,
+	AuditPaymentEscalationExpired: true, AuditPaymentEscalationDeniedOnRecheck: true,
 	AuditIntegrationCreated: true, AuditIntegrationDisabled: true, AuditIntegrationEnabled: true,
 	AuditIntegrationKeyRotated: true, AuditIntegrationKeyRevoked: true,
 	AuditCommerceCustomerRegistered: true, AuditCommerceCustomerDisabled: true, AuditCommerceCustomerEnabled: true,
