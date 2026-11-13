@@ -31,7 +31,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: go.mod
+          go-version-file: go.mod
           cache: true
       
       - name: make lint
@@ -50,7 +50,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with:
-          go-version: go.mod
+          go-version-file: go.mod
           cache: true
       - run: make test
   
@@ -62,7 +62,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with:
-          go-version: go.mod
+          go-version-file: go.mod
           cache: true
       - run: CGO_ENABLED=0 go build -trimpath ./...
   
@@ -76,18 +76,13 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with:
-          go-version: go.mod
+          go-version-file: go.mod
           cache: true
-      - name: Create .env file
+
+      - name: Create .env
         env:
-        SANDBOX_CLIENT_ID: ${{ secrets.SANDBOX_CLIENT_ID }}
-        SANDBOX_API_KEY: ${{ secrets.SANDBOX_API_KEY }}
-        run: |
-          cp .env.example .env
-          {
-            echo "SANDBOX_CLIENT_ID=${SANDBOX_CLIENT_ID}"
-            echo "SANDBOX_API_KEY=${SANDBOX_API_KEY}"
-          } >> .env
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: printf '%s\n' "$ENV_FILE" > .env
 
       - run: make up
       - run: make test-integration
@@ -119,14 +114,8 @@ jobs:
  
       - name: Create .env
         env:
-          SANDBOX_CLIENT_ID: ${{ secrets.SANDBOX_CLIENT_ID }}
-          SANDBOX_API_KEY: ${{ secrets.SANDBOX_API_KEY }}
-        run: |
-          cp .env.example .env
-          {
-            echo "SANDBOX_CLIENT_ID=${SANDBOX_CLIENT_ID}"
-            echo "SANDBOX_API_KEY=${SANDBOX_API_KEY}"
-          } >> .env
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: printf '%s\n' "$ENV_FILE" > .env
  
       # 1. Postgres + Temporal
       - run: make up
