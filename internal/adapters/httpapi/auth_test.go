@@ -41,6 +41,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	events.Clock = clock
 	analytics := &fixtureAnalytics{}
 	issuer := &app.SessionIssuer{Sessions: sessions, IDs: ids, Secrets: secrets, Clock: clock, TTL: 7 * 24 * time.Hour}
+	policies := &apptest.FixedPolicy{}
 	mailer, outbox, tokens := &apptest.Mailer{}, apptest.NewOutbox(), apptest.NewTokens()
 	deliver := &app.DeliverEmail{Outbox: outbox, Tokens: tokens, Renderer: apptest.Renderer{}, Mailer: mailer,
 		Secrets: secrets, Clock: clock, AppBaseURL: "https://enquoir.etimi.me"}
@@ -85,7 +86,11 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: clock},
 		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: clock},
 
-		Submit: &app.SubmitIntent{Treasuries: accounts, Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents(), Attempts: attempts, IDs: ids, Clock: clock},
+		GetCurrentPolicy: &app.GetCurrentPolicy{Policies: policies},
+		UpdatePolicy:     &app.UpdatePolicy{Policies: policies, Clock: clock, Audit: audit},
+		DryRunPolicy:     &app.DryRunPolicy{Policies: policies},
+
+		Submit: &app.SubmitIntent{Treasuries: accounts, Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents(), Attempts: attempts, IDs: ids, Clock: clock, Policies: policies, Audit: audit},
 		Get:    &app.GetIntent{Events: events},
 
 		ListPayments:      &app.ListPayments{Payments: payments},

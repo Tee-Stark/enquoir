@@ -29,6 +29,7 @@ func TestRole_Can(t *testing.T) {
 		{PermViewAuditLog, true, true, false, false},
 		{PermManageAdmins, true, false, false, false},
 		{PermManageIntegrations, true, true, false, false},
+		{PermManagePolicy, true, true, false, false},
 	}
 	for _, row := range table {
 		for role, want := range map[Role]bool{Owner: row.owner, Admin: row.admin, Operator: row.operator, Viewer: row.viewer} {

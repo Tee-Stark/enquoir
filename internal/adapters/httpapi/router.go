@@ -56,6 +56,10 @@ type Handler struct {
 	RevokeAgent       *app.RevokeAgent
 	AuthenticateAgent *app.AuthenticateAgent
 
+	GetCurrentPolicy *app.GetCurrentPolicy
+	UpdatePolicy     *app.UpdatePolicy
+	DryRunPolicy     *app.DryRunPolicy
+
 	ListPayments      *app.ListPayments
 	GetPayment        *app.GetPayment
 	ListAttempts      *app.ListAttempts
@@ -203,6 +207,14 @@ func NewRouter(h *Handler) chi.Router {
 		r.With(read).Get("/v1/merchant-integrations/{id}/checkouts", h.dashboardMerchant(h.listCheckoutsFor))
 		r.With(read).Get("/v1/merchant-integrations/{id}/mandates", h.dashboardMerchant(h.listMandatesFor))
 		r.With(read).Get("/v1/merchant-integrations/{id}/executions", h.dashboardMerchant(h.listExecutionsFor))
+
+		// The organisation's spending policy: owners and admins edit it
+		// and run its dry-run evaluator (which reveals how close the
+		// organisation is to its limits); any member may read it.
+		managePolicy := h.allow(domain.PermManagePolicy)
+		r.With(read).Get("/v1/policies/current", h.getCurrentPolicy)
+		r.With(managePolicy).Put("/v1/policies", h.updatePolicy)
+		r.With(managePolicy).Post("/v1/policies/dry-run", h.dryRunPolicy)
 	})
 	return r
 }

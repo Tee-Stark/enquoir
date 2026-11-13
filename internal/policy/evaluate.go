@@ -16,6 +16,28 @@ const (
 	ContextCommerce
 )
 
+func (c Context) String() string {
+	if c == ContextCommerce {
+		return "commerce"
+	}
+	return "treasury"
+}
+
+// ParseContext reads a context name. A silent default here would be
+// dangerous for a dry-run tool meant to tell an owner the truth: a
+// mistyped context could silently skip the very rules (payee lists,
+// category block) they came to check.
+func ParseContext(s string) (Context, error) {
+	switch s {
+	case "treasury":
+		return ContextTreasury, nil
+	case "commerce":
+		return ContextCommerce, nil
+	default:
+		return 0, fmt.Errorf("unknown context %q: must be treasury or commerce", s)
+	}
+}
+
 // Outcome is a policy decision's result. Escalate is only reached
 // when nothing already forced Deny, so deny beats escalate by
 // construction.

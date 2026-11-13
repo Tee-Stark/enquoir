@@ -172,6 +172,10 @@ func main() {
 		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: sysClock, Cache: cache, Audit: audit},
 		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: sysClock, Cache: cache},
 
+		GetCurrentPolicy: &app.GetCurrentPolicy{Policies: policies},
+		UpdatePolicy:     &app.UpdatePolicy{Policies: policies, Clock: sysClock, Audit: audit},
+		DryRunPolicy:     &app.DryRunPolicy{Policies: policies},
+
 		ListPayments:      &app.ListPayments{Payments: payments},
 		GetPayment:        &app.GetPayment{Payments: payments, Events: events, Attempts: attempts},
 		ListAttempts:      &app.ListAttempts{Attempts: attempts},

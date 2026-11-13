@@ -146,6 +146,17 @@ func TestEvaluate_NoRuleForCurrency_Denies(t *testing.T) {
 	}
 }
 
+func TestParseContext(t *testing.T) {
+	for in, want := range map[string]policy.Context{"treasury": policy.ContextTreasury, "commerce": policy.ContextCommerce} {
+		if got, err := policy.ParseContext(in); err != nil || got != want {
+			t.Errorf("ParseContext(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	if _, err := policy.ParseContext("comerce"); err == nil {
+		t.Error("ParseContext of a typo: want an error, not a silent default")
+	}
+}
+
 func TestEvaluate_RollingTotals_EachWindowCheckedIndependently(t *testing.T) {
 	cases := []struct {
 		name  string

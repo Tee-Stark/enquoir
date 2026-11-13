@@ -50,6 +50,17 @@ tags:
       `Authorization: Bearer <key>`. Managing agents needs a dashboard session.
   - name: Payments
     description: Payment intents submitted by agents.
+  - name: Policies
+    description: |
+      One spending policy per organisation, versioned on every edit.
+      Rules are per currency: a maximum per transaction, rolling 24h/7d/30d
+      totals, a count per rolling hour, an approval threshold (above it a
+      payment or checkout needs a human's approval), a treasury payee
+      allow/block list and a commerce category block list. Evaluation is
+      allow, deny (every reason) or escalate; deny beats escalate. Dry-run
+      evaluates a candidate payment without moving or reserving anything.
+      Owners and admins edit the policy and run dry-run; any member may
+      read it.
   - name: Beneficiaries
     description: Payees registered on the rail before they can be paid.
   - name: History
@@ -1389,6 +1400,86 @@ paths:
           description: Revoked.
         "404":
           $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/policies/current:
+    get:
+      tags: [Policies]
+      operationId: getCurrentPolicy
+      summary: Read the organisation's current spending policy
+      description: Any member may read it. A new version 0 (every limit unlimited) is returned if the organisation has never edited one.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The current policy version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyVersion"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/policies:
+    put:
+      tags: [Policies]
+      operationId: updatePolicy
+      summary: Replace the organisation's spending policy with a new version
+      description: Owners and admins only. Every edit is a new version, never a mutation; past decisions keep reading back the version they used.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePolicyRequest"
+      responses:
+        "200":
+          description: The saved version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyVersion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/policies/dry-run:
+    post:
+      tags: [Policies]
+      operationId: dryRunPolicy
+      summary: Evaluate a candidate payment without moving or reserving anything
+      description: Owners and admins only - it reveals how close the organisation is to its limits.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DryRunPolicyRequest"
+      responses:
+        "200":
+          description: The decision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyDecision"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
@@ -4318,6 +4409,132 @@ components:
       description: |
         The merchant's own reference, unique per merchant and compared
         exactly. Trimmed; no spaces or control characters inside.
+
+    CurrencyRule:
+      type: object
+      description: One currency's limits within a policy version. Zero means unlimited on every field - there is no policy that blocks every payment in a currency while still naming a rule for it.
+      required: [currency, max_transaction_minor, max_24h_minor, max_7d_minor, max_30d_minor, max_per_hour_count, approval_threshold_minor]
+      properties:
+        currency:
+          type: string
+          enum: [USD, EUR, GBP]
+        max_transaction_minor:
+          type: integer
+          format: int64
+        max_24h_minor:
+          type: integer
+          format: int64
+        max_7d_minor:
+          type: integer
+          format: int64
+        max_30d_minor:
+          type: integer
+          format: int64
+        max_per_hour_count:
+          type: integer
+        approval_threshold_minor:
+          type: integer
+          format: int64
+          description: Above this, a payment or checkout escalates for a human's approval.
+
+    PolicyVersion:
+      type: object
+      required: [version, currency_rules, payee_allow, payee_block, category_block, created_at]
+      properties:
+        version:
+          type: integer
+          description: 0 means the organisation has never edited its policy - every limit is unlimited.
+        currency_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/CurrencyRule"
+        payee_allow:
+          type: array
+          items:
+            type: string
+          description: Treasury only. Empty means no allow-list restriction.
+        payee_block:
+          type: array
+          items:
+            type: string
+          description: Treasury only.
+        category_block:
+          type: array
+          items:
+            type: string
+          description: Commerce only.
+        created_at:
+          type: string
+          format: date-time
+        created_by:
+          type: string
+          description: The user who saved this version. Omitted for the default, unedited version.
+
+    UpdatePolicyRequest:
+      type: object
+      properties:
+        currency_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/CurrencyRule"
+          description: An omitted currency defaults to unlimited on every field.
+        payee_allow:
+          type: array
+          items:
+            type: string
+        payee_block:
+          type: array
+          items:
+            type: string
+        category_block:
+          type: array
+          items:
+            type: string
+
+    DryRunPolicyRequest:
+      type: object
+      required: [context, currency, amount_minor]
+      properties:
+        context:
+          type: string
+          enum: [treasury, commerce]
+        currency:
+          type: string
+          enum: [USD, EUR, GBP]
+        amount_minor:
+          type: integer
+          format: int64
+        payee:
+          type: string
+          description: Treasury only.
+        categories:
+          type: array
+          items:
+            type: string
+          description: Commerce only.
+
+    PolicyDecision:
+      type: object
+      required: [outcome, reasons, policy_version]
+      properties:
+        outcome:
+          type: string
+          enum: [allow, deny, escalate]
+          description: Deny beats escalate - escalate is only reached when nothing already denied.
+        reasons:
+          type: array
+          items:
+            type: object
+            required: [code, detail]
+            properties:
+              code:
+                type: string
+                enum: [over_transaction_limit, over_24h_total, over_7d_total, over_30d_total, over_hourly_count,
+                  payee_blocked, payee_not_allowed, category_blocked, no_currency_rule, over_approval_threshold]
+              detail:
+                type: string
+        policy_version:
+          type: integer
 
     MerchantIntegration:
       type: object
