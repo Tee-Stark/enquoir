@@ -264,15 +264,27 @@ func TestSubmitIntent_DeniedByPolicy_NeverStartsWorkflowOrSavesIntent(t *testing
 // Escalate is treated identically to Deny until the real escalation
 // state exists (6d) - this is an explicit interim shim, not the final
 // behaviour, so the test name says so.
-func TestSubmitIntent_EscalatedByPolicy_TreatedAsDeniedForNow(t *testing.T) {
+// Escalate starts the workflow normally - unlike Deny, which never
+// does - but tells it to wait for an approval decision before
+// authorizing. The HTTP response still reports PROPOSED, exactly like
+// a payment that will shortly be BLOCKED by the hard ceiling inside
+// the workflow: the real outcome is discovered by reading the payment
+// back, not synchronously at submission.
+func TestSubmitIntent_EscalatedByPolicy_StartsAndTellsTheWorkflowToWait(t *testing.T) {
 	intent := testIntent(t)
+	starter := &apptest.PaymentStarter{}
 	policies := &apptest.FixedPolicy{Outcome: policy.Escalate, Reasons: []policy.Reason{{Code: policy.ReasonOverApprovalThreshold}}, Version: 1}
-	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: &apptest.PaymentStarter{}, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock(), Policies: policies}
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: starter, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock(), Policies: policies}
 
-	_, err := use.Run(context.Background(), commandFor(intent))
-	var denied *app.PolicyDeniedError
-	if !errors.As(err, &denied) || denied.Decision.Outcome != policy.Escalate {
-		t.Fatalf("err = %v, want a *PolicyDeniedError carrying the Escalate decision", err)
+	result, err := use.Run(context.Background(), commandFor(intent))
+	if err != nil {
+		t.Fatalf("escalated submission: %v, want no error - escalation is not a rejection", err)
+	}
+	if result.State != domain.PROPOSED || result.Outcome != app.OutcomeStarted {
+		t.Errorf("result = %+v, want a normal PROPOSED/started response", result)
+	}
+	if escalated := starter.Escalated(); len(escalated) != 1 || !escalated[0] {
+		t.Errorf("Starter.Start escalate flags = %v, want exactly one true", escalated)
 	}
 }
 

@@ -398,15 +398,17 @@ func (l *EventLog) Load(ctx context.Context, org domain.OrgID, key domain.Intent
 // PaymentStarter is an in-memory app.PaymentStarter. Err, if set, is
 // returned from every call.
 type PaymentStarter struct {
-	mu    sync.Mutex
-	calls []domain.Intent
-	Err   error
+	mu        sync.Mutex
+	calls     []domain.Intent
+	escalated []bool
+	Err       error
 }
 
-func (s *PaymentStarter) Start(ctx context.Context, intent domain.Intent) error {
+func (s *PaymentStarter) Start(ctx context.Context, intent domain.Intent, escalate bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, intent)
+	s.escalated = append(s.escalated, escalate)
 	return s.Err
 }
 
@@ -415,6 +417,43 @@ func (s *PaymentStarter) Calls() []domain.Intent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]domain.Intent(nil), s.calls...)
+}
+
+// Escalated returns whether each call to Start, in order, was told
+// to escalate.
+func (s *PaymentStarter) Escalated() []bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]bool(nil), s.escalated...)
+}
+
+// EscalationSignal is one call to Signaler.
+type EscalationSignal struct {
+	Key       domain.IntentKey
+	Approved  bool
+	DecidedBy string
+}
+
+// Signaler is an app.EscalationSignaler that records every call.
+type Signaler struct {
+	mu    sync.Mutex
+	calls []EscalationSignal
+	Err   error
+}
+
+func NewSignaler() *Signaler { return &Signaler{} }
+
+func (s *Signaler) SignalApproval(ctx context.Context, key domain.IntentKey, approved bool, decidedBy string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, EscalationSignal{Key: key, Approved: approved, DecidedBy: decidedBy})
+	return s.Err
+}
+
+func (s *Signaler) Calls() []EscalationSignal {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]EscalationSignal(nil), s.calls...)
 }
 
 // CallCount returns how many times Start was called.

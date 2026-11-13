@@ -38,9 +38,11 @@ func (e *PolicyDeniedError) Error() string {
 // PaymentStarter starts, or attaches to, the durable workflow that
 // carries one Intent to a terminal state. Submitting the same intent
 // twice must attach to the run already in progress, never start a
-// second one.
+// second one. escalate means the organisation's policy decided, at
+// submission time, that this payment must wait for an owner or
+// admin's approval before it can be authorized.
 type PaymentStarter interface {
-	Start(ctx context.Context, intent domain.Intent) error
+	Start(ctx context.Context, intent domain.Intent, escalate bool) error
 }
 
 // SubmitIntentCommand is an agent's submission, as sent.
@@ -161,6 +163,7 @@ func (s *SubmitIntent) submit(ctx context.Context, cmd SubmitIntentCommand, atte
 	if !owned {
 		return SubmitIntentResult{}, ErrPayeeUnknown
 	}
+	var escalate bool
 	if s.Policies != nil {
 		payee := intent.Payee
 		decision, err := s.Policies.EvaluateAndReserve(ctx, intent.OrgID, policy.EvaluationInput{
@@ -170,13 +173,17 @@ func (s *SubmitIntent) submit(ctx context.Context, cmd SubmitIntentCommand, atte
 		if err != nil {
 			return SubmitIntentResult{}, fmt.Errorf("evaluating the organisation's spending policy: %w", err)
 		}
-		// Escalate is shimmed to behave exactly like Deny until Phase 6d
-		// adds the real AWAITING_APPROVAL state and escalation workflow.
-		if decision.Outcome != policy.Allow {
+		if decision.Outcome == policy.Deny {
 			s.Audit.record(ctx, intent.OrgID, AuditPaymentDeniedByPolicy, "intent", string(intent.Key), map[string]string{
 				"decision": decision.Outcome.String(), "policy_version": fmt.Sprint(decision.Version),
 			})
 			return SubmitIntentResult{}, &PolicyDeniedError{Decision: decision}
+		}
+		if decision.Outcome == policy.Escalate {
+			escalate = true
+			s.Audit.record(ctx, intent.OrgID, AuditPaymentEscalated, "intent", string(intent.Key), map[string]string{
+				"policy_version": fmt.Sprint(decision.Version),
+			})
 		}
 	}
 	_, created, err := s.Intents.Save(ctx, intent)
@@ -194,7 +201,7 @@ func (s *SubmitIntent) submit(ctx context.Context, cmd SubmitIntentCommand, atte
 
 	// No history yet: either brand new, or a run started moments ago
 	// that hasn't recorded anything - starting attaches to that run.
-	if err := s.Starter.Start(ctx, intent); err != nil {
+	if err := s.Starter.Start(ctx, intent, escalate); err != nil {
 		return SubmitIntentResult{}, err
 	}
 	outcome := OutcomeStarted

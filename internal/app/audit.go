@@ -76,6 +76,9 @@ const (
 	AuditPayeeRegistered       = "payee.registered"
 	AuditPolicyUpdated         = "policy.updated"
 	AuditPaymentDeniedByPolicy = "payment.denied_by_policy"
+	AuditPaymentEscalated      = "payment.escalated"
+	AuditPaymentApproved       = "payment.approved"
+	AuditPaymentRejected       = "payment.rejected"
 
 	// Commerce. Treasury records none of these; they are listed here so
 	// the one audit log can filter by them.
@@ -179,7 +182,8 @@ var knownAuditActions = map[string]bool{
 	AuditSessionsRevoked: true, AuditMemberInvited: true, AuditInvitationRevoked: true, AuditInvitationAccepted: true,
 	AuditRoleChanged: true, AuditMemberRemoved: true, AuditMemberLeft: true, AuditAgentCreated: true,
 	AuditAgentKeyRotated: true, AuditAgentRevoked: true, AuditPayeeRegistered: true,
-	AuditPolicyUpdated: true, AuditPaymentDeniedByPolicy: true,
+	AuditPolicyUpdated: true, AuditPaymentDeniedByPolicy: true, AuditPaymentEscalated: true,
+	AuditPaymentApproved: true, AuditPaymentRejected: true,
 	AuditIntegrationCreated: true, AuditIntegrationDisabled: true, AuditIntegrationEnabled: true,
 	AuditIntegrationKeyRotated: true, AuditIntegrationKeyRevoked: true,
 	AuditCommerceCustomerRegistered: true, AuditCommerceCustomerDisabled: true, AuditCommerceCustomerEnabled: true,
