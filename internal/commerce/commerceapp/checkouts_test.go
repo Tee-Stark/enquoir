@@ -156,6 +156,12 @@ func TestSubmitCheckout_DeniedByOrgPolicy_MandateNeverEvaluated(t *testing.T) {
 	if codesOf(c) != "policy_over_transaction_limit" {
 		t.Errorf("denial codes = %s, want exactly the policy's own, prefixed", codesOf(c))
 	}
+	// The merchant has no permission to read the organisation's policy
+	// itself - its exact limit ("too much for the organisation") must
+	// never reach the checkout response as a side channel for it.
+	if len(c.Denials) != 1 || c.Denials[0].Detail != "" {
+		t.Errorf("denials = %+v, want the policy's detail left blank", c.Denials)
+	}
 	if a := f.actions("commerce.checkout."); strings.Join(a, ",") != app.AuditCheckoutDenied {
 		t.Errorf("audit = %v", a)
 	}

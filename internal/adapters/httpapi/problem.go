@@ -97,7 +97,10 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 	var policyDenied *app.PolicyDeniedError
 	switch {
 	case errors.As(err, &policyDenied):
-		writeProblem(w, http.StatusUnprocessableEntity, codePolicyDenied, err.Error())
+		// The submitting agent gets reason codes only, never the exact
+		// limits (Error()'s numeric Detail) - an agent has no
+		// permission to read the policy itself.
+		writeProblem(w, http.StatusUnprocessableEntity, codePolicyDenied, policyDenied.AgentMessage())
 	case errors.Is(err, app.ErrNotAwaitingApproval):
 		writeProblem(w, http.StatusConflict, codeNotAwaitingApproval, err.Error())
 	case errors.Is(err, app.ErrApproverExcluded):

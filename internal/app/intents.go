@@ -35,6 +35,21 @@ func (e *PolicyDeniedError) Error() string {
 	return fmt.Sprintf("denied by the organisation's spending policy (version %d): %s", e.Decision.Version, strings.Join(details, "; "))
 }
 
+// AgentMessage is what the submitting agent is told: the failing
+// reason codes only, never Error()'s numeric Detail strings (the
+// organisation's exact limits). An agent has no permission to read
+// the policy (only a member does, via GET /v1/policies/current), so
+// its own denied submission must not be a side channel for learning
+// those limits by trial and error. The full, detailed Error() stays
+// in the attempt log and the audit trail, which only members read.
+func (e *PolicyDeniedError) AgentMessage() string {
+	codes := make([]string, 0, len(e.Decision.Reasons))
+	for _, r := range e.Decision.Reasons {
+		codes = append(codes, string(r.Code))
+	}
+	return fmt.Sprintf("denied by the organisation's spending policy: %s", strings.Join(codes, ", "))
+}
+
 // PaymentStarter starts, or attaches to, the durable workflow that
 // carries one Intent to a terminal state. Submitting the same intent
 // twice must attach to the run already in progress, never start a

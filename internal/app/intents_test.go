@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"time"
@@ -291,6 +292,15 @@ func TestSubmitIntent_DeniedByPolicy_NeverStartsWorkflowOrSavesIntent(t *testing
 	}
 	if _, ok := intents.Get(intent.Key); ok {
 		t.Error("a policy-denied intent was saved; want it never persisted")
+	}
+	// Error() (attempt-logged, member-visible) keeps the exact limit;
+	// AgentMessage() (returned to the agent, which can't read the
+	// policy) must not.
+	if !strings.Contains(denied.Error(), "too much") {
+		t.Errorf("Error() = %q, want the full detail for the attempt log", denied.Error())
+	}
+	if strings.Contains(denied.AgentMessage(), "too much") || !strings.Contains(denied.AgentMessage(), string(policy.ReasonOverTransactionLimit)) {
+		t.Errorf("AgentMessage() = %q, want the reason code without the detail", denied.AgentMessage())
 	}
 }
 

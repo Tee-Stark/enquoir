@@ -187,11 +187,16 @@ type SubmitCheckout struct {
 // not that the two ever appear in the same response, since a
 // policy-denied checkout never reaches mandate evaluation, but a
 // reader of one stored denial should never have to guess which
-// authority it came from.
+// authority it came from. Detail is deliberately left blank: the
+// merchant has no permission to read the organisation's policy
+// itself (that's dashboard/session-only), so a denied checkout must
+// not become a side channel for learning its exact limits by trial
+// and error, the way a mandate reason's detail (shown to the
+// customer on the approval page) is allowed to be specific.
 func policyDenials(d policy.Decision) []commerce.Denial {
 	out := make([]commerce.Denial, 0, len(d.Reasons))
 	for _, r := range d.Reasons {
-		out = append(out, commerce.Denial{Code: commerce.DenialCode("policy_" + string(r.Code)), Detail: r.Detail})
+		out = append(out, commerce.Denial{Code: commerce.DenialCode("policy_" + string(r.Code))})
 	}
 	return out
 }
