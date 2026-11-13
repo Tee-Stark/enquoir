@@ -87,7 +87,7 @@ func period(from, to time.Time) error {
 }
 
 var knownStates = map[string]bool{
-	StateReceived: true, string(domain.PROPOSED): true, string(domain.AUTHORIZED): true, string(domain.IN_FLIGHT): true,
+	StateReceived: true, string(domain.PROPOSED): true, string(domain.AWAITING_APPROVAL): true, string(domain.AUTHORIZED): true, string(domain.IN_FLIGHT): true,
 	string(domain.UNKNOWN): true, string(domain.APPLIED): true, string(domain.FAILED): true, string(domain.BLOCKED): true,
 }
 
@@ -156,6 +156,7 @@ var (
 	knownOutcomes   = map[AttemptOutcome]bool{
 		OutcomeStarted: true, OutcomeAttached: true, OutcomeDeduplicated: true, OutcomeInvalid: true, OutcomePayeeUnknown: true, OutcomeError: true,
 		OutcomeInProgress: true, OutcomeInterrupted: true, OutcomeOK: true, OutcomeNotFound: true, OutcomeRejected: true, OutcomeAmbiguous: true, OutcomeDuplicateTransfers: true,
+		OutcomePolicyDenied: true,
 	}
 )
 

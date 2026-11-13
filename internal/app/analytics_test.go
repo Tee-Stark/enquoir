@@ -52,6 +52,26 @@ func TestGetSummary_DerivesRatesAndTotals(t *testing.T) {
 	}
 }
 
+// AWAITING_APPROVAL payments count as in progress, and policy_denied
+// submissions count towards the submissions total - both are real,
+// reachable values Phase 6 added, not placeholders.
+func TestGetSummary_CountsAwaitingApprovalAndPolicyDenied(t *testing.T) {
+	stub := &stubAnalytics{counts: app.SummaryCounts{
+		ByState:              map[string]int{"APPLIED": 1, string(domain.AWAITING_APPROVAL): 3},
+		SubmissionsByOutcome: map[string]int{"started": 1, "policy_denied": 2},
+	}}
+	s, err := (&app.GetSummary{Analytics: stub, Clock: apptest.NewClock()}).Run(context.Background(), testOrg, time.Time{}, time.Time{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.ByState[string(domain.AWAITING_APPROVAL)] != 3 || s.InProgress != 3 || s.Payments != 4 {
+		t.Errorf("awaiting-approval %d, in progress %d, payments %d; want 3, 3, 4", s.ByState[string(domain.AWAITING_APPROVAL)], s.InProgress, s.Payments)
+	}
+	if s.SubmissionsByOutcome[string(app.OutcomePolicyDenied)] != 2 || s.Submissions != 3 {
+		t.Errorf("policy_denied %d, submissions %d; want 2, 3", s.SubmissionsByOutcome[string(app.OutcomePolicyDenied)], s.Submissions)
+	}
+}
+
 func TestGetSummary_NoSettledPaymentsMeansNoRate(t *testing.T) {
 	s, _ := (&app.GetSummary{Analytics: &stubAnalytics{}, Clock: apptest.NewClock()}).Run(context.Background(), testOrg, time.Time{}, time.Time{}, "")
 	if s.SuccessRate != nil {

@@ -184,7 +184,7 @@ func (g *GetSummary) Run(ctx context.Context, org domain.OrgID, from, to time.Ti
 		s.ByState[st] = c.ByState[st]
 		s.Payments += c.ByState[st]
 	}
-	for _, st := range []string{StateReceived, "PROPOSED", "AUTHORIZED", "IN_FLIGHT", "UNKNOWN"} {
+	for _, st := range []string{StateReceived, "PROPOSED", string(domain.AWAITING_APPROVAL), "AUTHORIZED", "IN_FLIGHT", "UNKNOWN"} {
 		s.InProgress += s.ByState[st]
 	}
 	s.BlockedByPolicy = s.ByState["BLOCKED"]
@@ -192,7 +192,7 @@ func (g *GetSummary) Run(ctx context.Context, org domain.OrgID, from, to time.Ti
 		rate := float64(s.ByState["APPLIED"]) / float64(settled)
 		s.SuccessRate = &rate
 	}
-	for _, o := range []AttemptOutcome{OutcomeStarted, OutcomeAttached, OutcomeDeduplicated, OutcomeInvalid, OutcomePayeeUnknown, OutcomeError} {
+	for _, o := range []AttemptOutcome{OutcomeStarted, OutcomeAttached, OutcomeDeduplicated, OutcomeInvalid, OutcomePayeeUnknown, OutcomeError, OutcomePolicyDenied} {
 		n := c.SubmissionsByOutcome[string(o)]
 		s.SubmissionsByOutcome[string(o)] = n
 		s.Submissions += n
