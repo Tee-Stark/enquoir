@@ -27,6 +27,8 @@ const (
 	codeEmailTaken           = "email_taken"
 	codePayeeUnknown         = "payee_unknown"
 	codePolicyDenied         = "policy_denied"
+	codeNotAwaitingApproval  = "not_awaiting_approval"
+	codeApproverExcluded     = "approver_excluded"
 	codeForbiddenOrigin      = "forbidden_origin"
 	codeNotImplemented       = "not_implemented"
 	codeBodyTooLarge         = "body_too_large"
@@ -96,6 +98,10 @@ func writeAppError(w http.ResponseWriter, err error, internalDetail string) {
 	switch {
 	case errors.As(err, &policyDenied):
 		writeProblem(w, http.StatusUnprocessableEntity, codePolicyDenied, err.Error())
+	case errors.Is(err, app.ErrNotAwaitingApproval):
+		writeProblem(w, http.StatusConflict, codeNotAwaitingApproval, err.Error())
+	case errors.Is(err, app.ErrApproverExcluded):
+		writeProblem(w, http.StatusForbidden, codeApproverExcluded, err.Error())
 	case errors.As(err, &limited):
 		w.Header().Set("Retry-After", retryAfter(limited.RetryAfter))
 		writeProblem(w, http.StatusTooManyRequests, codeRateLimited, limited.Error())

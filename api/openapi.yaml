@@ -3226,6 +3226,72 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/payments/{key}/approve:
+    parameters:
+      - $ref: "#/components/parameters/IntentKey"
+    post:
+      tags: [Payments]
+      operationId: approveEscalatedPayment
+      summary: Approve a payment the organisation's policy escalated
+      description: |
+        Owners and admins only. The payment must currently be
+        AWAITING_APPROVAL. Rechecks the policy before authorizing - a
+        decision that was fine when escalated can still be refused now.
+        The member who created the paying agent cannot approve its own
+        payment unless they are the organisation's only eligible owner
+        or admin, in which case the exclusion is waived.
+      security:
+        - session: []
+      responses:
+        "204":
+          description: Approved; the payment proceeds (or is denied on recheck).
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: Forbidden, or the acting user is excluded from approving.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The payment is not currently awaiting approval.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/payments/{key}/reject:
+    parameters:
+      - $ref: "#/components/parameters/IntentKey"
+    post:
+      tags: [Payments]
+      operationId: rejectEscalatedPayment
+      summary: Reject a payment the organisation's policy escalated
+      description: Owners and admins only. The payment must currently be AWAITING_APPROVAL. Unlike approval, rejection is never excluded - it is not a conflict of interest the way approval is.
+      security:
+        - session: []
+      responses:
+        "204":
+          description: Rejected; the payment is denied.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The payment is not currently awaiting approval.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/analytics/summary:
     get:
       tags: [Analytics]
@@ -3784,6 +3850,8 @@ components:
             - email_taken
             - payee_unknown
             - policy_denied
+            - not_awaiting_approval
+            - approver_excluded
             - forbidden_origin
             - not_implemented
             - body_too_large

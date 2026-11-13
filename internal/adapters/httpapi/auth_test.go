@@ -29,6 +29,7 @@ type authFixture struct {
 	payments *apptest.Payments
 	accounts *apptest.Accounts
 	mailer   *apptest.Mailer
+	signaler *apptest.Signaler
 }
 
 func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
@@ -42,6 +43,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	analytics := &fixtureAnalytics{}
 	issuer := &app.SessionIssuer{Sessions: sessions, IDs: ids, Secrets: secrets, Clock: clock, TTL: 7 * 24 * time.Hour}
 	policies := &apptest.FixedPolicy{}
+	signaler := apptest.NewSignaler()
 	mailer, outbox, tokens := &apptest.Mailer{}, apptest.NewOutbox(), apptest.NewTokens()
 	deliver := &app.DeliverEmail{Outbox: outbox, Tokens: tokens, Renderer: apptest.Renderer{}, Mailer: mailer,
 		Secrets: secrets, Clock: clock, AppBaseURL: "https://enquoir.etimi.me"}
@@ -89,6 +91,9 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		GetCurrentPolicy: &app.GetCurrentPolicy{Policies: policies},
 		UpdatePolicy:     &app.UpdatePolicy{Policies: policies, Clock: clock, Audit: audit},
 		DryRunPolicy:     &app.DryRunPolicy{Policies: policies},
+		DecideEscalatedPayment: &app.DecideEscalatedPayment{
+			Payments: payments, Agents: agents, Members: accounts, Signaler: signaler, Audit: audit,
+		},
 
 		Submit: &app.SubmitIntent{Treasuries: accounts, Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents(), Attempts: attempts, IDs: ids, Clock: clock, Policies: policies, Audit: audit},
 		Get:    &app.GetIntent{Events: events},
@@ -158,7 +163,7 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		Redeem: &commerceapp.RedeemGrant{Checkouts: checkouts, IDs: ids, Clock: clock, Audit: audit},
 		Get:    &commerceapp.GetExecution{Checkouts: checkouts},
 	}
-	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments, accounts: accounts, mailer: mailer}
+	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments, accounts: accounts, mailer: mailer, signaler: signaler}
 }
 
 var testEmailCounter atomic.Int64

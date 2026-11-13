@@ -5,8 +5,13 @@ import (
 	"net/http"
 	"testing"
 
+	"enquoir/internal/app"
 	"enquoir/internal/domain"
 )
+
+func payment(key string, org domain.OrgID, state domain.State, agent domain.AgentID) app.Payment {
+	return app.Payment{Key: domain.IntentKey(key), OrgID: org, State: string(state), AgentID: agent}
+}
 
 type policyVersionBody struct {
 	Version       int    `json:"version"`
@@ -59,6 +64,62 @@ func TestPolicies_RolesAreEnforced(t *testing.T) {
 	json.Unmarshal(dry.Body.Bytes(), &decision)
 	if dry.Code != http.StatusOK || decision.Outcome != "allow" {
 		t.Errorf("owner dry-run = %d %s, want 200 allow", dry.Code, dry.Body)
+	}
+}
+
+// Approving/rejecting an escalated payment needs PermApproveEscalation
+// (owners and admins); other roles are forbidden.
+func TestEscalation_RolesAreEnforced(t *testing.T) {
+	f := newAuthFixture(t, true)
+	org, owner := f.newOrg(t)
+	f.payments.Add(payment("key_esc", org, domain.AWAITING_APPROVAL, ""))
+
+	for _, role := range []domain.Role{domain.Viewer, domain.Operator} {
+		member := f.memberAs(t, org, role)
+		if rec := f.do(t, http.MethodPost, "/v1/payments/key_esc/approve", "", member); rec.Code != http.StatusForbidden {
+			t.Errorf("%s approve: %d, want 403", role, rec.Code)
+		}
+		if rec := f.do(t, http.MethodPost, "/v1/payments/key_esc/reject", "", member); rec.Code != http.StatusForbidden {
+			t.Errorf("%s reject: %d, want 403", role, rec.Code)
+		}
+	}
+
+	if rec := f.do(t, http.MethodPost, "/v1/payments/key_esc/approve", "", owner); rec.Code != http.StatusNoContent {
+		t.Fatalf("owner approve: %d %s", rec.Code, rec.Body)
+	}
+	calls := f.signaler.Calls()
+	if len(calls) != 1 || !calls[0].Approved || calls[0].Key != "key_esc" {
+		t.Errorf("signaler calls = %+v, want one approval for key_esc", calls)
+	}
+}
+
+func TestEscalation_RefusesAPaymentNotAwaitingApproval(t *testing.T) {
+	f := newAuthFixture(t, true)
+	org, owner := f.newOrg(t)
+	f.payments.Add(payment("key_live", org, domain.AUTHORIZED, ""))
+
+	rec := f.do(t, http.MethodPost, "/v1/payments/key_live/approve", "", owner)
+	if p := decodeProblem(t, rec); rec.Code != http.StatusConflict || p.Code != "not_awaiting_approval" {
+		t.Errorf("approving a non-escalated payment: %d %q, want 409 not_awaiting_approval", rec.Code, p.Code)
+	}
+}
+
+// The agent's creator cannot approve their own agent's payment while
+// another owner/admin exists.
+func TestEscalation_CreatorExcludedFromApprovingOwnAgentsPayment(t *testing.T) {
+	f := newAuthFixture(t, true)
+	org, owner := f.newOrg(t)
+	issued := f.createAgent(t, owner, "bot")
+	f.payments.Add(payment("key_esc", org, domain.AWAITING_APPROVAL, domain.AgentID(issued.Agent.ID)))
+	other := f.memberAs(t, org, domain.Admin)
+
+	rec := f.do(t, http.MethodPost, "/v1/payments/key_esc/approve", "", owner)
+	if p := decodeProblem(t, rec); rec.Code != http.StatusForbidden || p.Code != "approver_excluded" {
+		t.Errorf("creator approving their own agent's payment with another admin available: %d %q, want 403 approver_excluded", rec.Code, p.Code)
+	}
+
+	if rec := f.do(t, http.MethodPost, "/v1/payments/key_esc/approve", "", other); rec.Code != http.StatusNoContent {
+		t.Errorf("the other admin approving: %d %s", rec.Code, rec.Body)
 	}
 }
 

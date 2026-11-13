@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"time"
+
 	"enquoir/internal/app"
 	"enquoir/internal/app/apptest"
 	"enquoir/internal/domain"
@@ -285,6 +287,33 @@ func TestSubmitIntent_EscalatedByPolicy_StartsAndTellsTheWorkflowToWait(t *testi
 	}
 	if escalated := starter.Escalated(); len(escalated) != 1 || !escalated[0] {
 		t.Errorf("Starter.Start escalate flags = %v, want exactly one true", escalated)
+	}
+}
+
+func TestSubmitIntent_EscalatedByPolicy_NotifiesEveryOwnerAndAdminOnly(t *testing.T) {
+	intent := testIntent(t)
+	accounts := apptest.NewAccounts()
+	owner := app.User{ID: "usr_owner", Email: "owner@example.com", CreatedAt: time.Now()}
+	if err := accounts.CreateOrganisationWithOwner(context.Background(), app.Organisation{ID: testOrg, Name: "Test", CreatedAt: time.Now()}, owner); err != nil {
+		t.Fatal(err)
+	}
+	viewer := app.User{ID: "usr_viewer", Email: "viewer@example.com", CreatedAt: time.Now()}
+	if err := accounts.CreateOrganisationWithOwner(context.Background(), app.Organisation{ID: "org_throwaway", Name: "x", CreatedAt: time.Now()}, viewer); err != nil {
+		t.Fatal(err)
+	}
+	accounts.AddMember(testOrg, viewer.ID, domain.Viewer, time.Now())
+
+	outbox := apptest.NewOutbox()
+	emails := &app.Emails{Outbox: outbox, Dispatcher: &apptest.Dispatcher{}, IDs: &apptest.IDs{}, Clock: apptest.NewClock()}
+	policies := &apptest.FixedPolicy{Outcome: policy.Escalate, Reasons: []policy.Reason{{Code: policy.ReasonOverApprovalThreshold}}}
+	use := &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: &apptest.PaymentStarter{}, Events: apptest.NewEventLog(), Payees: ownedPayees(), Intents: apptest.NewIntents(), Attempts: apptest.NewAttempts(), IDs: &apptest.IDs{}, Clock: apptest.NewClock(), Policies: policies, Members: accounts, Emails: emails}
+
+	if _, err := use.Run(context.Background(), commandFor(intent)); err != nil {
+		t.Fatal(err)
+	}
+	sent := outbox.All()
+	if len(sent) != 1 || sent[0].Template != app.TemplateEscalationCreated || sent[0].To != owner.Email || sent[0].Link != nil {
+		t.Errorf("sent = %+v, want exactly one no-link escalation_created email to the owner (never the viewer)", sent)
 	}
 }
 

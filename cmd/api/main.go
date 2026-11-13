@@ -106,6 +106,7 @@ func main() {
 	auditLog := postgres.NewAuditLog(pool)
 	audit := &app.Audit{Log: auditLog, IDs: ids, Clock: sysClock}
 	policies := postgres.NewPolicyStore(pool)
+	paymentStarter := &httpapi.TemporalPaymentStarter{Client: temporalClient, MaxAmountMinorUnits: maxMinorUnits}
 
 	emails := &app.Emails{Outbox: postgres.NewEmailOutbox(pool), Dispatcher: &enquoirworkflow.EmailDispatcher{Client: temporalClient}, IDs: ids, Clock: sysClock}
 	tokens := postgres.NewTokenStore(pool)
@@ -115,7 +116,7 @@ func main() {
 	handler := &httpapi.Handler{
 		Submit: &app.SubmitIntent{
 			Treasuries: accounts,
-			Starter:    &httpapi.TemporalPaymentStarter{Client: temporalClient, MaxAmountMinorUnits: maxMinorUnits},
+			Starter:    paymentStarter,
 			Events:     events,
 			Payees:     beneficiaries,
 			Intents:    postgres.NewIntentRepository(pool),
@@ -124,6 +125,8 @@ func main() {
 			Clock:      sysClock,
 			Policies:   policies,
 			Audit:      audit,
+			Members:    accounts,
+			Emails:     emails,
 		},
 		Get: &app.GetIntent{Events: events},
 		Register: &app.RegisterBeneficiary{
@@ -175,6 +178,9 @@ func main() {
 		GetCurrentPolicy: &app.GetCurrentPolicy{Policies: policies},
 		UpdatePolicy:     &app.UpdatePolicy{Policies: policies, Clock: sysClock, Audit: audit},
 		DryRunPolicy:     &app.DryRunPolicy{Policies: policies},
+		DecideEscalatedPayment: &app.DecideEscalatedPayment{
+			Payments: payments, Agents: agents, Members: accounts, Signaler: paymentStarter, Audit: audit,
+		},
 
 		ListPayments:      &app.ListPayments{Payments: payments},
 		GetPayment:        &app.GetPayment{Payments: payments, Events: events, Attempts: attempts},

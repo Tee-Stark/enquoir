@@ -1,0 +1,8 @@
+{{define "subject"}}A payment needs your approval: {{.P.amount}} to {{.P.payee}}{{end}}
+{{define "action"}}{{end}}
+{{define "content"}}A payment needs approval
+
+An agent asked to pay {{.P.payee}} {{.P.amount}}, and your organisation's spending policy says this needs an owner or admin's approval before it goes ahead.
+
+Log in to review and decide. If nobody decides within 24 hours, it is denied.{{end}}
+{{define "why"}}You received this because your organisation's spending policy escalated a payment above its approval threshold, and you are an owner or admin.{{end}}

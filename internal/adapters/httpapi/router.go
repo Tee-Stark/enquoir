@@ -56,9 +56,10 @@ type Handler struct {
 	RevokeAgent       *app.RevokeAgent
 	AuthenticateAgent *app.AuthenticateAgent
 
-	GetCurrentPolicy *app.GetCurrentPolicy
-	UpdatePolicy     *app.UpdatePolicy
-	DryRunPolicy     *app.DryRunPolicy
+	GetCurrentPolicy       *app.GetCurrentPolicy
+	UpdatePolicy           *app.UpdatePolicy
+	DryRunPolicy           *app.DryRunPolicy
+	DecideEscalatedPayment *app.DecideEscalatedPayment
 
 	ListPayments      *app.ListPayments
 	GetPayment        *app.GetPayment
@@ -175,6 +176,9 @@ func NewRouter(h *Handler) chi.Router {
 		r.With(read).Get("/v1/payments", h.listPayments)
 		r.With(read).Get("/v1/payments/{key}", h.getPayment)
 		r.With(read).Get("/v1/payments/{key}/replay", h.replayPayment)
+		approveEscalation := h.allow(domain.PermApproveEscalation)
+		r.With(approveEscalation).Post("/v1/payments/{key}/approve", h.decideEscalatedPayment(true))
+		r.With(approveEscalation).Post("/v1/payments/{key}/reject", h.decideEscalatedPayment(false))
 		r.With(read).Get("/v1/attempts", h.listAttempts)
 		r.With(read).Get("/v1/beneficiaries", h.listBeneficiaries)
 

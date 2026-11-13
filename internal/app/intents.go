@@ -82,6 +82,10 @@ type SubmitIntent struct {
 	// callers with no stake in policy evaluation need no change.
 	Policies policy.Store
 	Audit    *Audit
+	// Members and Emails notify every owner/admin when a payment
+	// escalates. Both nil-safe: left unset, no email is sent.
+	Members MemberStore
+	Emails  *Emails
 }
 
 // Run validates the submission and starts intent's workflow only if
@@ -184,6 +188,9 @@ func (s *SubmitIntent) submit(ctx context.Context, cmd SubmitIntentCommand, atte
 			s.Audit.record(ctx, intent.OrgID, AuditPaymentEscalated, "intent", string(intent.Key), map[string]string{
 				"policy_version": fmt.Sprint(decision.Version),
 			})
+			if err := s.notifyApprovers(ctx, intent); err != nil {
+				return SubmitIntentResult{}, fmt.Errorf("notifying approvers: %w", err)
+			}
 		}
 	}
 	_, created, err := s.Intents.Save(ctx, intent)
@@ -268,4 +275,35 @@ func (g *GetIntent) Run(ctx context.Context, org domain.OrgID, key domain.Intent
 		State:  domain.State(chain[len(chain)-1].Type),
 		Events: chain,
 	}, nil
+}
+
+// notifyApprovers emails every owner/admin that intent needs their
+// approval. Notify-only, like passwordChangedEmail: the recipients
+// are already authenticated members, who decide from the dashboard,
+// so no one-time link is minted. Nil-safe: with no Members/Emails
+// configured, nothing is sent.
+func (s *SubmitIntent) notifyApprovers(ctx context.Context, intent domain.Intent) error {
+	if s.Members == nil || s.Emails == nil {
+		return nil
+	}
+	members, err := s.Members.ListMembers(ctx, intent.OrgID)
+	if err != nil {
+		return err
+	}
+	params := map[string]string{
+		"payee":  intent.Payee,
+		"amount": fmt.Sprintf("%s %s", intent.Amount.Currency(), intent.Amount.MajorUnitsString()),
+	}
+	for _, m := range members {
+		if m.Role != domain.Owner && m.Role != domain.Admin {
+			continue
+		}
+		if _, err := s.Emails.Send(ctx, Email{
+			OrgID: intent.OrgID, UserID: m.User.ID, To: m.User.Email,
+			Template: TemplateEscalationCreated, Params: params,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
