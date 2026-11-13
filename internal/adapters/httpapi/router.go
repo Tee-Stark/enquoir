@@ -177,7 +177,10 @@ func NewRouter(h *Handler) chi.Router {
 		r.With(read).Get("/v1/payments/{key}", h.getPayment)
 		r.With(read).Get("/v1/payments/{key}/replay", h.replayPayment)
 		approveEscalation := h.allow(domain.PermApproveEscalation)
-		r.With(approveEscalation).Post("/v1/payments/{key}/approve", h.decideEscalatedPayment(true))
+		r.With(approveEscalation, verified).Post("/v1/payments/{key}/approve", h.decideEscalatedPayment(true))
+		// Rejecting is never excluded and needs no verification either -
+		// cutting a payment off, like disabling an integration, is
+		// always allowed.
 		r.With(approveEscalation).Post("/v1/payments/{key}/reject", h.decideEscalatedPayment(false))
 		r.With(read).Get("/v1/attempts", h.listAttempts)
 		r.With(read).Get("/v1/beneficiaries", h.listBeneficiaries)
@@ -217,7 +220,7 @@ func NewRouter(h *Handler) chi.Router {
 		// organisation is to its limits); any member may read it.
 		managePolicy := h.allow(domain.PermManagePolicy)
 		r.With(read).Get("/v1/policies/current", h.getCurrentPolicy)
-		r.With(managePolicy).Put("/v1/policies", h.updatePolicy)
+		r.With(managePolicy, verified).Put("/v1/policies", h.updatePolicy)
 		r.With(managePolicy).Post("/v1/policies/dry-run", h.dryRunPolicy)
 	})
 	return r

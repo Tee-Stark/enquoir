@@ -1432,7 +1432,7 @@ paths:
       tags: [Policies]
       operationId: updatePolicy
       summary: Replace the organisation's spending policy with a new version
-      description: Owners and admins only. Every edit is a new version, never a mutation; past decisions keep reading back the version they used.
+      description: Owners and admins only, with a verified email. Every edit is a new version, never a mutation; past decisions keep reading back the version they used.
       security:
         - session: []
       requestBody:
@@ -3234,12 +3234,12 @@ paths:
       operationId: approveEscalatedPayment
       summary: Approve a payment the organisation's policy escalated
       description: |
-        Owners and admins only. The payment must currently be
-        AWAITING_APPROVAL. Rechecks the policy before authorizing - a
-        decision that was fine when escalated can still be refused now.
-        The member who created the paying agent cannot approve its own
-        payment unless they are the organisation's only eligible owner
-        or admin, in which case the exclusion is waived.
+        Owners and admins only, with a verified email. The payment must
+        currently be AWAITING_APPROVAL. Rechecks the policy before
+        authorizing - a decision that was fine when escalated can still
+        be refused now. The member who created the paying agent cannot
+        approve its own payment unless they are the organisation's only
+        eligible owner or admin, in which case the exclusion is waived.
       security:
         - session: []
       responses:
