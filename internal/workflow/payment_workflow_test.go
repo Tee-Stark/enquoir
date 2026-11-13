@@ -29,6 +29,7 @@ type testEnv struct {
 	env        *testsuite.TestWorkflowEnvironment
 	events     *apptest.EventLog
 	attempts   *apptest.Attempts
+	audit      *apptest.AuditLog
 	activities *Activities
 }
 
@@ -37,20 +38,22 @@ func newEnv(t *testing.T, rail app.Rail) *testEnv {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 
-	events, attempts := apptest.NewEventLog(), apptest.NewAttempts()
+	events, attempts, auditLog := apptest.NewEventLog(), apptest.NewAttempts(), apptest.NewAuditLog()
+	clock := apptest.NewClock()
 	a := &Activities{
 		Intents:  newFakeIntentRepository(),
 		Events:   events,
 		Rail:     rail,
 		Attempts: attempts,
 		IDs:      &apptest.IDs{},
-		Clock:    apptest.NewClock(),
+		Clock:    clock,
+		Audit:    &app.Audit{Log: auditLog, IDs: &apptest.IDs{}, Clock: clock},
 	}
 
 	env.RegisterWorkflow(PaymentWorkflow)
 	env.RegisterActivity(a)
 
-	return &testEnv{env: env, events: events, attempts: attempts, activities: a}
+	return &testEnv{env: env, events: events, attempts: attempts, audit: auditLog, activities: a}
 }
 
 func (e *testEnv) eventTypes(t *testing.T, key domain.IntentKey) []string {
@@ -223,6 +226,9 @@ func TestPaymentWorkflow_Escalated_ApprovalDeniedOnRecheck(t *testing.T) {
 	require.NoError(t, te.env.GetWorkflowResult(&result))
 	require.Equal(t, domain.BLOCKED, result.State)
 	require.False(t, createCalled.Load())
+	events := te.audit.All()
+	require.Len(t, events, 1, "a denial on recheck must be audited - Approved was already recorded, so nothing else shows this happened")
+	require.Equal(t, app.AuditPaymentEscalationDeniedOnRecheck, events[0].Action)
 }
 
 // A rejection signal blocks the payment without ever calling the rail.
@@ -312,6 +318,9 @@ func TestPaymentWorkflow_Escalated_TimesOutAfter24Hours(t *testing.T) {
 	require.NoError(t, te.env.GetWorkflowResult(&result))
 	require.Equal(t, domain.BLOCKED, result.State)
 	require.False(t, createCalled.Load())
+	events := te.audit.All()
+	require.Len(t, events, 1, "a timeout with no human decision must be audited - nothing else shows this happened")
+	require.Equal(t, app.AuditPaymentEscalationExpired, events[0].Action)
 }
 
 func TestPaymentWorkflow_AmbiguousCreateFoundByLookupSendsNoSecondCreate(t *testing.T) {

@@ -100,6 +100,7 @@ func main() {
 			Audit: &app.Audit{Log: postgres.NewAuditLog(pool), IDs: credentials.RandomIDs{}, Clock: clock.System{}}},
 
 		Policies: postgres.NewPolicyStore(pool),
+		Audit:    &app.Audit{Log: postgres.NewAuditLog(pool), IDs: credentials.RandomIDs{}, Clock: clock.System{}},
 	}
 
 	stopSweep := make(chan struct{})

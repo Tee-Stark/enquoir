@@ -79,6 +79,13 @@ const (
 	AuditPaymentEscalated      = "payment.escalated"
 	AuditPaymentApproved       = "payment.approved"
 	AuditPaymentRejected       = "payment.rejected"
+	// AuditPaymentEscalationExpired/AuditPaymentEscalationDeniedOnRecheck
+	// are recorded by the workflow itself (via an activity), not an
+	// HTTP handler: no human decision ever reaches DecideEscalatedPayment
+	// for a timeout, and a recheck denial happens after Approved was
+	// already recorded - both need their own record to be visible at all.
+	AuditPaymentEscalationExpired         = "payment.escalation_expired"
+	AuditPaymentEscalationDeniedOnRecheck = "payment.escalation_denied_on_recheck"
 
 	// Commerce. Treasury records none of these; they are listed here so
 	// the one audit log can filter by them.
@@ -184,6 +191,7 @@ var knownAuditActions = map[string]bool{
 	AuditAgentKeyRotated: true, AuditAgentRevoked: true, AuditPayeeRegistered: true,
 	AuditPolicyUpdated: true, AuditPaymentDeniedByPolicy: true, AuditPaymentEscalated: true,
 	AuditPaymentApproved: true, AuditPaymentRejected: true,
+	AuditPaymentEscalationExpired: true, AuditPaymentEscalationDeniedOnRecheck: true,
 	AuditIntegrationCreated: true, AuditIntegrationDisabled: true, AuditIntegrationEnabled: true,
 	AuditIntegrationKeyRotated: true, AuditIntegrationKeyRevoked: true,
 	AuditCommerceCustomerRegistered: true, AuditCommerceCustomerDisabled: true, AuditCommerceCustomerEnabled: true,

@@ -155,6 +155,7 @@ func awaitApproval(ctx workflow.Context, state *domain.State, intent domain.Inte
 	selector.Select(ctx)
 
 	if timedOut {
+		recordEscalationOutcome(ctx, intent, app.AuditPaymentEscalationExpired, nil)
 		return false, moveTo(ctx, state, intent.OrgID, intent.Key, domain.BLOCKED, "escalation timed out after 24 hours with no decision")
 	}
 	if !signal.Approved {
@@ -171,9 +172,21 @@ func awaitApproval(ctx workflow.Context, state *domain.State, intent domain.Inte
 		return false, fmt.Errorf("rechecking the policy on approval: %w", err)
 	}
 	if decision.Outcome == policy.Deny {
+		recordEscalationOutcome(ctx, intent, app.AuditPaymentEscalationDeniedOnRecheck, map[string]string{"policy_version": fmt.Sprint(decision.Version)})
 		return false, moveTo(ctx, state, intent.OrgID, intent.Key, domain.BLOCKED, "no longer within the organisation's policy on recheck")
 	}
 	return true, nil
+}
+
+// recordEscalationOutcome best-effort audits an escalation outcome
+// the workflow decided with no HTTP call to hang a record off: a
+// timeout, or a denial on recheck after a human already approved.
+// An audit hiccup must never fail the payment itself, so its error
+// is deliberately discarded once the modest default retry budget
+// (set on ctx by PaymentWorkflow) runs out.
+func recordEscalationOutcome(ctx workflow.Context, intent domain.Intent, action string, details map[string]string) {
+	in := RecordEscalationOutcomeInput{OrgID: intent.OrgID, IntentKey: intent.Key, Action: action, Details: details}
+	_ = execActivity(ctx, activities().RecordEscalationOutcome, in).Get(ctx, nil)
 }
 
 // authorize sends the intent to the rail and waits for a result. It
