@@ -34,8 +34,10 @@ type rowQuerier interface {
 // lock, never a second, separate one.
 func currentPolicy(ctx context.Context, q rowQuerier, org domain.OrgID) (policy.PolicyVersion, error) {
 	var canonical string
-	err := q.QueryRow(ctx, `SELECT canonical FROM policy_versions WHERE org_id = $1 ORDER BY version DESC LIMIT 1`,
-		string(org)).Scan(&canonical)
+	var createdAt time.Time
+	var createdBy *string
+	err := q.QueryRow(ctx, `SELECT canonical, created_at, created_by FROM policy_versions WHERE org_id = $1 ORDER BY version DESC LIMIT 1`,
+		string(org)).Scan(&canonical, &createdAt, &createdBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return policy.DefaultPolicyVersion(org), nil
 	}
@@ -47,6 +49,13 @@ func currentPolicy(ctx context.Context, q rowQuerier, org domain.OrgID) (policy.
 		return policy.PolicyVersion{}, err
 	}
 	v.OrgID = org
+	// ParsePolicyVersion only restores what the canonical snapshot
+	// itself carries (what Hash is computed over) - created_at/by
+	// are their own columns, read separately here.
+	v.CreatedAt = createdAt
+	if createdBy != nil {
+		v.CreatedBy = domain.UserID(*createdBy)
+	}
 	return v, nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"enquoir/internal/commerce"
 	"enquoir/internal/domain"
@@ -49,6 +50,8 @@ func TestPolicyStore_SaveNewVersion_IncrementsVersion(t *testing.T) {
 	v2, _ := policy.NewPolicyVersion(org.ID, 0, map[domain.Currency]policy.CurrencyRule{
 		domain.USD: {MaxPerTransactionMinor: 20_000},
 	}, nil, nil, nil)
+	v2.CreatedBy = user.ID
+	v2.CreatedAt = time.Now()
 	saved2, err := store.SaveNewVersion(ctx, v2)
 	if err != nil {
 		t.Fatal(err)
@@ -57,9 +60,19 @@ func TestPolicyStore_SaveNewVersion_IncrementsVersion(t *testing.T) {
 		t.Errorf("second saved version = %d, want 2", saved2.Version)
 	}
 
+	// CurrentPolicy must read back created_at/created_by too, not just
+	// the canonical snapshot's own fields - those live in their own
+	// columns, not inside the canonical JSON (which Hash is computed
+	// over and never carried them).
 	current, err := store.CurrentPolicy(ctx, org.ID)
 	if err != nil || current.Version != 2 || current.CurrencyRules[domain.USD].MaxPerTransactionMinor != 20_000 {
 		t.Errorf("CurrentPolicy = %+v, %v, want version 2 with the latest rule", current, err)
+	}
+	if current.CreatedBy != user.ID {
+		t.Errorf("CurrentPolicy.CreatedBy = %q, want %q", current.CreatedBy, user.ID)
+	}
+	if current.CreatedAt.IsZero() || current.CreatedAt.Year() < 2000 {
+		t.Errorf("CurrentPolicy.CreatedAt = %v, want the real save time, not the Go zero value", current.CreatedAt)
 	}
 
 	// An old version is still readable by evaluating against it directly
