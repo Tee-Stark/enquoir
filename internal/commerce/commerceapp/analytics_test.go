@@ -21,12 +21,12 @@ type stubCommerceAnalytics struct {
 	gotQuery  app.SeriesQuery
 }
 
-func (s *stubCommerceAnalytics) Summary(ctx context.Context, org domain.OrgID, p app.Period) (commerceapp.CommerceSummaryCounts, error) {
+func (s *stubCommerceAnalytics) Summary(ctx context.Context, org domain.OrgID, p app.Period, now time.Time) (commerceapp.CommerceSummaryCounts, error) {
 	s.gotPeriod = p
 	return s.counts, nil
 }
 
-func (s *stubCommerceAnalytics) Series(ctx context.Context, org domain.OrgID, q app.SeriesQuery) (app.SeriesData, error) {
+func (s *stubCommerceAnalytics) Series(ctx context.Context, org domain.OrgID, q app.SeriesQuery, now time.Time) (app.SeriesData, error) {
 	s.gotQuery = q
 	return s.data, nil
 }

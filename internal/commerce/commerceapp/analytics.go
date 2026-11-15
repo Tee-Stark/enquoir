@@ -86,10 +86,16 @@ func commerceSet(xs ...string) map[string]bool {
 // CommerceAnalyticsReader computes commerce analytics, scoped by
 // organisation. Kept separate from CommerceOrgReader (entity listing)
 // the same way app.AnalyticsReader is kept separate from Treasury's
-// history readers.
+// history readers. now is the real current time, for effective-status
+// computation (expired is derived, not stored - see
+// effectiveCheckoutStatus) - the same explicit now parameter
+// CommerceOrgReader's list methods already take, and deliberately NOT
+// p.To: a report whose period extends into the future must still show
+// an in-progress checkout's real, current status, not its hypothetical
+// status as of that future instant.
 type CommerceAnalyticsReader interface {
-	Summary(ctx context.Context, org domain.OrgID, p app.Period) (CommerceSummaryCounts, error)
-	Series(ctx context.Context, org domain.OrgID, q app.SeriesQuery) (app.SeriesData, error)
+	Summary(ctx context.Context, org domain.OrgID, p app.Period, now time.Time) (CommerceSummaryCounts, error)
+	Series(ctx context.Context, org domain.OrgID, q app.SeriesQuery, now time.Time) (app.SeriesData, error)
 }
 
 // GetCommerceSummary is the commerce analytics-summary use case.
@@ -103,7 +109,7 @@ func (g *GetCommerceSummary) Run(ctx context.Context, org domain.OrgID, from, to
 	if err != nil {
 		return CommerceSummary{}, err
 	}
-	c, err := g.Analytics.Summary(ctx, org, p)
+	c, err := g.Analytics.Summary(ctx, org, p, g.Clock.Now())
 	if err != nil {
 		return CommerceSummary{}, err
 	}
@@ -162,7 +168,7 @@ func (g *GetCommerceTimeSeries) Run(ctx context.Context, org domain.OrgID, metri
 	}
 
 	q := app.SeriesQuery{Metric: metric, Interval: interval, GroupBy: groupBy, Period: p}
-	data, err := g.Analytics.Series(ctx, org, q)
+	data, err := g.Analytics.Series(ctx, org, q, g.Clock.Now())
 	if err != nil {
 		return app.TimeSeries{}, err
 	}
