@@ -163,6 +163,12 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		Redeem: &commerceapp.RedeemGrant{Checkouts: checkouts, IDs: ids, Clock: clock, Audit: audit},
 		Get:    &commerceapp.GetExecution{Checkouts: checkouts},
 	}
+	h.OrgActivity = OrgActivityUseCases{
+		ListCheckouts:  &commerceapp.ListOrgCheckouts{Reader: checkouts, Clock: clock},
+		ListExecutions: &commerceapp.ListOrgExecutions{Reader: checkouts},
+		GetCheckout:    &commerceapp.GetOrgCheckout{Reader: checkouts, Clock: clock},
+		GetExecution:   &commerceapp.GetOrgExecution{Reader: checkouts},
+	}
 	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments, accounts: accounts, mailer: mailer, signaler: signaler}
 }
 
