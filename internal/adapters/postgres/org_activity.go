@@ -106,12 +106,13 @@ func (s *CommerceCheckoutStore) ListExecutionsForOrg(ctx context.Context, org do
 	limit := w.next(f.Limit + 1)
 	q := executionSelect
 	if f.AgentID != "" {
-		q = `SELECT e.id, e.authorization_id, e.checkout_id, e.external_checkout_id, e.checkout_hash, e.mandate_id, e.merchant_id, e.org_id,
-		       e.amount_minor, e.currency, e.status, e.created_at, COALESCE(e.provider_payment_reference, ''), COALESCE(e.failure_reason, ''),
-		       e.updated_at, e.report_deadline, e.finished_at, ` + fundingColumnsAs("f") + `
-		FROM commerce_executions e
-		JOIN commerce_funding_methods f ON f.id = e.funding_method_id
-		JOIN commerce_checkouts c ON c.id = e.checkout_id`
+		// Reuse executionSelect verbatim rather than hand-duplicating its
+		// column list, so this doesn't drift if that query ever changes.
+		// commerce_checkouts.id is the execution's own FK target and both
+		// rows are written under the same Scope (checkouts.go), so a
+		// mismatched join isn't reachable - the extra c.org_id = e.org_id
+		// condition is defense-in-depth, not a fix for a real gap.
+		q = executionSelect + ` JOIN commerce_checkouts c ON c.id = e.checkout_id AND c.org_id = e.org_id`
 		w.add("c.agent_id = ?", string(f.AgentID))
 	}
 	rows, err := s.pool.Query(ctx, q+` WHERE `+w.sql()+` ORDER BY e.created_at DESC, e.id DESC LIMIT `+limit, w.args...)
