@@ -3600,6 +3600,93 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/commerce-analytics/summary:
+    get:
+      tags: [Analytics]
+      operationId: commerceAnalyticsSummary
+      summary: An organisation's commerce activity over a period
+      description: |
+        Checkouts are counted by when they were created; paid volume and
+        time to paid by when the execution finished. Across every merchant
+        integration the organisation owns. Default period, the last 30 days.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/TZ"
+      responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommerceAnalyticsSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commerce-analytics/timeseries:
+    get:
+      tags: [Analytics]
+      operationId: commerceAnalyticsTimeSeries
+      summary: One commerce metric over time, for a chart
+      description: |
+        Every bucket in the period is present for every group: zero for
+        counts and sums, null for time_to_paid where there is no data. At
+        most 1000 buckets per request.
+
+        | metric | value | group_by |
+        |---|---|---|
+        | checkouts | checkouts created | status, agent, currency, or none |
+        | paid_volume | minor units of executions that succeeded, by when they did | currency (always) |
+        | time_to_paid | median milliseconds from execution (redemption) to finished, succeeded only | none |
+
+        Grouping by agent gives agent IDs as the merchant named them.
+      security:
+        - session: []
+      parameters:
+        - name: metric
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [checkouts, paid_volume, time_to_paid]
+        - name: interval
+          in: query
+          description: Bucket size. Weeks start on Monday. Default day.
+          schema:
+            type: string
+            enum: [hour, day, week, month]
+        - name: group_by
+          in: query
+          schema:
+            type: string
+            enum: [status, agent, currency]
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/TZ"
+      responses:
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The series.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimeSeries"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/attempts:
     get:
       tags: [History]
@@ -4458,6 +4545,61 @@ components:
             by_outcome:
               $ref: "#/components/schemas/CountsByKey"
         time_to_applied:
+          type: object
+          required: [count, p50_ms, p95_ms]
+          properties:
+            count:
+              type: integer
+            p50_ms:
+              type: [integer, "null"]
+            p95_ms:
+              type: [integer, "null"]
+
+    CommerceAnalyticsSummary:
+      type: object
+      required: [period, checkouts, volume, active_agents, time_to_paid]
+      properties:
+        period:
+          $ref: "#/components/schemas/AnalyticsPeriod"
+        checkouts:
+          type: object
+          required: [total, by_status, in_progress, denied, success_rate, recovered_from_unknown]
+          properties:
+            total:
+              type: integer
+            by_status:
+              description: Every status, zeros included.
+              $ref: "#/components/schemas/CountsByKey"
+            in_progress:
+              type: integer
+              description: authorized, awaiting_customer_approval or redeemed.
+            denied:
+              type: integer
+              description: Denied by the mandate's own evaluation - commerce's parallel to blocked_by_policy.
+            success_rate:
+              type: [number, "null"]
+              description: paid / (paid + payment_failed), 0 to 1. denied is a decision, not a payment failure, so excluded. Null when nothing settled.
+            recovered_from_unknown:
+              type: integer
+              description: Checkouts whose execution's outcome was unclear (unknown) that still resolved to paid or payment_failed.
+        volume:
+          type: array
+          description: Paid (succeeded execution) volume per currency.
+          items:
+            type: object
+            required: [currency, paid_minor_units, paid_amount, paid_count]
+            properties:
+              currency:
+                type: string
+              paid_minor_units:
+                type: integer
+              paid_amount:
+                type: string
+              paid_count:
+                type: integer
+        active_agents:
+          type: integer
+        time_to_paid:
           type: object
           required: [count, p50_ms, p95_ms]
           properties:

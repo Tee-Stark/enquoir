@@ -197,6 +197,8 @@ func main() {
 		Grants:      grantUseCases(pool, ids, secrets, sysClock, audit),
 		Executions:  executionUseCases(pool, sysClock, audit),
 		OrgActivity: orgActivityUseCases(pool, sysClock),
+
+		CommerceAnalytics: commerceAnalyticsUseCases(pool, sysClock),
 	}
 
 	srv := httpapi.NewServer(httpAddr, httpapi.NewRouter(handler))
@@ -384,5 +386,17 @@ func orgActivityUseCases(pool *pgxpool.Pool, clock app.Clock) httpapi.OrgActivit
 		GetCheckout:    &commerceapp.GetOrgCheckout{Reader: store, Clock: clock},
 		GetExecution:   &commerceapp.GetOrgExecution{Reader: store},
 		ReplayCheckout: &commerceapp.ReplayCheckout{Reader: store, Clock: clock},
+	}
+}
+
+// commerceAnalyticsUseCases wires the dashboard's organisation-wide
+// commerce analytics: summary and time series across every merchant
+// integration the organisation owns, parallel to analytics/Summary/
+// TimeSeries above for the treasury side.
+func commerceAnalyticsUseCases(pool *pgxpool.Pool, clock app.Clock) httpapi.CommerceAnalyticsUseCases {
+	store := postgres.NewCommerceCheckoutStore(pool)
+	return httpapi.CommerceAnalyticsUseCases{
+		Summary:    &commerceapp.GetCommerceSummary{Analytics: store, Clock: clock},
+		TimeSeries: &commerceapp.GetCommerceTimeSeries{Analytics: store, Clock: clock},
 	}
 }
