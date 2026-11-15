@@ -9,6 +9,7 @@ import (
 	"enquoir/internal/app"
 	"enquoir/internal/commerce"
 	"enquoir/internal/commerce/commerceapp"
+	"enquoir/internal/domain"
 )
 
 var _ commerceapp.CheckoutStore = (*Checkouts)(nil)
@@ -366,6 +367,109 @@ func (s *Checkouts) ListCheckouts(ctx context.Context, sc commerceapp.Scope, f c
 	}
 	list, next := page(out, func(c commerce.Checkout) time.Time { return c.CreatedAt }, func(c commerce.Checkout) string { return string(c.ID) }, f.Cursor, f.Limit)
 	return list, next, nil
+}
+
+var _ commerceapp.CommerceOrgReader = (*Checkouts)(nil)
+
+func (s *Checkouts) ListCheckoutsForOrg(ctx context.Context, org domain.OrgID, f commerceapp.OrgCheckoutFilter, now time.Time) ([]commerce.Checkout, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []commerce.Checkout
+	for _, c := range s.checkouts {
+		sn := c.Snapshot
+		if sn.OrgID != org {
+			continue
+		}
+		if f.MandateID != "" && sn.MandateID != f.MandateID {
+			continue
+		}
+		if f.CustomerID != "" && sn.CustomerID != f.CustomerID {
+			continue
+		}
+		if f.AgentID != "" && sn.AgentID != f.AgentID {
+			continue
+		}
+		if f.Status != "" && c.StatusAt(now) != f.Status {
+			continue
+		}
+		if f.Currency != "" && sn.Currency != f.Currency {
+			continue
+		}
+		if !f.From.IsZero() && c.CreatedAt.Before(f.From) {
+			continue
+		}
+		if !f.To.IsZero() && !c.CreatedAt.Before(f.To) {
+			continue
+		}
+		out = append(out, c)
+	}
+	list, next := page(out, func(c commerce.Checkout) time.Time { return c.CreatedAt }, func(c commerce.Checkout) string { return string(c.ID) }, f.Cursor, f.Limit)
+	return list, next, nil
+}
+
+func (s *Checkouts) ListExecutionsForOrg(ctx context.Context, org domain.OrgID, f commerceapp.OrgExecutionFilter) ([]commerce.Execution, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []commerce.Execution
+	for _, e := range s.executions {
+		if e.OrgID != org {
+			continue
+		}
+		if f.Status != "" && e.Status != f.Status {
+			continue
+		}
+		if f.MandateID != "" && e.MandateID != f.MandateID {
+			continue
+		}
+		if f.AgentID != "" {
+			ck, ok := s.checkouts[e.CheckoutID]
+			if !ok || ck.Snapshot.AgentID != f.AgentID {
+				continue
+			}
+		}
+		if f.Currency != "" && e.Currency != f.Currency {
+			continue
+		}
+		if !f.From.IsZero() && e.CreatedAt.Before(f.From) {
+			continue
+		}
+		if !f.To.IsZero() && !e.CreatedAt.Before(f.To) {
+			continue
+		}
+		out = append(out, e)
+	}
+	list, next := page(out, func(e commerce.Execution) time.Time { return e.CreatedAt }, func(e commerce.Execution) string { return string(e.ID) }, f.Cursor, f.Limit)
+	return list, next, nil
+}
+
+func (s *Checkouts) GetCheckoutForOrg(ctx context.Context, org domain.OrgID, id commerce.CheckoutID) (commerce.Checkout, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.checkouts[id]
+	if !ok || c.Snapshot.OrgID != org {
+		return commerce.Checkout{}, app.ErrNotFound
+	}
+	return c, nil
+}
+
+func (s *Checkouts) GetExecutionForOrg(ctx context.Context, org domain.OrgID, id commerce.ExecutionID) (commerce.Execution, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.executions[id]
+	if !ok || e.OrgID != org {
+		return commerce.Execution{}, app.ErrNotFound
+	}
+	return e, nil
+}
+
+func (s *Checkouts) ExecutionHistoryForOrg(ctx context.Context, org domain.OrgID, id commerce.ExecutionID) ([]commerce.ExecutionEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.executions[id]
+	if !ok || e.OrgID != org {
+		return nil, app.ErrNotFound
+	}
+	return append([]commerce.ExecutionEvent(nil), s.history[id]...), nil
 }
 
 func (s *Checkouts) MandateUsage(ctx context.Context, sc commerceapp.Scope, ids []commerce.MandateID, now time.Time) (map[commerce.MandateID]commerce.MandateUsage, error) {
