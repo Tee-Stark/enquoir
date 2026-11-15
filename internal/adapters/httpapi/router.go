@@ -69,12 +69,13 @@ type Handler struct {
 	Summary           *app.GetSummary
 	TimeSeries        *app.GetTimeSeries
 
-	Commerce   CommerceUseCases
-	Funding    FundingUseCases
-	Mandates   MandateUseCases
-	Checkouts  CheckoutUseCases
-	Grants     GrantUseCases
-	Executions ExecutionUseCases
+	Commerce    CommerceUseCases
+	Funding     FundingUseCases
+	Mandates    MandateUseCases
+	Checkouts   CheckoutUseCases
+	Grants      GrantUseCases
+	Executions  ExecutionUseCases
+	OrgActivity OrgActivityUseCases
 }
 
 func NewRouter(h *Handler) chi.Router {
@@ -214,6 +215,16 @@ func NewRouter(h *Handler) chi.Router {
 		r.With(read).Get("/v1/merchant-integrations/{id}/checkouts", h.dashboardMerchant(h.listCheckoutsFor))
 		r.With(read).Get("/v1/merchant-integrations/{id}/mandates", h.dashboardMerchant(h.listMandatesFor))
 		r.With(read).Get("/v1/merchant-integrations/{id}/executions", h.dashboardMerchant(h.listExecutionsFor))
+
+		// The organisation's commerce activity, read-only, across every
+		// one of its merchant integrations - the dashboard's Payments/
+		// Activity pages in Merchant mode, parallel to /v1/payments and
+		// /v1/attempts on the treasury side.
+		r.With(read).Get("/v1/checkouts", h.listOrgCheckouts)
+		r.With(read).Get("/v1/checkouts/{id}", h.getOrgCheckout)
+		r.With(read).Get("/v1/executions", h.listOrgExecutions)
+		r.With(read).Get("/v1/executions/{id}", h.getOrgExecution)
+		r.With(read).Get("/v1/checkouts/{id}/replay", h.replayCheckout)
 
 		// The organisation's spending policy: owners and admins edit it
 		// and run its dry-run evaluator (which reveals how close the

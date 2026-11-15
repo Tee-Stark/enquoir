@@ -190,12 +190,13 @@ func main() {
 		TimeSeries:        &app.GetTimeSeries{Analytics: analytics, Clock: sysClock},
 		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
 
-		Commerce:   commerceUseCases(pool, ids, secrets, sysClock, cache, audit),
-		Funding:    fundingUseCases(pool, ids, sysClock, audit),
-		Mandates:   mandateUseCases(pool, tokens, emails, ids, sysClock, audit),
-		Checkouts:  checkoutUseCases(pool, tokens, emails, ids, secrets, sysClock, audit, policies),
-		Grants:     grantUseCases(pool, ids, secrets, sysClock, audit),
-		Executions: executionUseCases(pool, sysClock, audit),
+		Commerce:    commerceUseCases(pool, ids, secrets, sysClock, cache, audit),
+		Funding:     fundingUseCases(pool, ids, sysClock, audit),
+		Mandates:    mandateUseCases(pool, tokens, emails, ids, sysClock, audit),
+		Checkouts:   checkoutUseCases(pool, tokens, emails, ids, secrets, sysClock, audit, policies),
+		Grants:      grantUseCases(pool, ids, secrets, sysClock, audit),
+		Executions:  executionUseCases(pool, sysClock, audit),
+		OrgActivity: orgActivityUseCases(pool, sysClock),
 	}
 
 	srv := httpapi.NewServer(httpAddr, httpapi.NewRouter(handler))
@@ -369,5 +370,19 @@ func executionUseCases(pool *pgxpool.Pool, clock app.Clock, audit *app.Audit) ht
 		List:          &commerceapp.ListExecutions{Checkouts: store},
 		ListCheckouts: &commerceapp.ListCheckouts{Checkouts: store, Clock: clock},
 		Dashboard:     &commerceapp.MerchantForDashboard{Integrations: postgres.NewMerchantIntegrationStore(pool)},
+	}
+}
+
+// orgActivityUseCases wires the dashboard's organisation-wide commerce
+// activity: every checkout and execution across every merchant
+// integration the organisation owns.
+func orgActivityUseCases(pool *pgxpool.Pool, clock app.Clock) httpapi.OrgActivityUseCases {
+	store := postgres.NewCommerceCheckoutStore(pool)
+	return httpapi.OrgActivityUseCases{
+		ListCheckouts:  &commerceapp.ListOrgCheckouts{Reader: store, Clock: clock},
+		ListExecutions: &commerceapp.ListOrgExecutions{Reader: store},
+		GetCheckout:    &commerceapp.GetOrgCheckout{Reader: store, Clock: clock},
+		GetExecution:   &commerceapp.GetOrgExecution{Reader: store},
+		ReplayCheckout: &commerceapp.ReplayCheckout{Reader: store, Clock: clock},
 	}
 }

@@ -1664,3 +1664,124 @@ reviewers) before the PR, which fixed every finding raised.
   needs either a synchronous Temporal Update in place of the
   fire-and-forget signal, or a new dedup row - disproportionate for a
   narrow race whose only effect is an extra identical audit line.
+
+## Phase 7: org-wide commerce activity on the dashboard - done (2026-11-15)
+
+The dashboard's Payments/Activity pages only ever read treasury
+(intents/attempts); commerce activity was readable only one merchant
+integration at a time (`/v1/merchant-integrations/{id}/checkouts|
+mandates|executions`). This phase adds an organisation-wide read
+surface - across every merchant integration an organisation owns - so
+the frontend can give Payments/Activity a Treasury/Merchant toggle
+(frontend work follows separately). Escalation/approval parity for
+commerce was explicitly out of scope, confirmed with the user -
+commerce has no `awaiting_review` state or escalation workflow of its
+own (Phase 6 already shimmed Escalate as Deny there), so there is
+nothing to add parity for yet.
+
+### What exists
+
+- **`commerceapp.CommerceOrgReader`** (new, read-only interface,
+  `internal/commerce/commerceapp/org_activity.go`): `ListCheckoutsForOrg`,
+  `ListExecutionsForOrg`, `GetCheckoutForOrg`, `GetExecutionForOrg`,
+  `ExecutionHistoryForOrg` - all scoped by `org_id` alone, never
+  `merchant_id`. Deliberately a separate interface from
+  `CheckoutStore`/`ExecutionStore`: those are keyed by
+  `Scope{OrgID, MerchantID}`, and `MerchantID` is also a write-path row
+  lock key (`lockMandateRow`, `lockCheckoutsMandate` lock
+  `WHERE org_id = $1 AND merchant_id = $2 ... FOR UPDATE`) - making it
+  optional there would be a correctness hazard for mutating paths.
+  `CommerceOrgReader` can never be wired into a write path by
+  construction. `org_id` is already a plain column on both
+  `commerce_checkouts` and `commerce_executions`, so the Postgres
+  implementation (`internal/adapters/postgres/org_activity.go`) needs
+  no join for most filters - except an agent filter on executions,
+  since `commerce_executions` has no `agent_id` column (it's on
+  `commerce_checkouts` only), joined back via `checkout_id`.
+- **New indexes** (migration 0028): `(org_id, created_at DESC, id DESC)`
+  on `commerce_checkouts` and `commerce_executions` - the existing ones
+  are merchant-scoped only (`(merchant_id, created_at DESC, id DESC)`)
+  and would make an org-wide query scan the table, mirroring treasury's
+  `intents_org_created`.
+- **New filters reaching treasury parity**: `from`/`to` date range,
+  `currency`, `agent_id` on both checkouts and executions (the
+  per-integration endpoints still only have `mandate_id`/`customer_id`/
+  `status` - unchanged, not touched by this phase).
+- **`GET /v1/checkouts`, `/v1/checkouts/{id}`, `/v1/executions`,
+  `/v1/executions/{id}`** (session-gated, `internal/adapters/httpapi/
+  commerce_activity.go`): named `listOrgCheckouts`/`getOrgCheckout`/
+  `listOrgExecutions`/`getOrgExecution` to avoid colliding with the
+  already-existing `listCheckouts`/`listExecutions` handlers for the
+  merchant-key-authenticated `/v1/commerce/checkouts`/`/v1/commerce/
+  executions` (an unrelated, pre-existing surface for the merchant's
+  own backend - different auth, different audience, same-looking
+  path segment only coincidentally).
+- **Checkout replay** (`GET /v1/checkouts/{id}/replay`,
+  `internal/commerce/commerceapp/checkout_replay.go`):
+  `BuildCheckoutReplay` merges a checkout's own lifecycle timestamps
+  (submission, decision, cancellation, mandate-revocation cascade,
+  grant issuance, an unanswered-approval or unredeemed-grant expiry)
+  with its execution's report history into one ordered, animatable
+  timeline - the same merge-sort-by-`(time, priority, sequence)` shape
+  `app.BuildReplay` already uses for payments. New step types
+  (`submission`/`decision`/`grant`/`redemption`/`execution_report`) and
+  actors (`merchant`/`enquoir`/`provider`) are new vocabulary, not
+  reused from payment replay: a checkout's named agent is never a
+  credentialed caller the way a treasury agent is (AGENTS.md: "the
+  merchant backend is the only machine caller for now"), so there is no
+  `agent` actor here - only ever named in a step's title, if at all.
+  `ReplayCheckout` composes `GetCheckoutForOrg` -> `GetExecutionForOrg`
+  -> `ExecutionHistoryForOrg`, the same three-call shape `GetExecution`
+  already uses for `ExecutionDetail`.
+- **New `CheckoutReplay`/`CheckoutReplayStep` OpenAPI schemas**: written
+  as their own parallel shape rather than extending `Replay`/
+  `ReplayStep` via `allOf` - the `attempt`/`event`/`payment` fields
+  don't translate, and this spec's "every field required, nullable via
+  `type: [X, null]`" convention composes badly through `allOf` with a
+  divergent required set.
+
+### Verified
+
+- `make test` and `make test-integration` green at every commit.
+- Integration tests confirm org-wide visibility spans every merchant
+  integration within one organisation and never a sibling
+  organisation's, against the real database.
+- Handler tests (through the contract-test harness, which validates
+  every test response against `api/openapi.yaml` automatically) confirm
+  session-only access (a merchant key gets 401), cross-organisation
+  isolation (404/empty lists), and query validation matching treasury's
+  (bad status/currency/limit/date range all 400 `validation_failed`).
+- `BuildCheckoutReplay`'s five scenarios (zero fakes, direct value
+  construction, mirroring `app.BuildReplay`'s own test style): denied
+  with no grant, authorized then expired ungranted, a full lifecycle to
+  a succeeded report, a refused webhook report as its own step
+  attributed to the provider, and a mandate-revocation cascade's
+  revoked step (distinct from an explicit cancellation).
+
+### Not verified / open
+
+- **No live end-to-end run** against the dev stack with real commerce
+  data - code-reviewed and unit/integration-tested only.
+- **Executions-by-agent join is unindexed.** `ListExecutionsForOrg`'s
+  agent filter joins to `commerce_checkouts` for `agent_id`; left
+  unindexed until it shows up as slow in practice rather than
+  speculatively indexing a filter combination nobody has measured yet.
+- **No commerce-agent/customer directory endpoint reachable from the
+  dashboard session** - `GET /v1/commerce/agents`/`customers` are
+  merchant-key-only, with no per-org or per-integration dashboard
+  variant (unlike checkouts/mandates/executions, which do have
+  `dashboardMerchant()`-wrapped routes). The frontend's merchant-mode
+  agent/customer filters will need to be plain free-text ID inputs
+  for now, not name-resolved dropdowns, unless that directory surface
+  is added later.
+- **Grant-reissue history gap** (pre-existing, not introduced by this
+  phase, but newly visible through replay): a grant *reissue*
+  overwrites `Authorization.GrantIssuedAt` in place - there is no
+  `commerce_grant_events` history table - so a checkout whose grant was
+  reissued only ever shows the latest grant-issued moment in replay,
+  never the first.
+- **Analytics was deliberately not touched.** No commerce analytics
+  endpoint exists at all (`/v1/analytics/timeseries|summary` are
+  entirely treasury-shaped) - out of scope for this phase, confirmed
+  with the user; a parallel commerce analytics surface would be new,
+  separately-scoped work.
