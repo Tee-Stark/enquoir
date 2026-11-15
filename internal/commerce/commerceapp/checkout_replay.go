@@ -175,9 +175,13 @@ func decisionStep(c commerce.Checkout) (CheckoutReplayStep, bool) {
 }
 
 // expiredUndecidedStep is a checkout left awaiting the customer that
-// nobody ever answered.
+// nobody ever answered. A cancellation while still awaiting approval
+// (c.CanceledAt set, c.DecidedAt left nil) is reported by canceledStep
+// instead - excluded here the same way StatusAt only applies this rule
+// while c.Status is still CheckoutAwaitingApproval. The boundary matches
+// StatusAt's own (now at or past expiry, not strictly past it).
 func expiredUndecidedStep(c commerce.Checkout, now time.Time) (CheckoutReplayStep, bool) {
-	if c.DecidedAt != nil || c.ApprovalExpiresAt == nil || !now.After(*c.ApprovalExpiresAt) {
+	if c.DecidedAt != nil || c.CanceledAt != nil || c.ApprovalExpiresAt == nil || now.Before(*c.ApprovalExpiresAt) {
 		return CheckoutReplayStep{}, false
 	}
 	return CheckoutReplayStep{
@@ -187,9 +191,10 @@ func expiredUndecidedStep(c commerce.Checkout, now time.Time) (CheckoutReplaySte
 }
 
 // grantExpiredStep is an authorized, unredeemed grant that ran out.
+// Boundary matches StatusAt's own (now at or past expiry).
 func grantExpiredStep(c commerce.Checkout, now time.Time) (CheckoutReplayStep, bool) {
 	a := c.Authorization
-	if a == nil || a.RedeemedAt != nil || a.RevokedAt != nil || !now.After(a.ExpiresAt) {
+	if a == nil || a.RedeemedAt != nil || a.RevokedAt != nil || now.Before(a.ExpiresAt) {
 		return CheckoutReplayStep{}, false
 	}
 	return CheckoutReplayStep{

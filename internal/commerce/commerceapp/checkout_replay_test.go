@@ -132,4 +132,41 @@ func TestBuildCheckoutReplay_MandateRevocationCascade(t *testing.T) {
 	}
 }
 
+// A checkout canceled while still awaiting the customer must not also
+// show an "expired" step once its approval window later lapses - the
+// cancellation is the terminal decision, not a second one.
+func TestBuildCheckoutReplay_CanceledWhileAwaitingDoesNotAlsoExpire(t *testing.T) {
+	exp := replayAt(3600000) // 1 hour
+	c := commerce.Checkout{
+		ID: "chk_6", CreatedAt: replayAt(0), ApprovalExpiresAt: ptrTime(exp),
+		CanceledAt: ptrTime(replayAt(60000)), // canceled at 1 minute, well before expiry
+	}
+	r := commerceapp.BuildCheckoutReplay(c, nil, nil, exp.Add(time.Hour))
+	if len(r.Steps) != 2 {
+		t.Fatalf("steps = %+v", r.Steps)
+	}
+	last := r.Steps[1]
+	if last.Type != commerceapp.CheckoutStepDecision || last.Decision == nil || last.Decision.Status != commerce.CheckoutCanceled {
+		t.Errorf("last step = %+v, want the cancellation, not an expiry", last)
+	}
+}
+
+// The expiry boundary matches commerce.Checkout.StatusAt: the instant at
+// expiry counts as expired already (now >= expiry), not only strictly
+// after it.
+func TestBuildCheckoutReplay_ExpiryBoundaryMatchesStatusAt(t *testing.T) {
+	exp := replayAt(900000)
+	c := commerce.Checkout{
+		ID: "chk_7", Status: commerce.CheckoutAuthorized, CreatedAt: replayAt(0), DecidedAt: ptrTime(replayAt(5)),
+		Authorization: &commerce.Authorization{ID: "auth_2", CheckoutID: "chk_7", ExpiresAt: exp},
+	}
+	atExp := commerceapp.BuildCheckoutReplay(c, nil, nil, exp)
+	if len(atExp.Steps) != 3 {
+		t.Fatalf("at exact expiry: %+v", atExp.Steps)
+	}
+	if got := c.StatusAt(exp); got != commerce.CheckoutExpired {
+		t.Fatalf("sanity check: StatusAt(exp) = %s, want expired", got)
+	}
+}
+
 func ptrTime(t time.Time) *time.Time { return &t }
