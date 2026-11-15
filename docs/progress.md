@@ -1785,3 +1785,112 @@ nothing to add parity for yet.
   entirely treasury-shaped) - out of scope for this phase, confirmed
   with the user; a parallel commerce analytics surface would be new,
   separately-scoped work.
+
+## Phase 8: commerce analytics - done (2026-11-15)
+
+The gap Phase 7 deliberately left open: no commerce analytics endpoint
+existed at all. This phase adds one - a commerce-side analytics engine
+parallel to the existing treasury `app.AnalyticsReader`/`GetSummary`/
+`GetTimeSeries` - so the dashboard's Overview and Analytics pages can
+get the same Treasury/Merchant toggle Payments/Activity already have
+(frontend work follows separately, Overview first per the user's
+stated order).
+
+### What exists
+
+- **Exported four pieces of the treasury engine that were already
+  domain-agnostic**, so commerce reuses them instead of duplicating
+  ~80 lines of bucket math/period resolution: `app.ResolvePeriod`,
+  `app.AssembleSeries`, `app.Intervals`, `app.MaxBuckets` (pure renames
+  of previously-unexported `resolvePeriod`/`assembleSeries`/
+  `intervals`/`maxBuckets`, two call sites each in `analytics.go`).
+  `app.Period`, `SeriesQuery`, `SeriesData`, `SeriesRow`, `Series`,
+  `SeriesPoint` and `TimeSeries` were already exported and reused as-is.
+- **`commerceapp.CommerceAnalyticsReader`** (new, read-only interface,
+  `internal/commerce/commerceapp/analytics.go`): `Summary(ctx, org,
+  period, now)`, `Series(ctx, org, query, now)` - kept separate from
+  `CommerceOrgReader` (entity listing) the same way treasury keeps
+  `AnalyticsReader` separate from its history readers. `now` is passed
+  explicitly (not derived from `period.To`) for effective-status
+  computation - see the correctness note below.
+- **`CommerceSummary`/`CommerceSummaryCounts`/`CommercePaidVolume`**
+  (new types, same file): deliberately NOT shaped like treasury's
+  `Summary` - commerce has no submissions/rail-calls/duplicates-
+  prevented concept (a checkout is its own submission; the merchant's
+  own PSP calls aren't tracked by Enquoir), so those sections are
+  simply absent. Mapped instead: `checkouts.total`/`by_status` (all 10
+  statuses, zero-filled, reusing the existing `checkoutStatuses` map)
+  parallels `payments.total`/`by_state`; `denied` parallels
+  `blocked_by_policy`; `success_rate` is `paid/(paid+payment_failed)`;
+  `in_progress` is authorized+awaiting_customer_approval+redeemed;
+  `recovered_from_unknown` mirrors treasury's UNKNOWN-recovery check,
+  via checkout→authorization→execution→`commerce_execution_events`.
+  `volume`/`active_agents`/`time_to_paid` parallel `volume`/
+  `submissions.active_agents`/`time_to_applied` respectively - the
+  last two measured by the execution's `finished_at` (when it
+  succeeded), not the checkout's `created_at`, mirroring how treasury's
+  `applied_volume`/`time_to_applied` use `state_changed_at`.
+- **Three time-series metrics** (`commerceapp.MetricCheckouts`,
+  `MetricPaidVolume`, `MetricTimeToPaid`) - the three that map to the
+  Analytics page's three existing charts. `checkouts` groups by status
+  (effective, reusing `effectiveCheckoutStatus`), agent or currency;
+  `paid_volume` is always grouped by currency; `time_to_paid` is
+  ungrouped.
+- **`GetCommerceSummary`/`GetCommerceTimeSeries`** (same file): mirror
+  `app.GetSummary.Run`/`GetTimeSeries.Run` exactly, same validation
+  order, same zero-fill/null-for-no-data behaviour via the shared
+  `AssembleSeries`.
+- **Postgres implementation** (`internal/adapters/postgres/
+  commerce_analytics.go`, new): `*CommerceCheckoutStore` methods,
+  mirroring `AnalyticsReader`'s SQL structure exactly (same
+  `generate_series` bucket template, same org-column-from-time-column-
+  prefix trick). New migration `0029_commerce_org_wide_filter_indexes`
+  predates this phase (landed in Phase 7's follow-up fixes); no new
+  migration was needed here.
+- **HTTP surface**: `GET /v1/commerce-analytics/summary`,
+  `GET /v1/commerce-analytics/timeseries` (session + `read`, same gate
+  as `/v1/analytics/*`). Deliberately not nested under `/v1/analytics`
+  (name already taken) or `/v1/commerce` (means merchant-key auth
+  everywhere else in this codebase). `CommerceAnalyticsSummary` is a
+  new, parallel OpenAPI schema (not `allOf` off `AnalyticsSummary` -
+  the field sets genuinely differ, same reasoning as `CheckoutReplay`
+  vs `Replay` in Phase 7); the commerce timeseries response reuses the
+  existing `TimeSeries` schema as-is (already metric-agnostic - only
+  the request's `metric`/`group_by` enum differs per endpoint).
+
+### A correctness fix found during integration testing
+
+The first version used `period.To` as "now" for effective-status
+computation (expired is derived, not stored). That broke as soon as a
+report's `to` extended more than ~15 minutes into the future (the
+default: `to` defaults to the real now, so almost every request): an
+authorized-but-unredeemed checkout's grant looked already expired
+relative to that future instant, even though it was still live right
+now. Fixed by passing the real current time explicitly through
+`CommerceAnalyticsReader`'s methods, the same explicit `now` parameter
+`CommerceOrgReader`'s list methods already take, rather than deriving
+it from the period. Caught by
+`TestCommerceAnalytics_Series_ChecksOutGroupedByStatus` before this
+ever reached a live endpoint.
+
+### Verified
+
+- `make test` and `make test-integration` green at every commit.
+- Integration tests against real Postgres cover: status/volume/rate
+  counting with a denied, paid, payment-failed and still-authorized
+  checkout in the same period; org isolation (a sibling organisation's
+  summary is empty); unknown-to-paid recovery; a time series grouped
+  by effective status; paid volume by currency.
+- Handler tests confirm session-only access (401 without a session),
+  the same query-validation shape as `/v1/analytics/*`, and correct
+  timezone-local bucket formatting.
+- `contract_test.go`'s spec-completeness check passes with the two new
+  routes.
+
+### Not verified / open
+
+- **No live end-to-end run** against the dev stack with real commerce
+  data - code-reviewed and unit/integration-tested only (frontend
+  consumption is separate, follow-up work).
+- **No security-audit pass yet** on this specific phase (Phase 7 had
+  one; this phase hasn't been through that process).

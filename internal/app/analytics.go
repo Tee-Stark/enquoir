@@ -19,11 +19,11 @@ type Period struct {
 // DefaultPeriodLength applies when a caller names no period.
 const DefaultPeriodLength = 30 * 24 * time.Hour
 
-// maxBuckets bounds a time series, so one request can't ask for a
+// MaxBuckets bounds a time series, so one request can't ask for a
 // year of hourly buckets.
-const maxBuckets = 1000
+const MaxBuckets = 1000
 
-func resolvePeriod(from, to time.Time, tz string, clock Clock) (Period, error) {
+func ResolvePeriod(from, to time.Time, tz string, clock Clock) (Period, error) {
 	if tz == "" {
 		tz = "UTC"
 	}
@@ -121,7 +121,7 @@ var metrics = map[string]metricSpec{
 	MetricTimeToApplied:       {UnitMilliseconds, set(""), ""},
 }
 
-var intervals = map[string]time.Duration{"hour": time.Hour, "day": 24 * time.Hour, "week": 7 * 24 * time.Hour, "month": 31 * 24 * time.Hour}
+var Intervals = map[string]time.Duration{"hour": time.Hour, "day": 24 * time.Hour, "week": 7 * 24 * time.Hour, "month": 31 * 24 * time.Hour}
 
 func set(xs ...string) map[string]bool {
 	m := map[string]bool{}
@@ -167,7 +167,7 @@ type GetSummary struct {
 }
 
 func (g *GetSummary) Run(ctx context.Context, org domain.OrgID, from, to time.Time, tz string) (Summary, error) {
-	p, err := resolvePeriod(from, to, tz, g.Clock)
+	p, err := ResolvePeriod(from, to, tz, g.Clock)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -244,7 +244,7 @@ func (g *GetTimeSeries) Run(ctx context.Context, org domain.OrgID, metric, inter
 	if interval == "" {
 		interval = "day"
 	}
-	step, ok := intervals[interval]
+	step, ok := Intervals[interval]
 	if !ok {
 		return TimeSeries{}, &ValidationError{Field: "interval", Message: fmt.Sprintf("unknown interval %q: use hour, day, week or month", interval)}
 	}
@@ -254,12 +254,12 @@ func (g *GetTimeSeries) Run(ctx context.Context, org domain.OrgID, metric, inter
 	if !spec.groupBys[groupBy] {
 		return TimeSeries{}, &ValidationError{Field: "group_by", Message: fmt.Sprintf("%s cannot be grouped by %q", metric, groupBy)}
 	}
-	p, err := resolvePeriod(from, to, tz, g.Clock)
+	p, err := ResolvePeriod(from, to, tz, g.Clock)
 	if err != nil {
 		return TimeSeries{}, err
 	}
-	if p.To.Sub(p.From)/step > maxBuckets {
-		return TimeSeries{}, &ValidationError{Field: "interval", Message: fmt.Sprintf("too many buckets: at most %d per series; use a longer interval or a shorter period", maxBuckets)}
+	if p.To.Sub(p.From)/step > MaxBuckets {
+		return TimeSeries{}, &ValidationError{Field: "interval", Message: fmt.Sprintf("too many buckets: at most %d per series; use a longer interval or a shorter period", MaxBuckets)}
 	}
 
 	q := SeriesQuery{Metric: metric, Interval: interval, GroupBy: groupBy, Period: p}
@@ -267,12 +267,12 @@ func (g *GetTimeSeries) Run(ctx context.Context, org domain.OrgID, metric, inter
 	if err != nil {
 		return TimeSeries{}, err
 	}
-	return assembleSeries(q, spec.unit, data), nil
+	return AssembleSeries(q, spec.unit, data), nil
 }
 
-// assembleSeries gives every group a point in every bucket: zero for
+// AssembleSeries gives every group a point in every bucket: zero for
 // counts and sums, nil (no data) for time to APPLIED.
-func assembleSeries(q SeriesQuery, unit string, data SeriesData) TimeSeries {
+func AssembleSeries(q SeriesQuery, unit string, data SeriesData) TimeSeries {
 	ts := TimeSeries{Query: q, Unit: unit, Buckets: make([]time.Time, len(data.Buckets))}
 	index := map[int64]int{}
 	for i, b := range data.Buckets {

@@ -75,7 +75,8 @@ type Handler struct {
 	Checkouts   CheckoutUseCases
 	Grants      GrantUseCases
 	Executions  ExecutionUseCases
-	OrgActivity OrgActivityUseCases
+	OrgActivity       OrgActivityUseCases
+	CommerceAnalytics CommerceAnalyticsUseCases
 }
 
 func NewRouter(h *Handler) chi.Router {
@@ -225,6 +226,13 @@ func NewRouter(h *Handler) chi.Router {
 		r.With(read).Get("/v1/executions", h.listOrgExecutions)
 		r.With(read).Get("/v1/executions/{id}", h.getOrgExecution)
 		r.With(read).Get("/v1/checkouts/{id}/replay", h.replayCheckout)
+
+		// Commerce analytics, parallel to /v1/analytics/* above - a
+		// separate path (not nested under /v1/analytics, which is already
+		// taken; not under /v1/commerce, which means merchant-key auth
+		// everywhere else in this codebase).
+		r.With(read).Get("/v1/commerce-analytics/summary", h.commerceAnalyticsSummary)
+		r.With(read).Get("/v1/commerce-analytics/timeseries", h.commerceAnalyticsTimeSeries)
 
 		// The organisation's spending policy: owners and admins edit it
 		// and run its dry-run evaluator (which reveals how close the

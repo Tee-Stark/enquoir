@@ -170,6 +170,11 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		GetExecution:   &commerceapp.GetOrgExecution{Reader: checkouts},
 		ReplayCheckout: &commerceapp.ReplayCheckout{Reader: checkouts, Clock: clock},
 	}
+	commerceAnalytics := &fixtureCommerceAnalytics{}
+	h.CommerceAnalytics = CommerceAnalyticsUseCases{
+		Summary:    &commerceapp.GetCommerceSummary{Analytics: commerceAnalytics, Clock: clock},
+		TimeSeries: &commerceapp.GetCommerceTimeSeries{Analytics: commerceAnalytics, Clock: clock},
+	}
 	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments, accounts: accounts, mailer: mailer, signaler: signaler}
 }
 
