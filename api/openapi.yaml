@@ -3103,7 +3103,7 @@ paths:
       description: |
         The dashboard's commerce activity view - every checkout the
         organisation's merchant integrations have submitted, newest first,
-        parallel to GET /v1/payments on the treasury side. Every filter is
+        parallel to GET /v1/attempts on the treasury side. Every filter is
         optional.
       security:
         - session: []
@@ -3233,7 +3233,7 @@ paths:
       description: |
         The dashboard's commerce payments view - every execution the
         organisation's merchant integrations have redeemed, newest first,
-        parallel to GET /v1/attempts on the treasury side. Every filter is
+        parallel to GET /v1/payments on the treasury side. Every filter is
         optional.
       security:
         - session: []
