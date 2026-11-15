@@ -207,3 +207,16 @@ func TestOrgActivity_QueryValidation(t *testing.T) {
 		t.Errorf("a valid checkouts query: %d %s", rec.Code, rec.Body)
 	}
 }
+
+// A lower-case currency is accepted, matching the treasury /v1/payments
+// endpoint's own case-insensitive handling - a client that otherwise
+// matches that convention shouldn't get a 400 here.
+func TestOrgActivity_CurrencyFilterIsCaseInsensitive(t *testing.T) {
+	f := newAuthFixture(t, true)
+	_, owner := f.newOrg(t)
+	for _, path := range []string{"/v1/checkouts?currency=usd", "/v1/executions?currency=usd"} {
+		if rec := f.do(t, http.MethodGet, path, "", owner); rec.Code != 200 {
+			t.Errorf("%s: %d %s, want 200", path, rec.Code, rec.Body)
+		}
+	}
+}

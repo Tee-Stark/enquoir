@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -29,7 +30,7 @@ func (h *Handler) listOrgCheckouts(w http.ResponseWriter, r *http.Request) {
 	f := commerceapp.OrgCheckoutFilter{
 		MandateID: commerce.MandateID(q.str("mandate_id")), CustomerID: commerce.CustomerID(q.str("customer_id")),
 		AgentID: commerce.AgentID(q.str("agent_id")), Status: commerce.CheckoutStatus(q.str("status")),
-		Currency: domain.Currency(q.str("currency")), From: q.time("from"), To: q.time("to"),
+		Currency: domain.Currency(strings.ToUpper(q.str("currency"))), From: q.time("from"), To: q.time("to"),
 		Limit: q.int("limit"), Cursor: q.str("cursor"),
 	}
 	if q.err != nil {
@@ -52,7 +53,7 @@ func (h *Handler) listOrgExecutions(w http.ResponseWriter, r *http.Request) {
 	q := &query{v: r.URL.Query()}
 	f := commerceapp.OrgExecutionFilter{
 		Status: commerce.ExecutionStatus(q.str("status")), MandateID: commerce.MandateID(q.str("mandate_id")),
-		AgentID: commerce.AgentID(q.str("agent_id")), Currency: domain.Currency(q.str("currency")),
+		AgentID: commerce.AgentID(q.str("agent_id")), Currency: domain.Currency(strings.ToUpper(q.str("currency"))),
 		From: q.time("from"), To: q.time("to"), Limit: q.int("limit"), Cursor: q.str("cursor"),
 	}
 	if q.err != nil {
