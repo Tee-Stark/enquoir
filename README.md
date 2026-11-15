@@ -1,5 +1,7 @@
 # Enquoir
 
+**[Watch the demo video](https://drive.google.com/file/d/1o5EkxHbZDbUYuFS7bEKLKx4PJuskdm9J/view?usp=sharing)**
+
 Enquoir is a safe control and observability layer for agentic finance: it
 sits between an AI agent and a payment rail, takes the money-safety
 decisions out of the model, and makes sure a payment can't be sent twice
