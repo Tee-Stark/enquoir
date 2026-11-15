@@ -23,7 +23,7 @@ const DefaultPeriodLength = 30 * 24 * time.Hour
 // year of hourly buckets.
 const maxBuckets = 1000
 
-func resolvePeriod(from, to time.Time, tz string, clock Clock) (Period, error) {
+func ResolvePeriod(from, to time.Time, tz string, clock Clock) (Period, error) {
 	if tz == "" {
 		tz = "UTC"
 	}
@@ -167,7 +167,7 @@ type GetSummary struct {
 }
 
 func (g *GetSummary) Run(ctx context.Context, org domain.OrgID, from, to time.Time, tz string) (Summary, error) {
-	p, err := resolvePeriod(from, to, tz, g.Clock)
+	p, err := ResolvePeriod(from, to, tz, g.Clock)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -254,7 +254,7 @@ func (g *GetTimeSeries) Run(ctx context.Context, org domain.OrgID, metric, inter
 	if !spec.groupBys[groupBy] {
 		return TimeSeries{}, &ValidationError{Field: "group_by", Message: fmt.Sprintf("%s cannot be grouped by %q", metric, groupBy)}
 	}
-	p, err := resolvePeriod(from, to, tz, g.Clock)
+	p, err := ResolvePeriod(from, to, tz, g.Clock)
 	if err != nil {
 		return TimeSeries{}, err
 	}
@@ -267,12 +267,12 @@ func (g *GetTimeSeries) Run(ctx context.Context, org domain.OrgID, metric, inter
 	if err != nil {
 		return TimeSeries{}, err
 	}
-	return assembleSeries(q, spec.unit, data), nil
+	return AssembleSeries(q, spec.unit, data), nil
 }
 
-// assembleSeries gives every group a point in every bucket: zero for
+// AssembleSeries gives every group a point in every bucket: zero for
 // counts and sums, nil (no data) for time to APPLIED.
-func assembleSeries(q SeriesQuery, unit string, data SeriesData) TimeSeries {
+func AssembleSeries(q SeriesQuery, unit string, data SeriesData) TimeSeries {
 	ts := TimeSeries{Query: q, Unit: unit, Buckets: make([]time.Time, len(data.Buckets))}
 	index := map[int64]int{}
 	for i, b := range data.Buckets {
