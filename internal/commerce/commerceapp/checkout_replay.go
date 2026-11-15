@@ -54,7 +54,7 @@ type CheckoutReplayStep struct {
 
 // CheckoutReplay is every step a checkout went through, in order.
 type CheckoutReplay struct {
-	Checkout   commerce.Checkout
+	Checkout   CheckoutView
 	Execution  *commerce.Execution
 	StartedAt  time.Time
 	EndedAt    time.Time
@@ -74,7 +74,7 @@ type CheckoutReplay struct {
 // checkout whose grant was reissued only ever shows the latest
 // grant-issued moment, never the first.
 func BuildCheckoutReplay(c commerce.Checkout, e *commerce.Execution, history []commerce.ExecutionEvent, now time.Time) CheckoutReplay {
-	r := CheckoutReplay{Checkout: c, Execution: e}
+	r := CheckoutReplay{Checkout: checkoutView(c, now), Execution: e}
 
 	type entry struct {
 		step     CheckoutReplayStep

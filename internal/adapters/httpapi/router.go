@@ -224,6 +224,7 @@ func NewRouter(h *Handler) chi.Router {
 		r.With(read).Get("/v1/checkouts/{id}", h.getOrgCheckout)
 		r.With(read).Get("/v1/executions", h.listOrgExecutions)
 		r.With(read).Get("/v1/executions/{id}", h.getOrgExecution)
+		r.With(read).Get("/v1/checkouts/{id}/replay", h.replayCheckout)
 
 		// The organisation's spending policy: owners and admins edit it
 		// and run its dry-run evaluator (which reveals how close the

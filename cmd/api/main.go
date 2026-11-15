@@ -383,5 +383,6 @@ func orgActivityUseCases(pool *pgxpool.Pool, clock app.Clock) httpapi.OrgActivit
 		ListExecutions: &commerceapp.ListOrgExecutions{Reader: store},
 		GetCheckout:    &commerceapp.GetOrgCheckout{Reader: store, Clock: clock},
 		GetExecution:   &commerceapp.GetOrgExecution{Reader: store},
+		ReplayCheckout: &commerceapp.ReplayCheckout{Reader: store, Clock: clock},
 	}
 }

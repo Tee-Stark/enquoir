@@ -21,6 +21,7 @@ type OrgActivityUseCases struct {
 	ListExecutions *commerceapp.ListOrgExecutions
 	GetCheckout    *commerceapp.GetOrgCheckout
 	GetExecution   *commerceapp.GetOrgExecution
+	ReplayCheckout *commerceapp.ReplayCheckout
 }
 
 func (h *Handler) listOrgCheckouts(w http.ResponseWriter, r *http.Request) {

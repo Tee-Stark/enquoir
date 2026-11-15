@@ -109,6 +109,84 @@ func TestOrgActivity_GetByID_ScopedToOrg(t *testing.T) {
 	}
 }
 
+func TestCheckoutReplay_OrdersTheFullLifecycle(t *testing.T) {
+	f := newAuthFixture(t, true)
+	_, owner, issued := f.newMerchant(t)
+	w := f.merchantInOrg(t, issued.Key.Secret)
+	m := f.approvedMandate(t, w, "m1", "autonomous")
+	e := f.redeemedExecution(t, w, m, "c1", 1000)
+	f.report(t, w.key, "/v1/commerce/executions/"+e.ID+"/outcome", outcomeJSON("succeeded", "pi_1", 1000, ""))
+
+	var replay struct {
+		Checkout   checkoutBody   `json:"checkout"`
+		Execution  *executionBody `json:"execution"`
+		StartedAt  *string        `json:"started_at"`
+		EndedAt    *string        `json:"ended_at"`
+		DurationMS int64          `json:"duration_ms"`
+		Steps      []struct {
+			Type  string `json:"type"`
+			Actor string `json:"actor"`
+			Title string `json:"title"`
+		} `json:"steps"`
+	}
+	rec := f.do(t, http.MethodGet, "/v1/checkouts/"+e.CheckoutID+"/replay", "", owner)
+	json.Unmarshal(rec.Body.Bytes(), &replay)
+	if rec.Code != http.StatusOK || replay.Checkout.ID != e.CheckoutID || replay.Execution == nil || replay.Execution.ID != e.ID {
+		t.Fatalf("replay: %d %+v", rec.Code, replay)
+	}
+	if replay.StartedAt == nil || replay.EndedAt == nil {
+		t.Errorf("replay timing: %+v", replay)
+	}
+	wantTypes := []string{"submission", "decision", "grant", "redemption", "execution_report"}
+	if len(replay.Steps) != len(wantTypes) {
+		t.Fatalf("steps = %+v", replay.Steps)
+	}
+	for i, want := range wantTypes {
+		if replay.Steps[i].Type != want {
+			t.Errorf("step %d = %s, want %s", i, replay.Steps[i].Type, want)
+		}
+	}
+
+	_, stranger := f.newOrg(t)
+	if rec := f.do(t, http.MethodGet, "/v1/checkouts/"+e.CheckoutID+"/replay", "", stranger); rec.Code != http.StatusNotFound {
+		t.Errorf("another organisation: %d", rec.Code)
+	}
+}
+
+func TestCheckoutReplay_DeniedCheckoutHasAShortReplay(t *testing.T) {
+	f := newAuthFixture(t, true)
+	_, owner, issued := f.newMerchant(t)
+	w := f.merchantInOrg(t, issued.Key.Secret)
+	m := f.approvedMandate(t, w, "m1", "autonomous")
+	var denied checkoutBody
+	json.Unmarshal(f.doBearer(t, http.MethodPost, "/v1/commerce/checkouts", w.checkoutJSON("over", m, "USD", 99999999), w.key).Body.Bytes(), &denied)
+	if denied.Status != "denied" {
+		t.Fatalf("expected a denial to set up this test: %+v", denied)
+	}
+
+	var replay struct {
+		Execution *executionBody `json:"execution"`
+		Steps     []struct {
+			Type     string `json:"type"`
+			Decision *struct {
+				Status  string `json:"status"`
+				Reasons []struct {
+					Code string `json:"code"`
+				} `json:"reasons"`
+			} `json:"decision"`
+		} `json:"steps"`
+	}
+	rec := f.do(t, http.MethodGet, "/v1/checkouts/"+denied.ID+"/replay", "", owner)
+	json.Unmarshal(rec.Body.Bytes(), &replay)
+	if rec.Code != http.StatusOK || replay.Execution != nil || len(replay.Steps) != 2 {
+		t.Fatalf("replay: %d %+v", rec.Code, replay)
+	}
+	d := replay.Steps[1].Decision
+	if d == nil || d.Status != "denied" || len(d.Reasons) == 0 {
+		t.Errorf("decision step: %+v", d)
+	}
+}
+
 func TestOrgActivity_QueryValidation(t *testing.T) {
 	f := newAuthFixture(t, true)
 	_, owner := f.newOrg(t)
