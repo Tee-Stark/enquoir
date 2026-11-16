@@ -1,0 +1,10 @@
+{{define "subject"}}Confirm: stop {{.P.agent}} buying for you at {{.P.merchant}}{{end}}
+{{define "action"}}Confirm the revocation{{end}}
+{{define "content"}}Confirm the revocation
+
+{{.P.merchant}} asked to revoke your permission for {{.P.agent}} to make purchases for you with {{.P.payment_method}}.
+
+The permission is paused now: nothing new can be bought under it. Confirm within 1 hour to revoke it for good; the link works once.
+
+If you didn't ask for this, ignore this email: after an hour the permission works again.{{end}}
+{{define "why"}}You received this because {{.P.merchant}} asked {{.Brand.Name}} to revoke a permission you gave. Only you can confirm it.{{end}}

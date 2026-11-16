@@ -203,6 +203,7 @@ type ctxKey int
 const (
 	userKey ctxKey = iota
 	agentKey
+	merchantKey
 )
 
 func userFrom(ctx context.Context) app.UserPrincipal {

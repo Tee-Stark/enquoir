@@ -101,15 +101,20 @@ func main() {
 		logger.Error("ensuring demo organisation", "error", err)
 		os.Exit(1)
 	}
+	treasury, err := postgres.NewAccountStore(pool).TreasuryOf(ctx, org)
+	if err != nil {
+		logger.Error("finding the demo organisation's treasury", "error", err)
+		os.Exit(1)
+	}
 
-	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail, postgres.NewBeneficiaryStore(pool), clock.System{}, org)
+	beneficiaryID, err := sandbox.EnsurePayee(ctx, rail, postgres.NewBeneficiaryStore(pool), clock.System{}, org, treasury.ID)
 	if err != nil {
 		logger.Error("ensuring test beneficiary", "error", err)
 		os.Exit(1)
 	}
 
 	reference := fmt.Sprintf("demo-%d", time.Now().UnixNano())
-	intent, err := domain.NewIntent(org, beneficiaryID, demoAmountMinorUnits, "USD", reference, "enquoir demo")
+	intent, err := domain.NewIntent(org, treasury.ID, beneficiaryID, demoAmountMinorUnits, "USD", reference, "enquoir demo")
 	if err != nil {
 		logger.Error("building intent", "error", err)
 		os.Exit(1)

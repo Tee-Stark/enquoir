@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
+
+	"enquoir/internal/domain"
 )
 
 func TestVerification_UnverifiedCanLookButNotIssueKeys(t *testing.T) {
@@ -22,6 +25,40 @@ func TestVerification_UnverifiedCanLookButNotIssueKeys(t *testing.T) {
 	f.verify(t, "ada@example.com")
 	if rec := f.do(t, http.MethodPost, "/v1/agents", `{"name":"bot"}`, cookie); rec.Code != http.StatusCreated {
 		t.Errorf("verified creating an agent: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// Editing the spending policy and approving an escalated payment are
+// both at least as sensitive as creating an agent or inviting a
+// member - both need a verified email too, like every other
+// credential-shaping or money-moving route. Rejecting needs no
+// verification, matching disabling an integration: cutting a payment
+// off is always allowed.
+func TestVerification_UnverifiedCannotUpdatePolicyOrApproveEscalation(t *testing.T) {
+	f := newAuthFixture(t, true)
+	rec := f.do(t, http.MethodPost, "/v1/auth/signup", `{"email":"unverified-owner@example.com","password":"correct horse battery","organisation_name":"Org"}`)
+	cookie := sessionCookie(t, rec)
+	var body authBody
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	org := domain.OrgID(body.Organisation.ID)
+	f.payments.Add(payment("key_esc", org, domain.AWAITING_APPROVAL, ""))
+
+	if rec := f.do(t, http.MethodPut, "/v1/policies", `{"currency_rules":[]}`, cookie); rec.Code != http.StatusForbidden {
+		t.Errorf("unverified owner updating the policy: %d, want 403", rec.Code)
+	}
+	if rec := f.do(t, http.MethodPost, "/v1/payments/key_esc/approve", "", cookie); rec.Code != http.StatusForbidden {
+		t.Errorf("unverified owner approving an escalation: %d, want 403", rec.Code)
+	}
+	if rec := f.do(t, http.MethodPost, "/v1/payments/key_esc/reject", "", cookie); rec.Code != http.StatusNoContent {
+		t.Errorf("unverified owner rejecting an escalation: %d %s, want 204", rec.Code, rec.Body)
+	}
+
+	f.verify(t, "unverified-owner@example.com")
+	if rec := f.do(t, http.MethodPut, "/v1/policies", `{"currency_rules":[]}`, cookie); rec.Code != http.StatusOK {
+		t.Errorf("verified owner updating the policy: %d %s, want 200", rec.Code, rec.Body)
+	}
+	if rec := f.do(t, http.MethodPost, "/v1/payments/key_esc/approve", "", cookie); rec.Code != http.StatusNoContent {
+		t.Errorf("verified owner approving: %d %s, want 204", rec.Code, rec.Body)
 	}
 }
 

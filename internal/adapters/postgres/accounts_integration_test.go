@@ -21,6 +21,7 @@ func newTestOrg(t *testing.T, store *AccountStore) (app.Organisation, app.User) 
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	org := app.Organisation{ID: domain.OrgID(ids.NewID("org")), Name: "Test " + t.Name(), CreatedAt: now}
+	org.TreasuryID = treasuryOf(org.ID)
 	user := app.User{
 		ID:           domain.UserID(ids.NewID("usr")),
 		Email:        domain.Email(fmt.Sprintf("%s@example.com", ids.NewID("u"))),
@@ -68,6 +69,7 @@ func TestAccountStore_TakenEmailStoresNothing(t *testing.T) {
 	_, user := newTestOrg(t, store)
 
 	org2 := app.Organisation{ID: domain.OrgID(ids.NewID("org")), Name: "Second", CreatedAt: time.Now()}
+	org2.TreasuryID = treasuryOf(org2.ID)
 	dup := app.User{ID: domain.UserID(ids.NewID("usr")), Email: user.Email, PasswordHash: "x", CreatedAt: time.Now()}
 	if err := store.CreateOrganisationWithOwner(ctx, org2, dup); !errors.Is(err, app.ErrEmailTaken) {
 		t.Fatalf("err = %v, want ErrEmailTaken", err)
@@ -179,3 +181,6 @@ func TestSessionStore_ListAndRevokeByID(t *testing.T) {
 		t.Errorf("still listed after revoking: %+v", list)
 	}
 }
+
+// treasuryOf is the treasury newTestOrg gives an organisation.
+func treasuryOf(org domain.OrgID) domain.TreasuryID { return domain.TreasuryID("trs_" + string(org)) }

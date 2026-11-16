@@ -32,8 +32,8 @@ func insertKey(ctx context.Context, tx pgx.Tx, k app.APIKey) error {
 
 func (s *AgentStore) CreateAgent(ctx context.Context, a app.Agent, key app.APIKey) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO agents (id, org_id, name, created_at) VALUES ($1, $2, $3, $4)`,
-			string(a.ID), string(a.OrgID), a.Name, a.CreatedAt); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO agents (id, org_id, name, created_at, created_by) VALUES ($1, $2, $3, $4, $5)`,
+			string(a.ID), string(a.OrgID), a.Name, a.CreatedAt, nullable(string(a.CreatedBy))); err != nil {
 			return fmt.Errorf("creating agent: %w", err)
 		}
 		if err := insertKey(ctx, tx, key); err != nil {
@@ -45,7 +45,7 @@ func (s *AgentStore) CreateAgent(ctx context.Context, a app.Agent, key app.APIKe
 
 // agentSelect joins each agent to its active key, if any.
 const agentSelect = `
-	SELECT a.id, a.org_id, a.name, a.created_at, a.revoked_at,
+	SELECT a.id, a.org_id, a.name, a.created_at, a.created_by, a.revoked_at,
 	       k.id, k.prefix, k.secret_hash, k.created_at, k.last_used_at
 	FROM agents a
 	LEFT JOIN api_keys k ON k.agent_id = a.id AND k.revoked_at IS NULL`
@@ -53,15 +53,18 @@ const agentSelect = `
 func scanAgent(row pgx.Row) (app.Agent, error) {
 	var a app.Agent
 	var id, org string
-	var keyID, prefix, hash *string
+	var createdBy, keyID, prefix, hash *string
 	var keyCreated, lastUsed *time.Time
-	if err := row.Scan(&id, &org, &a.Name, &a.CreatedAt, &a.RevokedAt, &keyID, &prefix, &hash, &keyCreated, &lastUsed); err != nil {
+	if err := row.Scan(&id, &org, &a.Name, &a.CreatedAt, &createdBy, &a.RevokedAt, &keyID, &prefix, &hash, &keyCreated, &lastUsed); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return app.Agent{}, app.ErrNotFound
 		}
 		return app.Agent{}, err
 	}
 	a.ID, a.OrgID = domain.AgentID(id), domain.OrgID(org)
+	if createdBy != nil {
+		a.CreatedBy = domain.UserID(*createdBy)
+	}
 	if keyID != nil {
 		a.Key = &app.APIKey{ID: *keyID, AgentID: a.ID, OrgID: a.OrgID, Prefix: *prefix, SecretHash: *hash, CreatedAt: *keyCreated, LastUsedAt: lastUsed}
 	}

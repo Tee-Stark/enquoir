@@ -37,6 +37,7 @@ const (
 	OutcomeDeduplicated AttemptOutcome = "deduplicated"  // already had history; nothing started
 	OutcomeInvalid      AttemptOutcome = "invalid"       // failed validation
 	OutcomePayeeUnknown AttemptOutcome = "payee_unknown" // payee not the organisation's
+	OutcomePolicyDenied AttemptOutcome = "policy_denied" // the organisation's spending policy denied it
 	OutcomeError        AttemptOutcome = "error"         // Enquoir failed to process it
 )
 

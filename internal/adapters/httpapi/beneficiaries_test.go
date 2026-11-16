@@ -37,7 +37,7 @@ func (r *fakeRegistrar) Register(ctx context.Context, b domain.Beneficiary) (str
 func newBeneficiaryFixture(t *testing.T, registrar *fakeRegistrar) (*authFixture, string) {
 	t.Helper()
 	f := newAuthFixture(t, true)
-	f.handler.Register = &app.RegisterBeneficiary{Registrar: registrar, Beneficiaries: f.payees, Clock: f.clock}
+	f.handler.Register = &app.RegisterBeneficiary{Treasuries: f.accounts, Registrar: registrar, Beneficiaries: f.payees, Clock: f.clock}
 	_, bearer := f.newAgent(t)
 	return f, bearer
 }

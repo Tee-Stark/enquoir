@@ -60,7 +60,7 @@ func TestPaymentWorkflow_DuplicateStormResultsInExactlyOneCreate(t *testing.T) {
 	defer w.Stop()
 
 	intent, err := domain.NewIntent(
-		testOrg, "beneficiary-1", 10050, "USD",
+		testOrg, "trs_test", "beneficiary-1", 10050, "USD",
 		"storm-"+time.Now().Format("20060102150405.000000000"),
 		"duplicate storm test",
 	)

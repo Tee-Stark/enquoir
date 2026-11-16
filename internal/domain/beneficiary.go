@@ -43,6 +43,7 @@ const (
 // payee the rail would refuse is refused here first.
 type Beneficiary struct {
 	OrgID         OrgID
+	TreasuryID    TreasuryID
 	Name          string
 	AccountNumber string
 	RoutingNumber string
@@ -65,9 +66,12 @@ var (
 // every organisation pays through Enquoir's one rail account, so
 // without it two organisations registering identical details would
 // share one rail beneficiary.
-func NewBeneficiary(org OrgID, name, accountNumber, routingNumber string, category AccountCategory, addr BeneficiaryAddress) (Beneficiary, error) {
+func NewBeneficiary(org OrgID, treasury TreasuryID, name, accountNumber, routingNumber string, category AccountCategory, addr BeneficiaryAddress) (Beneficiary, error) {
 	if strings.TrimSpace(string(org)) == "" {
 		return Beneficiary{}, errors.New("organisation is required")
+	}
+	if strings.TrimSpace(string(treasury)) == "" {
+		return Beneficiary{}, errors.New("treasury is required")
 	}
 	name = strings.TrimSpace(name)
 	accountNumber = strings.TrimSpace(accountNumber)
@@ -121,6 +125,7 @@ func NewBeneficiary(org OrgID, name, accountNumber, routingNumber string, catego
 
 	b := Beneficiary{
 		OrgID:         org,
+		TreasuryID:    treasury,
 		Name:          name,
 		AccountNumber: accountNumber,
 		RoutingNumber: routingNumber,
@@ -131,12 +136,24 @@ func NewBeneficiary(org OrgID, name, accountNumber, routingNumber string, catego
 	return b, nil
 }
 
-// deriveBeneficiaryKey hashes every normalised field, separated the
-// same way deriveIntentKey's are, so no boundary shift can collide.
+// LegacyKey is the key this payee had before treasuries: without the
+// treasury. A payee registered then keeps it, and its rail nickname;
+// registering it again must find it, not create a second rail
+// beneficiary (app.RegisterBeneficiary checks).
+func (b Beneficiary) LegacyKey() BeneficiaryKey {
+	return BeneficiaryKey(hashKey(string(b.OrgID), b.Name, b.AccountNumber, b.RoutingNumber, string(b.Category),
+		b.Address.Street, b.Address.City, b.Address.State, b.Address.Postcode))
+}
+
+// deriveBeneficiaryKey hashes every normalised field, with the
+// organisation and treasury, separated the same way deriveIntentKey's
+// are, so no boundary shift can collide. The key is the payee's rail
+// nickname, unique across the one shared rail account.
 func deriveBeneficiaryKey(b Beneficiary) BeneficiaryKey {
 	const sep = "\x00"
 	canonical := strings.Join([]string{
 		string(b.OrgID),
+		string(b.TreasuryID),
 		b.Name,
 		b.AccountNumber,
 		b.RoutingNumber,

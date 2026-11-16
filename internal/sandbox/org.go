@@ -30,7 +30,7 @@ func EnsureDemoOrg(ctx context.Context, accounts app.AccountStore, ids app.IDGen
 	}
 
 	now := clock.Now()
-	org := app.Organisation{ID: domain.OrgID(ids.NewID("org")), Name: demoOrgName, CreatedAt: now}
+	org := app.Organisation{ID: domain.OrgID(ids.NewID("org")), Name: demoOrgName, CreatedAt: now, TreasuryID: domain.TreasuryID(ids.NewID("trs"))}
 	owner := app.User{
 		ID:    domain.UserID(ids.NewID("usr")),
 		Email: demoEmail, PasswordHash: app.DummyPasswordHash, CreatedAt: now,

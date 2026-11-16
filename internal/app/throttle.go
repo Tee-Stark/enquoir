@@ -39,6 +39,12 @@ var (
 	RuleResendPerDay    = Rule{"verify-resend-day", 5, 24 * time.Hour}
 	RuleForgotPerEmail  = Rule{"forgot-email", 3, time.Hour}
 	RuleChangePassword  = Rule{"password-change", 5, 15 * time.Minute}
+	// RuleCommerceWritePerMerchant bounds how fast one merchant
+	// integration can create commerce resources (customers, agents,
+	// funding methods, mandate requests, checkouts) - generous for real
+	// traffic, a backstop against an authenticated-but-compromised or
+	// misbehaving integration spamming writes, not a guessing defense.
+	RuleCommerceWritePerMerchant = Rule{"commerce-write-merchant", 120, time.Minute}
 )
 
 // Lockout: this many failed log-ins within LockoutWindow lock the

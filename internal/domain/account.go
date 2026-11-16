@@ -11,6 +11,13 @@ import (
 // intent, beneficiary, agent and attempt belongs to exactly one.
 type OrgID string
 
+// TreasuryID identifies a treasury: an organisation's logical treasury.
+// It is an attribution over the one shared rail account Enquoir pays
+// through, never a segregated provider balance. Every organisation has
+// one for now; later it may have several, with agents, payees and
+// payments each assigned to one.
+type TreasuryID string
+
 // UserID identifies a person who signs in to the dashboard.
 type UserID string
 

@@ -124,7 +124,7 @@ func TestRailCalls_TheAttemptIsRecordedBeforeTheCall(t *testing.T) {
 }
 
 func TestRailCalls_BeneficiaryCallsAreRecorded(t *testing.T) {
-	b, err := domain.NewBeneficiary(testOrg, "Acme Ltd", "50001121", "021000021", domain.Checking, domain.BeneficiaryAddress{
+	b, err := domain.NewBeneficiary(testOrg, "trs_test", "Acme Ltd", "50001121", "021000021", domain.Checking, domain.BeneficiaryAddress{
 		Street: "412 5th Avenue", City: "Seattle", State: "WA", Postcode: "98104",
 	})
 	require.NoError(t, err)

@@ -1,0 +1,15 @@
+{{define "title"}}Approve {{.P.agent}} to buy for you at {{.P.merchant}}{{end}}
+{{define "preheader"}}{{.P.merchant}} asks you to let {{.P.agent}} make purchases for you. Nothing is allowed until you approve.{{end}}
+{{define "action"}}Review and decide{{end}}
+{{define "content"}}<h1 style="margin:0 0 14px;font-size:22px;color:{{.Brand.Ink}};">{{.P.merchant}} asks for your permission</h1>
+<p style="margin:0 0 12px;"><strong>{{.P.merchant}}</strong> would like its AI agent, <strong>{{.P.agent}}</strong>, to make purchases for you, {{.P.approval}}, on these terms:</p>
+<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 14px;border-collapse:collapse;font-size:14px;">
+<tr><td style="padding:3px 14px 3px 0;color:{{.Brand.Muted}};">Payment method</td><td style="padding:3px 0;">{{.P.payment_method}}</td></tr>
+<tr><td style="padding:3px 14px 3px 0;color:{{.Brand.Muted}};">Up to, per purchase</td><td style="padding:3px 0;">{{.P.max_per_transaction}}</td></tr>
+<tr><td style="padding:3px 14px 3px 0;color:{{.Brand.Muted}};">Up to, in total</td><td style="padding:3px 0;">{{.P.max_total}}</td></tr>
+<tr><td style="padding:3px 14px 3px 0;color:{{.Brand.Muted}};">Number of purchases</td><td style="padding:3px 0;">{{.P.max_transactions}}</td></tr>
+<tr><td style="padding:3px 14px 3px 0;color:{{.Brand.Muted}};">Categories</td><td style="padding:3px 0;">{{.P.categories}}</td></tr>
+<tr><td style="padding:3px 14px 3px 0;color:{{.Brand.Muted}};">Until</td><td style="padding:3px 0;">{{.P.expires}}</td></tr>
+</table>
+<p style="margin:0;">Nothing is allowed until you approve. The link works once and expires in 1 hour. {{.P.merchant}} can't approve for you.</p>{{end}}
+{{define "why"}}You received this because {{.P.merchant}} asked {{.Brand.Name}} to get your consent at this address. If you didn't expect it, ignore this email: nothing happens unless you approve.{{end}}

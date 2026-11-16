@@ -117,3 +117,26 @@ func TestIntentRepository_StoresTheSubmittingAgent(t *testing.T) {
 		t.Errorf("stored agent = %q, %v; want %q", stored.Agent, err, issued)
 	}
 }
+
+// PolicyVersion round-trips through Save, and the dashboard's Payment
+// read model surfaces it too - every decision must record the
+// version it used (AGENTS.md's Phase 6), including Allow.
+func TestIntentRepository_StoresThePolicyVersion(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	repo := NewIntentRepository(pool)
+	intent := testIntent(t, pool)
+	cleanupIntent(t, pool, intent.Key)
+
+	version := 3
+	intent.PolicyVersion = &version
+	stored, _, err := repo.Save(ctx, intent)
+	if err != nil || stored.PolicyVersion == nil || *stored.PolicyVersion != 3 {
+		t.Fatalf("stored policy version = %v, %v; want 3", stored.PolicyVersion, err)
+	}
+
+	p, err := NewPaymentReader(pool).GetPayment(ctx, intent.OrgID, intent.Key)
+	if err != nil || p.PolicyVersion == nil || *p.PolicyVersion != 3 {
+		t.Errorf("Payment.PolicyVersion = %v, %v; want 3", p.PolicyVersion, err)
+	}
+}

@@ -13,6 +13,7 @@ type problemBody struct {
 	Status int    `json:"status"`
 	Detail string `json:"detail"`
 	Code   string `json:"code"`
+	Field  string `json:"field"`
 }
 
 func decodeProblem(t *testing.T, rec *httptest.ResponseRecorder) problemBody {

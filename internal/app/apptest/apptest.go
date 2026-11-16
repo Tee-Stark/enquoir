@@ -13,6 +13,7 @@ import (
 
 	"enquoir/internal/app"
 	"enquoir/internal/domain"
+	"enquoir/internal/policy"
 )
 
 // Hasher is a transparent, fast stand-in for the slow hasher. It
@@ -397,15 +398,17 @@ func (l *EventLog) Load(ctx context.Context, org domain.OrgID, key domain.Intent
 // PaymentStarter is an in-memory app.PaymentStarter. Err, if set, is
 // returned from every call.
 type PaymentStarter struct {
-	mu    sync.Mutex
-	calls []domain.Intent
-	Err   error
+	mu        sync.Mutex
+	calls     []domain.Intent
+	escalated []bool
+	Err       error
 }
 
-func (s *PaymentStarter) Start(ctx context.Context, intent domain.Intent) error {
+func (s *PaymentStarter) Start(ctx context.Context, intent domain.Intent, escalate bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, intent)
+	s.escalated = append(s.escalated, escalate)
 	return s.Err
 }
 
@@ -414,6 +417,43 @@ func (s *PaymentStarter) Calls() []domain.Intent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]domain.Intent(nil), s.calls...)
+}
+
+// Escalated returns whether each call to Start, in order, was told
+// to escalate.
+func (s *PaymentStarter) Escalated() []bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]bool(nil), s.escalated...)
+}
+
+// EscalationSignal is one call to Signaler.
+type EscalationSignal struct {
+	Key       domain.IntentKey
+	Approved  bool
+	DecidedBy string
+}
+
+// Signaler is an app.EscalationSignaler that records every call.
+type Signaler struct {
+	mu    sync.Mutex
+	calls []EscalationSignal
+	Err   error
+}
+
+func NewSignaler() *Signaler { return &Signaler{} }
+
+func (s *Signaler) SignalApproval(ctx context.Context, key domain.IntentKey, approved bool, decidedBy string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, EscalationSignal{Key: key, Approved: approved, DecidedBy: decidedBy})
+	return s.Err
+}
+
+func (s *Signaler) Calls() []EscalationSignal {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]EscalationSignal(nil), s.calls...)
 }
 
 // CallCount returns how many times Start was called.
@@ -433,15 +473,38 @@ func NewBeneficiaries() *Beneficiaries {
 	return &Beneficiaries{saved: map[domain.BeneficiaryKey]app.RegisteredBeneficiary{}}
 }
 
-// Own seeds that org owns railID, for tests that need a payee. Unlike
-// Save it skips the one-owner check, so tests can give several
-// organisations a payee with the same literal ID.
+// Own seeds that org owns railID, in whichever treasury asks - for
+// tests that need a payee and don't care which treasury. Unlike Save it
+// skips the one-owner check, so tests can give several organisations a
+// payee with the same literal ID.
 func (s *Beneficiaries) Own(org domain.OrgID, railID string) *Beneficiaries {
+	return s.OwnIn(org, "", railID)
+}
+
+// OwnIn seeds that org's treasury owns railID ("" for any treasury).
+func (s *Beneficiaries) OwnIn(org domain.OrgID, treasury domain.TreasuryID, railID string) *Beneficiaries {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := domain.BeneficiaryKey(string(org) + "/" + railID)
-	s.saved[key] = app.RegisteredBeneficiary{OrgID: org, Key: key, RailID: railID}
+	key := domain.BeneficiaryKey(string(org) + "/" + string(treasury) + "/" + railID)
+	s.saved[key] = app.RegisteredBeneficiary{OrgID: org, TreasuryID: treasury, Key: key, RailID: railID}
 	return s
+}
+
+// Seed stores b as registered, as an earlier registration would have.
+func (s *Beneficiaries) Seed(b app.RegisteredBeneficiary) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.saved[b.Key] = b
+}
+
+func (s *Beneficiaries) ByKey(ctx context.Context, org domain.OrgID, treasury domain.TreasuryID, key domain.BeneficiaryKey) (app.RegisteredBeneficiary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.saved[key]
+	if !ok || b.OrgID != org || (b.TreasuryID != "" && b.TreasuryID != treasury) {
+		return app.RegisteredBeneficiary{}, app.ErrNotFound
+	}
+	return b, nil
 }
 
 func (s *Beneficiaries) Save(ctx context.Context, b app.RegisteredBeneficiary) error {
@@ -458,11 +521,11 @@ func (s *Beneficiaries) Save(ctx context.Context, b app.RegisteredBeneficiary) e
 	return nil
 }
 
-func (s *Beneficiaries) Owns(ctx context.Context, org domain.OrgID, railID string) (bool, error) {
+func (s *Beneficiaries) Owns(ctx context.Context, org domain.OrgID, treasury domain.TreasuryID, railID string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, b := range s.saved {
-		if b.OrgID == org && b.RailID == railID {
+		if b.OrgID == org && (b.TreasuryID == "" || b.TreasuryID == treasury) && b.RailID == railID {
 			return true, nil
 		}
 	}
@@ -475,6 +538,38 @@ func (s *Beneficiaries) Get(key domain.BeneficiaryKey) (app.RegisteredBeneficiar
 	defer s.mu.Unlock()
 	b, ok := s.saved[key]
 	return b, ok
+}
+
+// FixedTreasury is an app.TreasuryStore giving every organisation the
+// treasury ID.
+type FixedTreasury struct{ ID domain.TreasuryID }
+
+func (f FixedTreasury) TreasuryOf(ctx context.Context, org domain.OrgID) (app.Treasury, error) {
+	return app.Treasury{ID: f.ID, OrgID: org, Name: app.DefaultTreasuryName}, nil
+}
+
+func (f FixedTreasury) ListTreasuries(ctx context.Context, org domain.OrgID) ([]app.Treasury, error) {
+	t, _ := f.TreasuryOf(ctx, org)
+	return []app.Treasury{t}, nil
+}
+
+// TreasuryOf is the treasury org was created with.
+func (a *Accounts) TreasuryOf(ctx context.Context, org domain.OrgID) (app.Treasury, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	o, ok := a.orgs[org]
+	if !ok || o.TreasuryID == "" {
+		return app.Treasury{}, app.ErrNotFound
+	}
+	return app.Treasury{ID: o.TreasuryID, OrgID: org, Name: app.DefaultTreasuryName, CreatedAt: o.CreatedAt}, nil
+}
+
+func (a *Accounts) ListTreasuries(ctx context.Context, org domain.OrgID) ([]app.Treasury, error) {
+	t, err := a.TreasuryOf(ctx, org)
+	if err != nil {
+		return nil, err
+	}
+	return []app.Treasury{t}, nil
 }
 
 // Intents is an in-memory app.IntentRepository.
@@ -1248,4 +1343,29 @@ func (l *AuditLog) ListForUser(ctx context.Context, user domain.UserID, f app.Au
 		}
 	}
 	return app.AuditPage{Events: out}, nil
+}
+
+// FixedPolicy is a policy.Store that always decides with Outcome,
+// whatever the input - for tests that only care how a use case reacts
+// to allow/deny/escalate, not how a real evaluation reaches one.
+type FixedPolicy struct {
+	Outcome policy.Outcome
+	Reasons []policy.Reason
+	Version int
+	// Calls records every EvaluateAndReserve input, in order.
+	Calls []policy.EvaluationInput
+}
+
+func (f *FixedPolicy) CurrentPolicy(ctx context.Context, org domain.OrgID) (policy.PolicyVersion, error) {
+	return policy.DefaultPolicyVersion(org), nil
+}
+
+func (f *FixedPolicy) SaveNewVersion(ctx context.Context, v policy.PolicyVersion) (policy.PolicyVersion, error) {
+	v.Version = f.Version + 1
+	return v, nil
+}
+
+func (f *FixedPolicy) EvaluateAndReserve(ctx context.Context, org domain.OrgID, in policy.EvaluationInput) (policy.Decision, error) {
+	f.Calls = append(f.Calls, in)
+	return policy.Decision{Outcome: f.Outcome, Reasons: f.Reasons, Version: f.Version}, nil
 }

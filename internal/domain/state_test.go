@@ -4,16 +4,17 @@ import "testing"
 
 func TestState_Transition(t *testing.T) {
 	legal := map[State][]State{
-		PROPOSED:   {AUTHORIZED, BLOCKED},
-		AUTHORIZED: {IN_FLIGHT, BLOCKED},
-		IN_FLIGHT:  {APPLIED, FAILED, UNKNOWN},
-		UNKNOWN:    {APPLIED, FAILED, IN_FLIGHT},
-		FAILED:     {AUTHORIZED, BLOCKED},
-		APPLIED:    {},
-		BLOCKED:    {},
+		PROPOSED:          {AUTHORIZED, BLOCKED, AWAITING_APPROVAL},
+		AWAITING_APPROVAL: {AUTHORIZED, BLOCKED},
+		AUTHORIZED:        {IN_FLIGHT, BLOCKED},
+		IN_FLIGHT:         {APPLIED, FAILED, UNKNOWN},
+		UNKNOWN:           {APPLIED, FAILED, IN_FLIGHT},
+		FAILED:            {AUTHORIZED, BLOCKED},
+		APPLIED:           {},
+		BLOCKED:           {},
 	}
 
-	allStates := []State{PROPOSED, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED}
+	allStates := []State{PROPOSED, AWAITING_APPROVAL, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED}
 
 	for from, allowed := range legal {
 		allowedSet := make(map[State]bool, len(allowed))
@@ -40,7 +41,7 @@ func TestState_TerminalStatesHaveNoLegalTransitions(t *testing.T) {
 		if !terminal.IsTerminal() {
 			t.Errorf("%s: expected IsTerminal() to be true", terminal)
 		}
-		for _, to := range []State{PROPOSED, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED} {
+		for _, to := range []State{PROPOSED, AWAITING_APPROVAL, AUTHORIZED, IN_FLIGHT, UNKNOWN, APPLIED, FAILED, BLOCKED} {
 			if err := terminal.Transition(to); err == nil {
 				t.Errorf("%s -> %s: terminal state must reject every transition", terminal, to)
 			}

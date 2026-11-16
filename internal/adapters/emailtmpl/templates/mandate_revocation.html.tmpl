@@ -1,0 +1,8 @@
+{{define "title"}}Confirm: stop {{.P.agent}} buying for you{{end}}
+{{define "preheader"}}{{.P.merchant}} asked to revoke your permission for {{.P.agent}}. Confirm to make it final.{{end}}
+{{define "action"}}Confirm revocation{{end}}
+{{define "content"}}<h1 style="margin:0 0 14px;font-size:22px;color:{{.Brand.Ink}};">Confirm the revocation</h1>
+<p style="margin:0 0 12px;"><strong>{{.P.merchant}}</strong> asked to revoke your permission for <strong>{{.P.agent}}</strong> to make purchases for you with {{.P.payment_method}}.</p>
+<p style="margin:0 0 12px;">The permission is paused now: nothing new can be bought under it. Confirm within 1 hour to revoke it for good; the link works once.</p>
+<p style="margin:0;">If you didn't ask for this, ignore this email: after an hour the permission works again.</p>{{end}}
+{{define "why"}}You received this because {{.P.merchant}} asked {{.Brand.Name}} to revoke a permission you gave. Only you can confirm it.{{end}}

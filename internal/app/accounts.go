@@ -31,6 +31,9 @@ type Organisation struct {
 	ID        domain.OrgID
 	Name      string
 	CreatedAt time.Time
+	// TreasuryID is the treasury created with the organisation; only
+	// read when creating it.
+	TreasuryID domain.TreasuryID
 }
 
 // User is a person who signs in to the dashboard. One user may belong
@@ -66,7 +69,8 @@ type Session struct {
 
 // AccountStore persists users, organisations and memberships.
 type AccountStore interface {
-	// CreateOrganisationWithOwner stores the organisation, the user and
+	// CreateOrganisationWithOwner stores the organisation, its treasury
+	// (org.TreasuryID, named DefaultTreasuryName), the user and
 	// the user's owner membership, all or nothing. Returns
 	// ErrEmailTaken if the email is already registered.
 	CreateOrganisationWithOwner(ctx context.Context, org Organisation, owner User) error
@@ -167,7 +171,7 @@ func (s *SignUp) Run(ctx context.Context, cmd SignUpCommand) (SignedIn, error) {
 	}
 
 	now := s.Clock.Now()
-	org := Organisation{ID: domain.OrgID(s.IDs.NewID("org")), Name: orgName, CreatedAt: now}
+	org := Organisation{ID: domain.OrgID(s.IDs.NewID("org")), Name: orgName, CreatedAt: now, TreasuryID: domain.TreasuryID(s.IDs.NewID("trs"))}
 	user := User{ID: domain.UserID(s.IDs.NewID("usr")), Email: email, PasswordHash: hash, CreatedAt: now}
 	if err := s.Accounts.CreateOrganisationWithOwner(ctx, org, user); err != nil {
 		return SignedIn{}, err

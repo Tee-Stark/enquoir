@@ -22,7 +22,7 @@ type submitFixture struct {
 
 func newSubmitFixture() *submitFixture {
 	f := &submitFixture{attempts: apptest.NewAttempts(), intents: apptest.NewIntents(), events: apptest.NewEventLog(), starter: &apptest.PaymentStarter{}, clock: apptest.NewClock()}
-	f.use = &app.SubmitIntent{Starter: f.starter, Events: f.events, Payees: ownedPayees(), Intents: f.intents, Attempts: f.attempts, IDs: &apptest.IDs{}, Clock: f.clock}
+	f.use = &app.SubmitIntent{Treasuries: apptest.FixedTreasury{ID: "trs_test"}, Starter: f.starter, Events: f.events, Payees: ownedPayees(), Intents: f.intents, Attempts: f.attempts, IDs: &apptest.IDs{}, Clock: f.clock}
 	return f
 }
 
@@ -32,7 +32,7 @@ var validCommand = app.SubmitIntentCommand{OrgID: testOrg, Agent: "agt_1", Payee
 // attempt saying what the agent sent and what Enquoir did with it.
 func TestSubmitIntent_RecordsEverySubmissionAsAnAttempt(t *testing.T) {
 	key := func() domain.IntentKey {
-		i, _ := domain.NewIntent(testOrg, "payee-1", 10050, "USD", "INV-9", "")
+		i, _ := domain.NewIntent(testOrg, "trs_test", "payee-1", 10050, "USD", "INV-9", "")
 		return i.Key
 	}()
 
@@ -46,7 +46,7 @@ func TestSubmitIntent_RecordsEverySubmissionAsAnAttempt(t *testing.T) {
 	}{
 		{"a new payment is started", nil, validCommand, app.OutcomeStarted, true, false},
 		{"a run already starting is attached to", func(f *submitFixture) {
-			i, _ := domain.NewIntent(testOrg, "payee-1", 10050, "USD", "INV-9", "")
+			i, _ := domain.NewIntent(testOrg, "trs_test", "payee-1", 10050, "USD", "INV-9", "")
 			f.intents.Save(context.Background(), i)
 		}, validCommand, app.OutcomeAttached, true, false},
 		{"recorded history is deduplicated", func(f *submitFixture) {
@@ -81,7 +81,7 @@ func TestSubmitIntent_RecordsEverySubmissionAsAnAttempt(t *testing.T) {
 			if a.OrgID != testOrg || a.AgentID != "agt_1" || a.ID == "" {
 				t.Errorf("attempt org/agent/id = %q/%q/%q", a.OrgID, a.AgentID, a.ID)
 			}
-			want, _ := domain.NewIntent(testOrg, tc.cmd.Payee, 10050, "USD", tc.cmd.Reference, "")
+			want, _ := domain.NewIntent(testOrg, "trs_test", tc.cmd.Payee, 10050, "USD", tc.cmd.Reference, "")
 			if (a.IntentKey != "") != tc.wantKey || (tc.wantKey && a.IntentKey != want.Key) {
 				t.Errorf("intent key = %q, want key present = %v", a.IntentKey, tc.wantKey)
 			}

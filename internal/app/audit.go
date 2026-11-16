@@ -15,8 +15,12 @@ type Actor struct {
 	Email     domain.Email
 	AgentID   domain.AgentID // when an agent acts, with its API key
 	AgentName string
-	IP        string
-	UserAgent string
+	// MerchantID is set when a merchant integration acts with its key
+	// (commerce); treasury knows it only as an opaque ID.
+	MerchantID   string
+	MerchantName string
+	IP           string
+	UserAgent    string
 }
 
 type actorKey struct{}
@@ -40,33 +44,83 @@ type AuditEvent struct {
 	ActorEmail  domain.Email
 	ActorAgent  domain.AgentID
 	AgentName   string
-	Action      string
-	TargetType  string
-	TargetID    string
-	Details     map[string]string
-	IP          string
-	UserAgent   string
-	At          time.Time
+	// ActorMerchant is the merchant integration that acted, with its key.
+	ActorMerchant string
+	MerchantName  string
+	Action        string
+	TargetType    string
+	TargetID      string
+	Details       map[string]string
+	IP            string
+	UserAgent     string
+	At            time.Time
 }
 
 // Audit actions.
 const (
-	AuditLoggedIn           = "auth.logged_in"
-	AuditLockedOut          = "auth.locked_out"
-	AuditEmailVerified      = "auth.email_verified"
-	AuditPasswordChanged    = "auth.password_changed"
-	AuditPasswordReset      = "auth.password_reset"
-	AuditSessionsRevoked    = "auth.sessions_revoked"
-	AuditMemberInvited      = "member.invited"
-	AuditInvitationRevoked  = "invitation.revoked"
-	AuditInvitationAccepted = "invitation.accepted"
-	AuditRoleChanged        = "member.role_changed"
-	AuditMemberRemoved      = "member.removed"
-	AuditMemberLeft         = "member.left"
-	AuditAgentCreated       = "agent.created"
-	AuditAgentKeyRotated    = "agent.key_rotated"
-	AuditAgentRevoked       = "agent.revoked"
-	AuditPayeeRegistered    = "payee.registered"
+	AuditLoggedIn              = "auth.logged_in"
+	AuditLockedOut             = "auth.locked_out"
+	AuditEmailVerified         = "auth.email_verified"
+	AuditPasswordChanged       = "auth.password_changed"
+	AuditPasswordReset         = "auth.password_reset"
+	AuditSessionsRevoked       = "auth.sessions_revoked"
+	AuditMemberInvited         = "member.invited"
+	AuditInvitationRevoked     = "invitation.revoked"
+	AuditInvitationAccepted    = "invitation.accepted"
+	AuditRoleChanged           = "member.role_changed"
+	AuditMemberRemoved         = "member.removed"
+	AuditMemberLeft            = "member.left"
+	AuditAgentCreated          = "agent.created"
+	AuditAgentKeyRotated       = "agent.key_rotated"
+	AuditAgentRevoked          = "agent.revoked"
+	AuditPayeeRegistered       = "payee.registered"
+	AuditPolicyUpdated         = "policy.updated"
+	AuditPaymentDeniedByPolicy = "payment.denied_by_policy"
+	AuditPaymentEscalated      = "payment.escalated"
+	AuditPaymentApproved       = "payment.approved"
+	AuditPaymentRejected       = "payment.rejected"
+	// AuditPaymentEscalationExpired/AuditPaymentEscalationDeniedOnRecheck
+	// are recorded by the workflow itself (via an activity), not an
+	// HTTP handler: no human decision ever reaches DecideEscalatedPayment
+	// for a timeout, and a recheck denial happens after Approved was
+	// already recorded - both need their own record to be visible at all.
+	AuditPaymentEscalationExpired         = "payment.escalation_expired"
+	AuditPaymentEscalationDeniedOnRecheck = "payment.escalation_denied_on_recheck"
+
+	// Commerce. Treasury records none of these; they are listed here so
+	// the one audit log can filter by them.
+	AuditIntegrationCreated         = "merchant_integration.created"
+	AuditIntegrationDisabled        = "merchant_integration.disabled"
+	AuditIntegrationEnabled         = "merchant_integration.enabled"
+	AuditIntegrationKeyRotated      = "merchant_integration.key_rotated"
+	AuditIntegrationKeyRevoked      = "merchant_integration.key_revoked"
+	AuditCommerceCustomerRegistered = "commerce.customer.registered"
+	AuditCommerceCustomerDisabled   = "commerce.customer.disabled"
+	AuditCommerceCustomerEnabled    = "commerce.customer.enabled"
+	AuditCommerceAgentRegistered    = "commerce.agent.registered"
+	AuditCommerceAgentDisabled      = "commerce.agent.disabled"
+	AuditCommerceAgentEnabled       = "commerce.agent.enabled"
+	AuditFundingMethodRegistered    = "commerce.funding_method.registered"
+	AuditFundingMethodDisabled      = "commerce.funding_method.disabled"
+	AuditFundingMethodEnabled       = "commerce.funding_method.enabled"
+	AuditMandateRequested           = "commerce.mandate.requested"
+	AuditMandateApproved            = "commerce.mandate.approved"
+	AuditMandateRejected            = "commerce.mandate.rejected"
+	AuditMandateRevoked             = "commerce.mandate.revoked"
+	AuditMandateRevocationRequested = "commerce.mandate.revocation_requested"
+	AuditCheckoutAuthorized         = "commerce.checkout.authorized"
+	AuditCheckoutDenied             = "commerce.checkout.denied"
+	AuditCheckoutAwaitingApproval   = "commerce.checkout.awaiting_approval"
+	AuditCheckoutApproved           = "commerce.checkout.approved"
+	AuditCheckoutRejected           = "commerce.checkout.rejected"
+	AuditCheckoutCanceled           = "commerce.checkout.canceled"
+	AuditGrantIssued                = "commerce.authorization.grant_issued"
+	AuditGrantRedeemed              = "commerce.authorization.redeemed"
+	AuditExecutionSucceeded         = "commerce.execution.succeeded"
+	AuditExecutionFailed            = "commerce.execution.failed"
+	AuditExecutionUnknown           = "commerce.execution.unknown"
+	AuditExecutionReconciled        = "commerce.execution.reconciled"
+	AuditExecutionReportRefused     = "commerce.execution.report_refused"
 )
 
 // AuditFilter narrows the audit log. Zero fields don't filter.
@@ -110,9 +164,16 @@ func (a *Audit) record(ctx context.Context, org domain.OrgID, action, targetType
 	_ = a.Log.Record(ctx, AuditEvent{
 		ID: a.IDs.NewID("aud"), OrgID: org, ActorUserID: actor.UserID, ActorEmail: actor.Email,
 		ActorAgent: actor.AgentID, AgentName: actor.AgentName,
+		ActorMerchant: actor.MerchantID, MerchantName: actor.MerchantName,
 		Action: action, TargetType: targetType, TargetID: targetID, Details: details,
 		IP: actor.IP, UserAgent: actor.UserAgent, At: a.Clock.Now(),
 	})
+}
+
+// Record records an event in org, done by the actor in ctx. It is how
+// another bounded context (commerce) writes to the one audit log.
+func (a *Audit) Record(ctx context.Context, org domain.OrgID, action, targetType, targetID string, details map[string]string) {
+	a.record(ctx, org, action, targetType, targetID, details)
 }
 
 // recordAs records with an explicit actor: for actions by someone not
@@ -128,6 +189,20 @@ var knownAuditActions = map[string]bool{
 	AuditSessionsRevoked: true, AuditMemberInvited: true, AuditInvitationRevoked: true, AuditInvitationAccepted: true,
 	AuditRoleChanged: true, AuditMemberRemoved: true, AuditMemberLeft: true, AuditAgentCreated: true,
 	AuditAgentKeyRotated: true, AuditAgentRevoked: true, AuditPayeeRegistered: true,
+	AuditPolicyUpdated: true, AuditPaymentDeniedByPolicy: true, AuditPaymentEscalated: true,
+	AuditPaymentApproved: true, AuditPaymentRejected: true,
+	AuditPaymentEscalationExpired: true, AuditPaymentEscalationDeniedOnRecheck: true,
+	AuditIntegrationCreated: true, AuditIntegrationDisabled: true, AuditIntegrationEnabled: true,
+	AuditIntegrationKeyRotated: true, AuditIntegrationKeyRevoked: true,
+	AuditCommerceCustomerRegistered: true, AuditCommerceCustomerDisabled: true, AuditCommerceCustomerEnabled: true,
+	AuditCommerceAgentRegistered: true, AuditCommerceAgentDisabled: true, AuditCommerceAgentEnabled: true,
+	AuditFundingMethodRegistered: true, AuditFundingMethodDisabled: true, AuditFundingMethodEnabled: true,
+	AuditMandateRequested: true, AuditMandateApproved: true, AuditMandateRejected: true, AuditMandateRevoked: true, AuditMandateRevocationRequested: true,
+	AuditCheckoutAuthorized: true, AuditCheckoutDenied: true, AuditCheckoutAwaitingApproval: true,
+	AuditCheckoutApproved: true, AuditCheckoutRejected: true, AuditCheckoutCanceled: true,
+	AuditGrantIssued: true, AuditGrantRedeemed: true,
+	AuditExecutionSucceeded: true, AuditExecutionFailed: true, AuditExecutionUnknown: true,
+	AuditExecutionReconciled: true, AuditExecutionReportRefused: true,
 }
 
 // ListMyActivity lists the events about the signed-in user's account:

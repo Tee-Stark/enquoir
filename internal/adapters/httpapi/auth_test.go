@@ -12,6 +12,8 @@ import (
 
 	"enquoir/internal/app"
 	"enquoir/internal/app/apptest"
+	"enquoir/internal/commerce/commerceapp"
+	"enquoir/internal/commerce/commerceapp/commercetest"
 	"enquoir/internal/domain"
 )
 
@@ -27,6 +29,7 @@ type authFixture struct {
 	payments *apptest.Payments
 	accounts *apptest.Accounts
 	mailer   *apptest.Mailer
+	signaler *apptest.Signaler
 }
 
 func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
@@ -39,6 +42,8 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 	events.Clock = clock
 	analytics := &fixtureAnalytics{}
 	issuer := &app.SessionIssuer{Sessions: sessions, IDs: ids, Secrets: secrets, Clock: clock, TTL: 7 * 24 * time.Hour}
+	policies := &apptest.FixedPolicy{}
+	signaler := apptest.NewSignaler()
 	mailer, outbox, tokens := &apptest.Mailer{}, apptest.NewOutbox(), apptest.NewTokens()
 	deliver := &app.DeliverEmail{Outbox: outbox, Tokens: tokens, Renderer: apptest.Renderer{}, Mailer: mailer,
 		Secrets: secrets, Clock: clock, AppBaseURL: "https://enquoir.etimi.me"}
@@ -83,7 +88,14 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		RevokeAgent:       &app.RevokeAgent{Agents: agents, Clock: clock},
 		AuthenticateAgent: &app.AuthenticateAgent{Agents: agents, Clock: clock},
 
-		Submit: &app.SubmitIntent{Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents(), Attempts: attempts, IDs: ids, Clock: clock},
+		GetCurrentPolicy: &app.GetCurrentPolicy{Policies: policies},
+		UpdatePolicy:     &app.UpdatePolicy{Policies: policies, Clock: clock, Audit: audit},
+		DryRunPolicy:     &app.DryRunPolicy{Policies: policies},
+		DecideEscalatedPayment: &app.DecideEscalatedPayment{
+			Payments: payments, Agents: agents, Members: accounts, Signaler: signaler, Audit: audit,
+		},
+
+		Submit: &app.SubmitIntent{Treasuries: accounts, Starter: starter, Events: events, Payees: payees, Intents: apptest.NewIntents(), Attempts: attempts, IDs: ids, Clock: clock, Policies: policies, Audit: audit},
 		Get:    &app.GetIntent{Events: events},
 
 		ListPayments:      &app.ListPayments{Payments: payments},
@@ -94,7 +106,76 @@ func newAuthFixture(t *testing.T, secureCookies bool) *authFixture {
 		TimeSeries:        &app.GetTimeSeries{Analytics: analytics, Clock: clock},
 		ReplayPayment:     &app.ReplayPayment{Get: &app.GetPayment{Payments: payments, Events: events, Attempts: attempts}},
 	}
-	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments, accounts: accounts, mailer: mailer}
+	integrations, customers, commerceAgents := commercetest.NewIntegrations(), commercetest.NewCustomers(), commercetest.NewAgents()
+	h.Commerce = CommerceUseCases{
+		CreateIntegration:    &commerceapp.CreateIntegration{Integrations: integrations, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
+		ListIntegrations:     &commerceapp.ListIntegrations{Integrations: integrations},
+		GetIntegration:       &commerceapp.GetIntegration{Integrations: integrations},
+		SetIntegrationStatus: &commerceapp.SetIntegrationStatus{Integrations: integrations, Clock: clock, Audit: audit},
+		RotateIntegrationKey: &commerceapp.RotateIntegrationKey{Integrations: integrations, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
+		RevokeIntegrationKey: &commerceapp.RevokeIntegrationKey{Integrations: integrations, Clock: clock, Audit: audit},
+		AuthenticateMerchant: &commerceapp.AuthenticateMerchant{Integrations: integrations, Clock: clock},
+		RegisterCustomer:     &commerceapp.RegisterCustomer{Customers: customers, IDs: ids, Clock: clock, Audit: audit},
+		ListCustomers:        &commerceapp.ListCustomers{Customers: customers},
+		GetCustomer:          &commerceapp.GetCustomer{Customers: customers},
+		SetCustomerStatus:    &commerceapp.SetCustomerStatus{Customers: customers, Clock: clock, Audit: audit},
+		RegisterAgent:        &commerceapp.RegisterAgent{Agents: commerceAgents, IDs: ids, Clock: clock, Audit: audit},
+		ListAgents:           &commerceapp.ListAgents{Agents: commerceAgents},
+		GetAgent:             &commerceapp.GetAgent{Agents: commerceAgents},
+		SetAgentStatus:       &commerceapp.SetAgentStatus{Agents: commerceAgents, Clock: clock, Audit: audit},
+	}
+	methods := commercetest.NewFundingMethods()
+	h.Funding = FundingUseCases{
+		Register: &commerceapp.RegisterFundingMethod{Methods: methods, Customers: customers, IDs: ids, Clock: clock, Audit: audit},
+		Get:      &commerceapp.GetFundingMethod{Methods: methods},
+		List:     &commerceapp.ListFundingMethods{Methods: methods, Customers: customers},
+		Status:   &commerceapp.SetFundingMethodStatus{Methods: methods, Clock: clock, Audit: audit},
+	}
+	mandates := commercetest.NewMandates(tokens, customers, commerceAgents, methods)
+	h.Mandates = MandateUseCases{
+		Request:    &commerceapp.RequestMandate{Mandates: mandates, Customers: customers, Agents: commerceAgents, Methods: methods, Emails: emails, IDs: ids, Clock: clock, Audit: audit},
+		GetRequest: &commerceapp.GetMandateRequest{Mandates: mandates, Clock: clock},
+		View:       &commerceapp.ViewConsent{Tokens: tokens, Mandates: mandates, Clock: clock},
+		Decide:     &commerceapp.DecideConsent{Tokens: tokens, Mandates: mandates, IDs: ids, Clock: clock, Audit: audit},
+		List:       &commerceapp.ListMandates{Mandates: mandates, Clock: clock},
+		Get:        &commerceapp.GetMandate{Mandates: mandates, Clock: clock},
+		Revoke:     &commerceapp.RequestMandateRevocation{Mandates: mandates, Customers: customers, Emails: emails, Clock: clock, Audit: audit},
+		ViewRevoke: &commerceapp.ViewRevocation{Tokens: tokens, Mandates: mandates, Clock: clock},
+		Confirm:    &commerceapp.ConfirmRevocation{Tokens: tokens, Mandates: mandates, Clock: clock, Audit: audit},
+	}
+	checkouts := commercetest.NewCheckouts(mandates, tokens)
+	h.Checkouts = CheckoutUseCases{
+		Submit: &commerceapp.SubmitCheckout{Checkouts: checkouts, Customers: customers, Emails: emails, IDs: ids, Secrets: secrets, Clock: clock, Audit: audit},
+		Get:    &commerceapp.GetCheckout{Checkouts: checkouts, Clock: clock},
+		Cancel: &commerceapp.CancelCheckout{Checkouts: checkouts, Clock: clock, Audit: audit},
+		View:   &commerceapp.ViewCheckoutApproval{Tokens: tokens, Checkouts: checkouts, Clock: clock},
+		Decide: &commerceapp.DecideCheckoutApproval{Tokens: tokens, Checkouts: checkouts, IDs: ids, Clock: clock, Audit: audit},
+	}
+	h.Mandates.Get.Usage, h.Mandates.List.Usage = checkouts, checkouts
+	h.Executions = ExecutionUseCases{
+		Report:        &commerceapp.ReportExecutionOutcome{Checkouts: checkouts, Clock: clock, Audit: audit},
+		List:          &commerceapp.ListExecutions{Checkouts: checkouts},
+		ListCheckouts: &commerceapp.ListCheckouts{Checkouts: checkouts, Clock: clock},
+		Dashboard:     &commerceapp.MerchantForDashboard{Integrations: integrations},
+	}
+	h.Grants = GrantUseCases{
+		Issue:  &commerceapp.IssueGrant{Checkouts: checkouts, Secrets: secrets, Clock: clock, Audit: audit},
+		Redeem: &commerceapp.RedeemGrant{Checkouts: checkouts, IDs: ids, Clock: clock, Audit: audit},
+		Get:    &commerceapp.GetExecution{Checkouts: checkouts},
+	}
+	h.OrgActivity = OrgActivityUseCases{
+		ListCheckouts:  &commerceapp.ListOrgCheckouts{Reader: checkouts, Clock: clock},
+		ListExecutions: &commerceapp.ListOrgExecutions{Reader: checkouts},
+		GetCheckout:    &commerceapp.GetOrgCheckout{Reader: checkouts, Clock: clock},
+		GetExecution:   &commerceapp.GetOrgExecution{Reader: checkouts},
+		ReplayCheckout: &commerceapp.ReplayCheckout{Reader: checkouts, Clock: clock},
+	}
+	commerceAnalytics := &fixtureCommerceAnalytics{}
+	h.CommerceAnalytics = CommerceAnalyticsUseCases{
+		Summary:    &commerceapp.GetCommerceSummary{Analytics: commerceAnalytics, Clock: clock},
+		TimeSeries: &commerceapp.GetCommerceTimeSeries{Analytics: commerceAnalytics, Clock: clock},
+	}
+	return &authFixture{router: contract(t, NewRouter(h)), handler: h, clock: clock, agents: agents, events: events, starter: starter, payees: payees, attempts: attempts, payments: payments, accounts: accounts, mailer: mailer, signaler: signaler}
 }
 
 var testEmailCounter atomic.Int64

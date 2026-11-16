@@ -33,6 +33,8 @@ type Agent struct {
 	OrgID     domain.OrgID
 	Name      string
 	CreatedAt time.Time
+	// CreatedBy is empty for agents created before this field existed.
+	CreatedBy domain.UserID
 	RevokedAt *time.Time
 	Key       *APIKey
 }
@@ -101,7 +103,13 @@ func (c *CreateAgent) Run(ctx context.Context, org domain.OrgID, name string) (I
 		return IssuedAgent{}, invalid("name", err)
 	}
 	now := c.Clock.Now()
-	agent := Agent{ID: domain.AgentID(c.IDs.NewID("agt")), OrgID: org, Name: name, CreatedAt: now}
+	agent := Agent{
+		ID:        domain.AgentID(c.IDs.NewID("agt")),
+		OrgID:     org,
+		Name:      name,
+		CreatedAt: now,
+		CreatedBy: ActorFrom(ctx).UserID,
+	}
 	key, secret := newAPIKey(c.IDs, c.Secrets, org, agent.ID, now)
 	if err := c.Agents.CreateAgent(ctx, agent, key); err != nil {
 		return IssuedAgent{}, fmt.Errorf("creating agent: %w", err)

@@ -1,0 +1,239 @@
+package commercetest
+
+import (
+	"context"
+	"sort"
+	"sync"
+	"time"
+
+	"enquoir/internal/app"
+	"enquoir/internal/commerce"
+	"enquoir/internal/commerce/commerceapp"
+	"enquoir/internal/domain"
+)
+
+// record is what customers and agents share: an ID, an owner, an
+// external ID unique per merchant, a status and a creation time.
+type record[T any] struct {
+	id       string
+	scope    commerceapp.Scope
+	external commerce.ExternalID
+	created  time.Time
+	value    T
+	status   func(*T) *commerce.Status
+	disabled func(*T) **time.Time
+}
+
+// directory is an in-memory register-or-resolve store, ordered newest
+// first, with the last ID seen as the cursor.
+type directory[T any] struct {
+	mu      sync.Mutex
+	records []*record[T]
+}
+
+func (d *directory[T]) register(r *record[T]) (T, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, have := range d.records {
+		if have.scope.MerchantID == r.scope.MerchantID && have.external == r.external {
+			return have.value, false
+		}
+	}
+	d.records = append(d.records, r)
+	return r.value, true
+}
+
+func (d *directory[T]) find(s commerceapp.Scope, id string) (*record[T], error) {
+	for _, r := range d.records {
+		if r.id == id && r.scope == s {
+			return r, nil
+		}
+	}
+	return nil, app.ErrNotFound
+}
+
+func (d *directory[T]) get(s commerceapp.Scope, id string) (T, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	r, err := d.find(s, id)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return r.value, nil
+}
+
+func (d *directory[T]) setStatus(s commerceapp.Scope, id string, status commerce.Status, at time.Time) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	r, err := d.find(s, id)
+	if err != nil {
+		return false, err
+	}
+	if *r.status(&r.value) == status {
+		return false, nil
+	}
+	*r.status(&r.value) = status
+	*r.disabled(&r.value) = nil
+	if status == commerce.Disabled {
+		*r.disabled(&r.value) = &at
+	}
+	return true, nil
+}
+
+// list lists s's records that pass f and, if given, keep.
+func (d *directory[T]) list(s commerceapp.Scope, f commerceapp.ListFilter, keep ...func(T) bool) ([]T, string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var match []*record[T]
+	for _, r := range d.records {
+		if len(keep) > 0 && !keep[0](r.value) {
+			continue
+		}
+		if r.scope == s && (f.ExternalID == "" || r.external == f.ExternalID) &&
+			(f.Status == "" || *r.status(&r.value) == f.Status) {
+			match = append(match, r)
+		}
+	}
+	sort.Slice(match, func(i, j int) bool {
+		if !match[i].created.Equal(match[j].created) {
+			return match[i].created.After(match[j].created)
+		}
+		return match[i].id > match[j].id
+	})
+	if f.Cursor != "" {
+		for i, r := range match {
+			if r.id == f.Cursor {
+				match = match[i+1:]
+				break
+			}
+		}
+	}
+	next := ""
+	if len(match) > f.Limit {
+		match = match[:f.Limit]
+		next = match[f.Limit-1].id
+	}
+	out := make([]T, len(match))
+	for i, r := range match {
+		out[i] = r.value
+	}
+	return out, next
+}
+
+var (
+	_ commerceapp.CustomerStore      = (*Customers)(nil)
+	_ commerceapp.AgentStore         = (*Agents)(nil)
+	_ commerceapp.FundingMethodStore = (*FundingMethods)(nil)
+)
+
+// Customers is an in-memory commerceapp.CustomerStore.
+type Customers struct{ d directory[commerce.Customer] }
+
+func NewCustomers() *Customers { return &Customers{} }
+
+func scopeOf(org, merchant string) commerceapp.Scope {
+	return commerceapp.Scope{OrgID: domain.OrgID(org), MerchantID: commerce.MerchantID(merchant)}
+}
+
+func (s *Customers) RegisterCustomer(ctx context.Context, c commerce.Customer) (commerce.Customer, bool, error) {
+	got, created := s.d.register(&record[commerce.Customer]{
+		id: string(c.ID), scope: scopeOf(string(c.OrgID), string(c.MerchantID)), external: c.ExternalID, created: c.CreatedAt, value: c,
+		status:   func(c *commerce.Customer) *commerce.Status { return &c.Status },
+		disabled: func(c *commerce.Customer) **time.Time { return &c.DisabledAt },
+	})
+	return got, created, nil
+}
+
+func (s *Customers) GetCustomer(ctx context.Context, sc commerceapp.Scope, id commerce.CustomerID) (commerce.Customer, error) {
+	return s.d.get(sc, string(id))
+}
+
+func (s *Customers) SetCustomerStatus(ctx context.Context, sc commerceapp.Scope, id commerce.CustomerID, status commerce.Status, at time.Time) (bool, error) {
+	return s.d.setStatus(sc, string(id), status, at)
+}
+
+func (s *Customers) ListCustomers(ctx context.Context, sc commerceapp.Scope, f commerceapp.ListFilter) (commerceapp.CustomerPage, error) {
+	out, next := s.d.list(sc, f)
+	return commerceapp.CustomerPage{Customers: out, NextCursor: next}, nil
+}
+
+// Agents is an in-memory commerceapp.AgentStore.
+type Agents struct{ d directory[commerce.Agent] }
+
+func NewAgents() *Agents { return &Agents{} }
+
+func (s *Agents) RegisterAgent(ctx context.Context, a commerce.Agent) (commerce.Agent, bool, error) {
+	got, created := s.d.register(&record[commerce.Agent]{
+		id: string(a.ID), scope: scopeOf(string(a.OrgID), string(a.MerchantID)), external: a.ExternalID, created: a.CreatedAt, value: a,
+		status:   func(a *commerce.Agent) *commerce.Status { return &a.Status },
+		disabled: func(a *commerce.Agent) **time.Time { return &a.DisabledAt },
+	})
+	return got, created, nil
+}
+
+func (s *Agents) GetAgent(ctx context.Context, sc commerceapp.Scope, id commerce.AgentID) (commerce.Agent, error) {
+	return s.d.get(sc, string(id))
+}
+
+func (s *Agents) SetAgentStatus(ctx context.Context, sc commerceapp.Scope, id commerce.AgentID, status commerce.Status, at time.Time) (bool, error) {
+	return s.d.setStatus(sc, string(id), status, at)
+}
+
+func (s *Agents) ListAgents(ctx context.Context, sc commerceapp.Scope, f commerceapp.ListFilter) (commerceapp.AgentPage, error) {
+	out, next := s.d.list(sc, f)
+	return commerceapp.AgentPage{Agents: out, NextCursor: next}, nil
+}
+
+// FundingMethods is an in-memory commerceapp.FundingMethodStore.
+type FundingMethods struct {
+	d directory[commerce.FundingMethod]
+}
+
+func NewFundingMethods() *FundingMethods { return &FundingMethods{} }
+
+func (s *FundingMethods) RegisterFundingMethod(ctx context.Context, f commerce.FundingMethod) (commerce.FundingMethod, bool, error) {
+	s.d.mu.Lock()
+	var found *record[commerce.FundingMethod]
+	for _, r := range s.d.records {
+		v := r.value
+		if v.MerchantID != f.MerchantID {
+			continue
+		}
+		if (f.Reference != "" && v.Reference == f.Reference) ||
+			(f.ProviderReference != "" && v.Provider == f.Provider && v.ProviderReference == f.ProviderReference) {
+			if found != nil && found.id != r.id {
+				s.d.mu.Unlock()
+				return commerce.FundingMethod{}, false, commerceapp.ErrRegistrationConflict
+			}
+			found = r
+		}
+	}
+	s.d.mu.Unlock()
+	if found != nil {
+		return found.value, false, nil
+	}
+	external := commerce.ExternalID(f.Reference)
+	if external == "" {
+		external = commerce.ExternalID("psp:" + string(f.Provider) + ":" + string(f.ProviderReference))
+	}
+	got, created := s.d.register(&record[commerce.FundingMethod]{
+		id: string(f.ID), scope: scopeOf(string(f.OrgID), string(f.MerchantID)), external: external, created: f.CreatedAt, value: f,
+		status:   func(f *commerce.FundingMethod) *commerce.Status { return &f.Status },
+		disabled: func(f *commerce.FundingMethod) **time.Time { return &f.DisabledAt },
+	})
+	return got, created, nil
+}
+
+func (s *FundingMethods) GetFundingMethod(ctx context.Context, sc commerceapp.Scope, id commerce.FundingMethodID) (commerce.FundingMethod, error) {
+	return s.d.get(sc, string(id))
+}
+
+func (s *FundingMethods) SetFundingMethodStatus(ctx context.Context, sc commerceapp.Scope, id commerce.FundingMethodID, status commerce.Status, at time.Time) (bool, error) {
+	return s.d.setStatus(sc, string(id), status, at)
+}
+
+func (s *FundingMethods) ListFundingMethods(ctx context.Context, sc commerceapp.Scope, customer commerce.CustomerID, f commerceapp.ListFilter) (commerceapp.FundingMethodPage, error) {
+	out, next := s.d.list(sc, f, func(m commerce.FundingMethod) bool { return m.CustomerID == customer })
+	return commerceapp.FundingMethodPage{Methods: out, NextCursor: next}, nil
+}
