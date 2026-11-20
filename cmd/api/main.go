@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
 	// Analytics resolve any IANA time zone, even in an image with no
 	// zone database of its own.
 	_ "time/tzdata"
