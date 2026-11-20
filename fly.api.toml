@@ -1,0 +1,38 @@
+# Enquoir API: stateless HTTP service behind Fly's proxy.
+# Deploy: fly deploy -c fly.api.toml
+app = "enquoir-api"
+primary_region = "iad"
+
+[build]
+  dockerfile = "path/to/api.Dockerfile"      # relative to this file
+
+[env]
+  # Non-secret config only. Secrets go in `fly secrets set -a enquoir-api ...`
+  CLIENT_IP_HEADER = "Fly-Client-IP"         # set by Fly's proxy; test with forged values
+  # Temporal Cloud endpoint + namespace (not secret); the API key goes in fly secrets
+  TEMPORAL_HOST = "us-east-1.aws.api.temporal.io:7233"   # regional endpoint (API key auth)
+  TEMPORAL_NAMESPACE = "<namespace>.<account>"
+
+[deploy]
+  strategy = "rolling"
+  # Runs once per release, before new machines take traffic. Uncomment and set
+  # to your migration command once we confirm how migrations run.
+  # release_command = "/app/api migrate"
+
+[http_service]
+  internal_port = 8080                       # the port the API listens on (0.0.0.0, not localhost)
+  force_https = true
+  auto_stop_machines = "off"                 # keep it always on; it's an API, not a demo app
+  auto_start_machines = true
+  min_machines_running = 2
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "15s"
+    timeout = "2s"
+    method = "GET"
+    path = "/healthz"                        # your health endpoint
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

@@ -13,7 +13,7 @@ test-integration:
 	set -a; . ./.env; set +a; go test -tags=integration ./...
 
 lint:
-	gofmt -l .
+	@test -z "$$(gofmt -l .)" || (echo "gofmt needed"; exit 1)
 	go vet ./...
 
 probe:

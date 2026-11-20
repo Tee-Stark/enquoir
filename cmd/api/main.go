@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
 	// Analytics resolve any IANA time zone, even in an image with no
 	// zone database of its own.
 	_ "time/tzdata"
@@ -47,6 +49,22 @@ func main() {
 	if temporalAddress == "" {
 		temporalAddress = "127.0.0.1:7233"
 	}
+
+	temporalApiKey := os.Getenv("TEMPORAL_API_KEY")
+	temporalNamespace := os.Getenv("TEMPORAL_NAMESPACE")
+
+	opts := client.Options{
+		HostPort:  temporalAddress,
+		Namespace: temporalNamespace,
+	}
+
+	if temporalApiKey != "" {
+		opts.ConnectionOptions = client.ConnectionOptions{
+			TLS: &tls.Config{MinVersion: tls.VersionTLS12},
+		}
+		opts.Credentials = client.NewAPIKeyStaticCredentials(temporalApiKey)
+	}
+
 	httpAddr := os.Getenv("HTTP_ADDR")
 	if httpAddr == "" {
 		httpAddr = ":8090"
@@ -70,7 +88,7 @@ func main() {
 	defer pool.Close()
 	events := postgres.NewEventLog(pool)
 
-	temporalClient, err := client.Dial(client.Options{HostPort: temporalAddress})
+	temporalClient, err := client.Dial(opts)
 	if err != nil {
 		logger.Error("connecting to Temporal", "error", err)
 		os.Exit(1)

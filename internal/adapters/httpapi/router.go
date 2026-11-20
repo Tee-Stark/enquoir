@@ -69,12 +69,12 @@ type Handler struct {
 	Summary           *app.GetSummary
 	TimeSeries        *app.GetTimeSeries
 
-	Commerce    CommerceUseCases
-	Funding     FundingUseCases
-	Mandates    MandateUseCases
-	Checkouts   CheckoutUseCases
-	Grants      GrantUseCases
-	Executions  ExecutionUseCases
+	Commerce          CommerceUseCases
+	Funding           FundingUseCases
+	Mandates          MandateUseCases
+	Checkouts         CheckoutUseCases
+	Grants            GrantUseCases
+	Executions        ExecutionUseCases
 	OrgActivity       OrgActivityUseCases
 	CommerceAnalytics CommerceAnalyticsUseCases
 }

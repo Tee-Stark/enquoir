@@ -1,0 +1,25 @@
+# Enquoir worker: runs Temporal workflows, no inbound traffic.
+# Deploy: fly deploy -c fly.worker.toml
+app = "enquoir-worker"
+primary_region = "iad"            # same region as the static egress IP
+
+[build]
+  dockerfile = "path/to/worker.Dockerfile"   # relative to this file
+
+[env]
+  # Non-secret config only. Secrets go in `fly secrets set -a enquoir-worker ...`
+  AWX_BASE_URL = "<airwallex sandbox URL>"   # worker refuses to start otherwise
+  # Temporal Cloud endpoint + namespace (not secret); the API key goes in fly secrets
+  TEMPORAL_HOST = "us-east-1.aws.api.temporal.io:7233"   # regional endpoint (API key auth)
+  TEMPORAL_NAMESPACE = "<namespace>.<account>"
+
+[deploy]
+  # One machine, replaced in place. Never bluegreen/canary: they briefly run a
+  # second worker and can exceed Airwallex's 10-concurrent-request limit.
+  strategy = "rolling"
+
+# No [http_service] or [[services]] section: nothing is exposed to the internet.
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
